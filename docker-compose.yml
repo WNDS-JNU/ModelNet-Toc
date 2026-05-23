@@ -50,10 +50,29 @@ services:
     depends_on:
       lobe:
         condition: service_healthy
+      leaderboard:
+        condition: service_healthy
     ports:
       - "${LOBE_PORT}:80"
     volumes:
       - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      - lobe-network
+
+  leaderboard:
+    image: nginx:1.27-alpine
+    container_name: modelnet-toc-leaderboard
+    restart: always
+    expose:
+      - "80"
+    volumes:
+      - ./leaderboard/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./leaderboard/public:/usr/share/nginx/html:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
     networks:
       - lobe-network
 

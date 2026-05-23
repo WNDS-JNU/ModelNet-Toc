@@ -5,3 +5,11 @@
 data/
 *.bak*
 *.log
+__pycache__/
+*.pyc
+!leaderboard/
+!leaderboard/public/
+!leaderboard/public/leaderboard/
+!leaderboard/public/leaderboard/data/
+leaderboard/public/leaderboard/data/*.json
+!leaderboard/public/leaderboard/data/.gitkeep

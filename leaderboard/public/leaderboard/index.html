@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ModelNet Leaderboard</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f8fb;
+        --panel: #ffffff;
+        --panel-2: #eef3f7;
+        --line: #dce3ea;
+        --line-strong: #c7d2de;
+        --text: #14212f;
+        --muted: #607083;
+        --soft: #8491a0;
+        --blue: #2457d6;
+        --green: #117a5b;
+        --amber: #9a5a00;
+        --red: #b42318;
+        --shadow: 0 12px 34px rgba(20, 33, 47, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.45;
+      }
+
+      a {
+        color: var(--blue);
+        text-decoration: none;
+      }
+
+      a:hover {
+        text-decoration: underline;
+      }
+
+      .page {
+        width: min(1480px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 24px 0 36px;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 18px;
+      }
+
+      .eyebrow {
+        margin: 0 0 4px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 30px;
+        line-height: 1.15;
+        letter-spacing: 0;
+      }
+
+      .meta {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .link-button {
+        min-height: 36px;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--text);
+        padding: 8px 12px;
+        font-size: 13px;
+        font-weight: 650;
+        box-shadow: 0 1px 0 rgba(20, 33, 47, 0.04);
+      }
+
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+
+      .metric {
+        min-height: 84px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 13px 14px;
+        box-shadow: var(--shadow);
+      }
+
+      .metric-label {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .metric-value {
+        margin-top: 8px;
+        font-size: 28px;
+        font-weight: 750;
+        line-height: 1;
+      }
+
+      .metric-subtext {
+        margin-top: 7px;
+        color: var(--soft);
+        font-size: 12px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .toolbar {
+        display: grid;
+        grid-template-columns: minmax(220px, 1fr) 180px 180px 170px;
+        gap: 10px;
+        margin: 16px 0 12px;
+      }
+
+      input,
+      select {
+        width: 100%;
+        min-height: 38px;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--text);
+        padding: 8px 10px;
+        font: inherit;
+        font-size: 13px;
+      }
+
+      input:focus,
+      select:focus,
+      .link-button:focus {
+        outline: 2px solid rgba(36, 87, 214, 0.18);
+        border-color: var(--blue);
+      }
+
+      .status {
+        min-height: 34px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 13px;
+        margin: 8px 0;
+      }
+
+      .status.error {
+        color: var(--red);
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+      }
+
+      table {
+        width: 100%;
+        min-width: 1060px;
+        border-collapse: collapse;
+        table-layout: fixed;
+      }
+
+      thead {
+        background: var(--panel-2);
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid var(--line);
+        padding: 12px 12px;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 750;
+        text-transform: uppercase;
+      }
+
+      tbody tr:hover {
+        background: #f9fbfd;
+      }
+
+      .rank {
+        color: var(--muted);
+        font-weight: 750;
+      }
+
+      .model-name {
+        font-weight: 750;
+        overflow-wrap: anywhere;
+      }
+
+      .model-org {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+
+      .score {
+        font-variant-numeric: tabular-nums;
+        font-weight: 750;
+      }
+
+      .score.primary {
+        color: var(--blue);
+        font-size: 18px;
+      }
+
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .chip {
+        display: inline-flex;
+        max-width: 100%;
+        align-items: center;
+        gap: 5px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: #f6f8fa;
+        padding: 4px 8px;
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      .chip strong {
+        color: var(--text);
+      }
+
+      .chip.match {
+        border-color: rgba(17, 122, 91, 0.25);
+        background: rgba(17, 122, 91, 0.08);
+        color: var(--green);
+      }
+
+      .chip.warn {
+        border-color: rgba(154, 90, 0, 0.28);
+        background: rgba(154, 90, 0, 0.08);
+        color: var(--amber);
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .empty {
+        padding: 34px 16px;
+        color: var(--muted);
+        text-align: center;
+      }
+
+      @media (max-width: 980px) {
+        .topbar {
+          flex-direction: column;
+        }
+
+        .actions {
+          justify-content: flex-start;
+        }
+
+        .summary {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .toolbar {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .page {
+          width: min(100vw - 20px, 1480px);
+          padding-top: 16px;
+        }
+
+        h1 {
+          font-size: 24px;
+        }
+
+        .summary,
+        .toolbar {
+          grid-template-columns: 1fr;
+        }
+
+        .metric {
+          min-height: 76px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">ModelNet ToC</p>
+          <h1>Model capability leaderboard</h1>
+          <div class="meta" id="sourceLine">Loading OpenCompass data...</div>
+        </div>
+        <div class="actions">
+          <a class="link-button" href="/" aria-label="Back to ToC">ToC</a>
+          <a class="link-button" id="sourceLink" href="https://rank.opencompass.org.cn/leaderboard-llm" target="_blank" rel="noreferrer">OpenCompass</a>
+        </div>
+      </section>
+
+      <section class="summary" aria-label="Leaderboard summary">
+        <div class="metric">
+          <div class="metric-label">Models</div>
+          <div class="metric-value" id="metricModels">-</div>
+          <div class="metric-subtext">OpenCompass entries</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">ModelNet</div>
+          <div class="metric-value" id="metricMatched">-</div>
+          <div class="metric-subtext">Matched ToC models</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Visible</div>
+          <div class="metric-value" id="metricVisible">-</div>
+          <div class="metric-subtext">After filters</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Updated</div>
+          <div class="metric-value" id="metricUpdated">-</div>
+          <div class="metric-subtext" id="metricGenerated">-</div>
+        </div>
+      </section>
+
+      <section class="toolbar" aria-label="Filters">
+        <input id="searchInput" type="search" placeholder="Search model, alias, org" autocomplete="off" />
+        <select id="sourceFilter">
+          <option value="all">All sources</option>
+        </select>
+        <select id="matchFilter">
+          <option value="all">All models</option>
+          <option value="modelnet">ModelNet only</option>
+          <option value="external">External only</option>
+        </select>
+        <select id="sortSelect">
+          <option value="average">Sort by average</option>
+          <option value="rank">Sort by rank</option>
+          <option value="model">Sort by model</option>
+          <option value="updated">Sort by updated</option>
+        </select>
+      </section>
+
+      <div class="status" id="statusLine">Loading...</div>
+
+      <section class="table-wrap" aria-label="Leaderboard table">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 70px;">Rank</th>
+              <th style="width: 30%;">Model</th>
+              <th style="width: 120px;">Average</th>
+              <th style="width: 30%;">Capabilities</th>
+              <th style="width: 18%;">ModelNet</th>
+              <th style="width: 150px;">Source</th>
+            </tr>
+          </thead>
+          <tbody id="leaderboardBody">
+            <tr>
+              <td colspan="6" class="empty">Loading leaderboard...</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+
+    <script>
+      const DATA_URL = '/leaderboard/data/opencompass-leaderboard.json';
+      const state = {
+        payload: null,
+        items: [],
+        query: '',
+        source: 'all',
+        match: 'all',
+        sort: 'average',
+      };
+
+      const els = {
+        sourceLine: document.getElementById('sourceLine'),
+        sourceLink: document.getElementById('sourceLink'),
+        metricModels: document.getElementById('metricModels'),
+        metricMatched: document.getElementById('metricMatched'),
+        metricVisible: document.getElementById('metricVisible'),
+        metricUpdated: document.getElementById('metricUpdated'),
+        metricGenerated: document.getElementById('metricGenerated'),
+        searchInput: document.getElementById('searchInput'),
+        sourceFilter: document.getElementById('sourceFilter'),
+        matchFilter: document.getElementById('matchFilter'),
+        sortSelect: document.getElementById('sortSelect'),
+        statusLine: document.getElementById('statusLine'),
+        body: document.getElementById('leaderboardBody'),
+      };
+
+      const text = value => {
+        if (value === null || value === undefined || value === '') return '-';
+        return String(value);
+      };
+
+      const numberText = value => {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return '-';
+        return Number.isInteger(number) ? String(number) : number.toFixed(1);
+      };
+
+      const localized = value => {
+        if (!value) return '-';
+        if (typeof value === 'string') return value;
+        return value['en-US'] || value['zh-CN'] || Object.values(value)[0] || '-';
+      };
+
+      const scoreByKey = (item, key) => {
+        const scores = Array.isArray(item.scores) ? item.scores : [];
+        const score = scores.find(entry => String(entry.key).toLowerCase() === key.toLowerCase());
+        return Number(score && score.value);
+      };
+
+      const averageScore = item => {
+        const direct = scoreByKey(item, 'Average');
+        if (Number.isFinite(direct)) return direct;
+        const values = (item.dimensions || []).map(dim => Number(dim.average)).filter(Number.isFinite);
+        if (!values.length) return -Infinity;
+        return values.reduce((sum, value) => sum + value, 0) / values.length;
+      };
+
+      const dateScore = value => {
+        const parts = String(value || '').match(/\d+/g) || [];
+        if (parts.length >= 3) return Number(`${parts[0]}${parts[1].padStart(2, '0')}${parts[2].padStart(2, '0')}`);
+        if (parts.length >= 2) return Number(`${parts[0]}${parts[1].padStart(2, '0')}00`);
+        return 0;
+      };
+
+      const itemSource = item => text(item.source && item.source.name);
+
+      const itemSearchText = item => [
+        item.model,
+        item.org,
+        item.chat_or_base,
+        ...(item.aliases || []),
+        ...(item.modelnet_ids || []),
+        ...(item.modelnet_model_names || []),
+      ].map(text).join(' ').toLowerCase();
+
+      const uniqueSources = items => {
+        return Array.from(new Set(items.map(itemSource).filter(value => value && value !== '-'))).sort();
+      };
+
+      const renderSourceFilter = () => {
+        const current = state.source;
+        els.sourceFilter.innerHTML = '<option value="all">All sources</option>' + uniqueSources(state.items)
+          .map(source => `<option value="${escapeAttr(source)}">${escapeHtml(source)}</option>`)
+          .join('');
+        els.sourceFilter.value = uniqueSources(state.items).includes(current) ? current : 'all';
+        state.source = els.sourceFilter.value;
+      };
+
+      const filteredItems = () => {
+        const query = state.query.trim().toLowerCase();
+        return state.items.filter(item => {
+          if (query && !itemSearchText(item).includes(query)) return false;
+          if (state.source !== 'all' && itemSource(item) !== state.source) return false;
+          if (state.match === 'modelnet' && item.modelnet_matched !== true) return false;
+          if (state.match === 'external' && item.modelnet_matched === true) return false;
+          return true;
+        }).sort((a, b) => {
+          if (state.sort === 'model') return text(a.model).localeCompare(text(b.model));
+          if (state.sort === 'rank') return (Number(a.rank) || 1000000) - (Number(b.rank) || 1000000);
+          if (state.sort === 'updated') return dateScore(b.update_time || (b.source && b.source.update_time)) - dateScore(a.update_time || (a.source && a.source.update_time));
+          return averageScore(b) - averageScore(a);
+        });
+      };
+
+      const renderSummary = items => {
+        const payload = state.payload || {};
+        const source = payload.source || {};
+        const modelnet = payload.modelnet_summary || {};
+        const matched = Number.isFinite(Number(modelnet.matched_modelnet_count))
+          ? Number(modelnet.matched_modelnet_count)
+          : items.filter(item => item.modelnet_matched).length;
+        els.metricModels.textContent = String(items.length);
+        els.metricMatched.textContent = String(matched);
+        els.metricUpdated.textContent = text(source.update_time || source.month).slice(0, 10);
+        els.metricGenerated.textContent = `Generated ${text(payload.generated_at).replace('T', ' ').slice(0, 19)}`;
+        els.sourceLine.textContent = `${text(source.name)} / ${text(source.update_time || source.month)} / ModelNet chat models ${text(modelnet.chat_model_count)}`;
+        if (source.url) els.sourceLink.href = source.url;
+      };
+
+      const renderStatus = visible => {
+        const payload = state.payload || {};
+        const errors = Array.isArray(payload.errors) ? payload.errors : [];
+        const status = payload.cache_status ? ` / ${payload.cache_status}` : '';
+        els.metricVisible.textContent = String(visible.length);
+        els.statusLine.className = errors.length ? 'status error' : 'status';
+        els.statusLine.textContent = `${visible.length} visible of ${state.items.length}${status}${errors.length ? ` / ${errors.length} source errors` : ''}`;
+      };
+
+      const renderRows = () => {
+        const visible = filteredItems();
+        renderStatus(visible);
+
+        if (!visible.length) {
+          els.body.innerHTML = '<tr><td colspan="6" class="empty">No models match the current filters.</td></tr>';
+          return;
+        }
+
+        els.body.innerHTML = visible.slice(0, 600).map((item, index) => {
+          const rank = Number.isFinite(Number(item.rank)) ? item.rank : index + 1;
+          const average = averageScore(item);
+          const dimensions = (item.dimensions || []).slice(0, 7).map(dim => {
+            return `<span class="chip"><span>${escapeHtml(localized(dim.label || dim.key))}</span><strong>${escapeHtml(numberText(dim.average))}</strong></span>`;
+          }).join('');
+          const modelnet = item.modelnet_matched
+            ? `<div class="chips"><span class="chip match">ModelNet</span>${(item.modelnet_ids || []).slice(0, 2).map(id => `<span class="chip">${escapeHtml(id)}</span>`).join('')}</div>`
+            : '<span class="chip warn">Not connected</span>';
+          const links = item.links || {};
+          const website = links.website && links.website.url
+            ? `<a href="${escapeAttr(links.website.url)}" target="_blank" rel="noreferrer">${escapeHtml(text(links.website.label || 'Link'))}</a>`
+            : '';
+          return `
+            <tr>
+              <td class="rank">${escapeHtml(text(rank))}</td>
+              <td>
+                <div class="model-name">${escapeHtml(text(item.model))}</div>
+                <div class="model-org">${escapeHtml(text(item.org))}${website ? ` / ${website}` : ''}</div>
+              </td>
+              <td><span class="score primary">${escapeHtml(Number.isFinite(average) ? numberText(average) : '-')}</span></td>
+              <td><div class="chips">${dimensions || '<span class="muted">-</span>'}</div></td>
+              <td>${modelnet}</td>
+              <td>
+                <div>${escapeHtml(itemSource(item))}</div>
+                <div class="model-org">${escapeHtml(text(item.update_time || (item.source && item.source.update_time)))}</div>
+              </td>
+            </tr>
+          `;
+        }).join('');
+      };
+
+      const escapeHtml = value => String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+
+      const escapeAttr = escapeHtml;
+
+      const bind = () => {
+        els.searchInput.addEventListener('input', event => {
+          state.query = event.target.value;
+          renderRows();
+        });
+        els.sourceFilter.addEventListener('change', event => {
+          state.source = event.target.value;
+          renderRows();
+        });
+        els.matchFilter.addEventListener('change', event => {
+          state.match = event.target.value;
+          renderRows();
+        });
+        els.sortSelect.addEventListener('change', event => {
+          state.sort = event.target.value;
+          renderRows();
+        });
+      };
+
+      const load = async () => {
+        bind();
+        try {
+          const response = await fetch(DATA_URL, { cache: 'no-store' });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const payload = await response.json();
+          state.payload = payload;
+          state.items = Array.isArray(payload.items) ? payload.items : [];
+          renderSourceFilter();
+          renderSummary(state.items);
+          renderRows();
+        } catch (error) {
+          els.statusLine.className = 'status error';
+          els.statusLine.textContent = `Failed to load leaderboard data: ${error.message}`;
+          els.body.innerHTML = '<tr><td colspan="6" class="empty">Leaderboard data is unavailable.</td></tr>';
+        }
+      };
+
+      load();
+    </script>
+  </body>
+</html>
