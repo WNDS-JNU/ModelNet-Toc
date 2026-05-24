@@ -19,7 +19,7 @@ from urllib.request import Request, urlopen
 
 
 DEFAULT_SOURCE = Path("/home/duxianghe/dify/api/configs/model_net.yaml")
-DEFAULT_OUTPUT = Path("leaderboard/public/leaderboard/data/opencompass-leaderboard.json")
+DEFAULT_OUTPUT = Path("leaderboard/data/opencompass-leaderboard.json")
 CHAT_BACKENDS = {"vllm_chat", "llama_cpp"}
 
 OPENCOMPASS_MONTHS_URL = (

@@ -2,7 +2,9 @@ name: lobehub-toc
 
 services:
   lobe:
-    image: lobehub/lobehub:latest
+    image: ${LOBE_IMAGE:-modelnet/lobehub-toc:2.2.0-modelnet}
+    build:
+      context: ${LOBEHUB_TOC_SRC:-./lobehub}
     restart: always
     expose:
       - "3210"
@@ -15,12 +17,17 @@ services:
         condition: service_healthy
       rustfs-init:
         condition: service_completed_successfully
+      litellm:
+        condition: service_started
     env_file:
       - .env
       - .env.modelnet
+    volumes:
+      - ./leaderboard/data:/app/leaderboard/data:ro
     environment:
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgresql:5432/${LOBE_DB_NAME}
       INTERNAL_APP_URL: http://localhost:3210
+      MODELNET_LEADERBOARD_DATA_DIR: /app/leaderboard/data
       S3_ENDPOINT: ${S3_ENDPOINT}
       S3_BUCKET: ${RUSTFS_LOBE_BUCKET}
       S3_ENABLE_PATH_STYLE: "1"
@@ -35,7 +42,6 @@ services:
       REDIS_TLS: "0"
     networks:
       - lobe-network
-      - modelnet-network
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3210/signin').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 10s
@@ -50,8 +56,6 @@ services:
     depends_on:
       lobe:
         condition: service_healthy
-      leaderboard:
-        condition: service_healthy
     ports:
       - "${LOBE_PORT}:80"
     volumes:
@@ -59,20 +63,62 @@ services:
     networks:
       - lobe-network
 
-  leaderboard:
-    image: nginx:1.27-alpine
-    container_name: modelnet-toc-leaderboard
+  modelnet-router:
+    container_name: modelnet-router
+    build:
+      context: ./modelnet_router
     restart: always
-    expose:
-      - "80"
+    environment:
+      MODELNET_BACKEND_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
+      MODELNET_ROUTER_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
+      MODELNET_REGISTRY_PATH: /app/model_net.yaml
+      MODELNET_K8S_NAMESPACE: inference
+      MODELNET_LLAMA_CPP_NAMESPACE: llama-cpp
+      MODELNET_PROMETHEUS_NAMESPACE: kuboard
+      MODELNET_PROMETHEUS_SERVICE: prometheus-k8s
+      MODELNET_PROMETHEUS_PORT: "9090"
+      MODELNET_ROUTER_MODEL_NAME: modelnet
+      KUBECONFIG: /app/kubeconfig
     volumes:
-      - ./leaderboard/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./leaderboard/public:/usr/share/nginx/html:ro
+      - type: bind
+        source: /home/duxianghe/dify/api/configs/model_net.yaml
+        target: /app/model_net.yaml
+        read_only: true
+      - type: bind
+        source: /home/duxianghe/.kube/config
+        target: /app/kubeconfig
+        read_only: true
+    expose:
+      - "8000"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()\""]
       interval: 10s
-      timeout: 3s
-      retries: 10
+      timeout: 6s
+      retries: 12
+      start_period: 15s
+    networks:
+      - lobe-network
+
+  litellm:
+    container_name: modelnet-litellm
+    image: ghcr.io/berriai/litellm:main-latest
+    restart: always
+    depends_on:
+      modelnet-router:
+        condition: service_healthy
+    environment:
+      MODELNET_LITELLM_API_KEY: ${MODELNET_LITELLM_API_KEY}
+      MODELNET_BACKEND_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
+    volumes:
+      - type: bind
+        source: ./litellm/modelnet-config.yaml
+        target: /app/config.yaml
+        read_only: true
+    ports:
+      - "127.0.0.1:3090:8000"
+    expose:
+      - "8000"
+    command: ["--config", "/app/config.yaml", "--port", "8000", "--num_workers", "4"]
     networks:
       - lobe-network
 
@@ -166,9 +212,6 @@ services:
 networks:
   lobe-network:
     driver: bridge
-  modelnet-network:
-    external: true
-    name: librechat-toc_default
 
 volumes:
   redis_data:

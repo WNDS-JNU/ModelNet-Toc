@@ -1,0 +1,1015 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import re
+import time
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote
+
+import httpx
+import yaml
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+
+
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+LOGGER = logging.getLogger("modelnet-router")
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+REGISTRY_PATH = Path(os.environ.get("MODELNET_REGISTRY_PATH", "/app/model_net.yaml"))
+KUBECONFIG_PATH = Path(os.environ.get("KUBECONFIG", "/app/kubeconfig"))
+K8S_NAMESPACE = os.environ.get("MODELNET_K8S_NAMESPACE", "inference")
+LLAMA_CPP_NAMESPACE = os.environ.get("MODELNET_LLAMA_CPP_NAMESPACE", "llama-cpp")
+PROMETHEUS_NAMESPACE = os.environ.get("MODELNET_PROMETHEUS_NAMESPACE", "kuboard")
+PROMETHEUS_SERVICE = os.environ.get("MODELNET_PROMETHEUS_SERVICE", "prometheus-k8s")
+PROMETHEUS_PORT = os.environ.get("MODELNET_PROMETHEUS_PORT", "9090")
+PUBLIC_MODEL_NAME = os.environ.get("MODELNET_ROUTER_MODEL_NAME", "modelnet")
+BACKEND_API_KEY = os.environ.get("MODELNET_BACKEND_API_KEY", "")
+ROUTER_API_KEY = os.environ.get("MODELNET_ROUTER_API_KEY", "")
+METRICS_TTL_SECONDS = float(os.environ.get("MODELNET_METRICS_TTL_SECONDS", "5"))
+PROMETHEUS_TTL_SECONDS = float(os.environ.get("MODELNET_PROMETHEUS_TTL_SECONDS", "5"))
+FAIL_COOLDOWN_SECONDS = float(os.environ.get("MODELNET_FAIL_COOLDOWN_SECONDS", "30"))
+REQUEST_TIMEOUT_SECONDS = float(os.environ.get("MODELNET_BACKEND_TIMEOUT_SECONDS", "180"))
+
+CHAT_BACKENDS = {"vllm_chat", "llama_cpp"}
+ENDPOINT_HEALTH_BACKENDS = {"llama_cpp"}
+ENDPOINT_HEALTH_TTL_SECONDS = float(os.environ.get("MODELNET_ENDPOINT_HEALTH_TTL_SECONDS", "15"))
+ENDPOINT_READY_SCORE = float(os.environ.get("MODELNET_ENDPOINT_READY_SCORE", "100"))
+NO_DEVICE_METRICS_PENALTY = float(os.environ.get("MODELNET_NO_DEVICE_METRICS_PENALTY", "250"))
+LLAMA_CPP_ALLOWED_BODY_KEYS = {
+    "cache_prompt",
+    "frequency_penalty",
+    "grammar",
+    "json_schema",
+    "logit_bias",
+    "max_tokens",
+    "messages",
+    "min_p",
+    "mirostat",
+    "mirostat_eta",
+    "mirostat_tau",
+    "model",
+    "n",
+    "presence_penalty",
+    "repeat_penalty",
+    "response_format",
+    "seed",
+    "stop",
+    "stream",
+    "temperature",
+    "top_k",
+    "top_p",
+    "typical_p",
+}
+
+
+@dataclass(frozen=True)
+class Candidate:
+    model_id: str
+    backend_type: str
+    k8s_namespace: str
+    backend_model: str
+    root_url: str
+    api_base: str
+    service_names: tuple[str, ...]
+
+
+@dataclass
+class CandidateState:
+    in_flight: int = 0
+    failure_count: int = 0
+    cooldown_until: float = 0
+    last_error: str = ""
+
+
+@dataclass
+class K8sPod:
+    namespace: str
+    name: str
+    node: str
+    service_name: str
+    ready: bool
+    running: bool
+    cpu_milli: float | None = None
+    memory_mib: float | None = None
+
+
+@dataclass
+class K8sSnapshot:
+    pods_by_service: dict[str, list[K8sPod]] = field(default_factory=dict)
+    error: str | None = None
+    updated_at: float = 0
+
+
+@dataclass
+class NodeMetrics:
+    cpu_ratio: float | None = None
+    memory_ratio: float | None = None
+    memory_available_mib: float | None = None
+    memory_total_mib: float | None = None
+    gpu_util_ratio: float | None = None
+    gpu_memory_free_mib: float | None = None
+    gpu_memory_used_mib: float | None = None
+    jetson_gpu_memory_used_mib: float | None = None
+
+
+@dataclass
+class PrometheusSnapshot:
+    nodes: dict[str, NodeMetrics] = field(default_factory=dict)
+    error: str | None = None
+    updated_at: float = 0
+
+
+@dataclass
+class EndpointHealth:
+    ready: bool = False
+    error: str = ""
+    updated_at: float = 0
+
+
+app = FastAPI(title="ModelNet Router", version="1.1.0")
+http_client: httpx.AsyncClient | None = None
+registry_cache: tuple[float, list[Candidate]] = (0, [])
+k8s_cache: K8sSnapshot = K8sSnapshot()
+prometheus_cache: PrometheusSnapshot = PrometheusSnapshot()
+endpoint_health_cache: dict[str, EndpointHealth] = {}
+states: dict[str, CandidateState] = {}
+state_lock = asyncio.Lock()
+
+
+def parse_scalar(value: str) -> Any:
+    value = value.strip()
+    if value == "":
+        return ""
+    if value in {"true", "True"}:
+        return True
+    if value in {"false", "False"}:
+        return False
+    if value in {"null", "Null", "None", "~"}:
+        return None
+    if (value.startswith("'") and value.endswith("'")) or (
+        value.startswith('"') and value.endswith('"')
+    ):
+        return value[1:-1]
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
+def simple_registry_load(path: Path) -> list[dict[str, Any]]:
+    models: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    in_models = False
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped == "models:":
+            in_models = True
+            continue
+        if not in_models:
+            continue
+        if stripped.startswith("- "):
+            if current:
+                models.append(current)
+            current = {}
+            remainder = stripped[2:].strip()
+            if remainder and ":" in remainder:
+                key, _, value = remainder.partition(":")
+                current[key.strip()] = parse_scalar(value)
+            continue
+        if current is not None and ":" in stripped:
+            key, _, value = stripped.partition(":")
+            current[key.strip()] = parse_scalar(value)
+    if current:
+        models.append(current)
+    return models
+
+
+def load_yaml(path: Path) -> Any:
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        return {"models": simple_registry_load(path)}
+
+
+def is_embedding_model(model: dict[str, Any]) -> bool:
+    haystack = " ".join(
+        str(model.get(key, "")) for key in ("id", "model_name", "model_url", "type")
+    ).lower()
+    return "embedding" in haystack or "embed" in haystack
+
+
+def slugify(value: str) -> str:
+    text = value.rsplit("/", 1)[-1].lower()
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    return text.strip("-")
+
+
+def normalize_root_url(model_url: str) -> str:
+    root_url = model_url.rstrip("/")
+    if root_url.endswith("/v1"):
+        return root_url[:-3].rstrip("/")
+    return root_url
+
+
+def normalize_api_base(model_url: str) -> str:
+    return normalize_root_url(model_url) + "/v1"
+
+
+def service_key(namespace: str, service_name: str) -> str:
+    return f"{namespace}/{service_name}"
+
+
+def candidate_namespace(backend_type: str) -> str:
+    if backend_type == "llama_cpp":
+        return LLAMA_CPP_NAMESPACE
+    return K8S_NAMESPACE
+
+
+def without_known_prefixes(value: str) -> list[str]:
+    names: list[str] = []
+    for prefix in ("llama-cpp-", "inference-"):
+        if value.startswith(prefix):
+            names.append(value[len(prefix) :])
+            names.append(slugify(value[len(prefix) :]))
+    return names
+
+
+def candidate_service_names(
+    model: dict[str, Any],
+    model_id: str,
+    backend_model: str,
+    backend_type: str,
+) -> tuple[str, ...]:
+    names: list[str] = []
+    for key in ("service_name", "k8s_service", "service", "deployment", "app"):
+        value = str(model.get(key, "")).strip()
+        if value:
+            names.append(value)
+    if backend_type == "llama_cpp":
+        names.extend(without_known_prefixes(model_id))
+    names.extend([slugify(backend_model), model_id, slugify(model_id)])
+
+    deduped: list[str] = []
+    for name in names:
+        if name and name not in deduped:
+            deduped.append(name)
+    return tuple(deduped)
+
+
+def load_candidates() -> list[Candidate]:
+    global registry_cache
+    mtime = REGISTRY_PATH.stat().st_mtime
+    if registry_cache[0] == mtime:
+        return registry_cache[1]
+
+    payload = load_yaml(REGISTRY_PATH)
+    models = payload.get("models", []) if isinstance(payload, dict) else []
+    candidates: list[Candidate] = []
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        backend_type = str(model.get("backend", "")).strip()
+        if backend_type not in CHAT_BACKENDS:
+            continue
+        if is_embedding_model(model):
+            continue
+        model_id = str(model.get("id", "")).strip()
+        backend_model = str(model.get("model_name", "")).strip()
+        model_url = str(model.get("model_url", "")).strip()
+        if not model_id or not backend_model or not model_url:
+            continue
+        candidates.append(
+            Candidate(
+                model_id=model_id,
+                backend_type=backend_type,
+                k8s_namespace=candidate_namespace(backend_type),
+                backend_model=backend_model,
+                root_url=normalize_root_url(model_url),
+                api_base=normalize_api_base(model_url),
+                service_names=candidate_service_names(model, model_id, backend_model, backend_type),
+            )
+        )
+
+    registry_cache = (mtime, candidates)
+    for candidate in candidates:
+        states.setdefault(candidate.model_id, CandidateState())
+    backend_counts: dict[str, int] = {}
+    for candidate in candidates:
+        backend_counts[candidate.backend_type] = backend_counts.get(candidate.backend_type, 0) + 1
+    LOGGER.info("loaded %s candidates %s", len(candidates), backend_counts)
+    return candidates
+
+
+def parse_cpu_milli(value: str) -> float:
+    if value.endswith("n"):
+        return float(value[:-1]) / 1_000_000
+    if value.endswith("u"):
+        return float(value[:-1]) / 1_000
+    if value.endswith("m"):
+        return float(value[:-1])
+    return float(value) * 1000
+
+
+def parse_memory_mib(value: str) -> float:
+    units = {
+        "Ki": 1 / 1024,
+        "Mi": 1,
+        "Gi": 1024,
+        "Ti": 1024 * 1024,
+        "K": 1 / 1000 / 1000,
+        "M": 1,
+        "G": 1000,
+    }
+    for suffix, multiplier in units.items():
+        if value.endswith(suffix):
+            return float(value[: -len(suffix)]) * multiplier
+    return float(value) / 1024 / 1024
+
+
+def load_kube_config() -> dict[str, Any]:
+    config = yaml.safe_load(KUBECONFIG_PATH.read_text(encoding="utf-8"))
+    cluster_name = config["contexts"][0]["context"]["cluster"]
+    user_name = config["contexts"][0]["context"]["user"]
+    current = config.get("current-context")
+    if current:
+        for context in config.get("contexts", []):
+            if context.get("name") == current:
+                cluster_name = context["context"]["cluster"]
+                user_name = context["context"]["user"]
+                break
+    cluster = next(item["cluster"] for item in config["clusters"] if item["name"] == cluster_name)
+    user = next(item["user"] for item in config["users"] if item["name"] == user_name)
+    return {
+        "server": cluster["server"].rstrip("/"),
+        "token": user.get("token", ""),
+        "verify": not bool(cluster.get("insecure-skip-tls-verify", False)),
+    }
+
+
+async def k8s_get(path: str) -> dict[str, Any]:
+    assert http_client is not None
+    config = load_kube_config()
+    response = await http_client.get(
+        config["server"] + path,
+        headers={"Authorization": "Bearer " + config["token"]},
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+async def prometheus_query(query: str) -> dict[str, Any]:
+    path = (
+        f"/api/v1/namespaces/{PROMETHEUS_NAMESPACE}/services/"
+        f"{PROMETHEUS_SERVICE}:{PROMETHEUS_PORT}/proxy/api/v1/query?query={quote(query, safe='')}"
+    )
+    return await k8s_get(path)
+
+
+def prometheus_values_by_instance(payload: dict[str, Any]) -> dict[str, float]:
+    values: dict[str, float] = {}
+    if payload.get("status") != "success":
+        return values
+    for item in payload.get("data", {}).get("result", []):
+        instance = item.get("metric", {}).get("instance")
+        raw_value = item.get("value", [None, None])[1]
+        if instance is None or raw_value is None:
+            continue
+        try:
+            values[str(instance)] = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
+def clamp_ratio(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return max(0.0, min(1.0, value))
+
+
+def pod_is_ready(pod: dict[str, Any]) -> bool:
+    status = pod.get("status", {})
+    if status.get("phase") != "Running":
+        return False
+    for condition in status.get("conditions", []):
+        if condition.get("type") == "Ready":
+            return condition.get("status") == "True"
+    return False
+
+
+async def load_namespace_resources(namespace: str) -> tuple[str, dict[str, Any], dict[str, Any], str | None]:
+    error: str | None = None
+    pods_payload: dict[str, Any] = {"items": []}
+    metrics_payload: dict[str, Any] = {"items": []}
+    try:
+        pods_payload = await k8s_get(f"/api/v1/namespaces/{namespace}/pods")
+    except Exception as exc:  # noqa: BLE001
+        error = f"{namespace} pods: {exc}"
+    try:
+        metrics_payload = await k8s_get(f"/apis/metrics.k8s.io/v1beta1/namespaces/{namespace}/pods")
+    except Exception as exc:  # noqa: BLE001
+        metrics_error = f"{namespace} pod metrics: {exc}"
+        error = metrics_error if error is None else f"{error}; {metrics_error}"
+    return namespace, pods_payload, metrics_payload, error
+
+
+async def load_k8s_snapshot() -> K8sSnapshot:
+    global k8s_cache
+    now = time.time()
+    if now - k8s_cache.updated_at < METRICS_TTL_SECONDS:
+        return k8s_cache
+
+    try:
+        namespaces = sorted({K8S_NAMESPACE, LLAMA_CPP_NAMESPACE})
+        namespace_results = await asyncio.gather(
+            *(load_namespace_resources(namespace) for namespace in namespaces)
+        )
+        errors: list[str] = []
+        metrics_by_pod: dict[str, tuple[float, float]] = {}
+        pods_by_service: dict[str, list[K8sPod]] = {}
+        for namespace, pods_payload, metrics_payload, error in namespace_results:
+            if error:
+                errors.append(error)
+            for item in metrics_payload.get("items", []):
+                total_cpu = 0.0
+                total_memory = 0.0
+                for container in item.get("containers", []):
+                    usage = container.get("usage", {})
+                    total_cpu += parse_cpu_milli(str(usage.get("cpu", "0")))
+                    total_memory += parse_memory_mib(str(usage.get("memory", "0")))
+                metrics_by_pod[service_key(namespace, item["metadata"]["name"])] = (total_cpu, total_memory)
+
+            for item in pods_payload.get("items", []):
+                metadata = item.get("metadata", {})
+                labels = metadata.get("labels", {})
+                service_name = labels.get("k8s.kuboard.cn/name") or labels.get("app")
+                if not service_name:
+                    continue
+                name = metadata.get("name", "")
+                cpu_milli, memory_mib = metrics_by_pod.get(service_key(namespace, name), (None, None))
+                pod = K8sPod(
+                    namespace=namespace,
+                    name=name,
+                    node=item.get("spec", {}).get("nodeName", ""),
+                    service_name=service_name,
+                    ready=pod_is_ready(item),
+                    running=item.get("status", {}).get("phase") == "Running",
+                    cpu_milli=cpu_milli,
+                    memory_mib=memory_mib,
+                )
+                pods_by_service.setdefault(service_key(namespace, service_name), []).append(pod)
+
+        k8s_cache = K8sSnapshot(
+            pods_by_service=pods_by_service,
+            error="; ".join(errors) if errors else None,
+            updated_at=now,
+        )
+    except Exception as error:  # noqa: BLE001 - expose degraded state in /metrics and logs
+        LOGGER.warning("failed to refresh k8s metrics: %s", error)
+        k8s_cache = K8sSnapshot(
+            pods_by_service=k8s_cache.pods_by_service,
+            error=str(error),
+            updated_at=now,
+        )
+    return k8s_cache
+
+
+def ensure_node_metrics(nodes: dict[str, NodeMetrics], node: str) -> NodeMetrics:
+    metrics = nodes.get(node)
+    if metrics is None:
+        metrics = NodeMetrics()
+        nodes[node] = metrics
+    return metrics
+
+
+def has_device_metrics(metrics: NodeMetrics | None) -> bool:
+    if metrics is None:
+        return False
+    return any(
+        value is not None
+        for value in (
+            metrics.cpu_ratio,
+            metrics.memory_ratio,
+            metrics.memory_available_mib,
+            metrics.gpu_util_ratio,
+            metrics.gpu_memory_used_mib,
+            metrics.jetson_gpu_memory_used_mib,
+        )
+    )
+
+
+async def load_prometheus_snapshot() -> PrometheusSnapshot:
+    global prometheus_cache
+    now = time.time()
+    if now - prometheus_cache.updated_at < PROMETHEUS_TTL_SECONDS:
+        return prometheus_cache
+
+    queries = {
+        "cpu_ratio": "instance:node_cpu_utilisation:rate5m",
+        "memory_ratio": "instance:node_memory_utilisation:ratio",
+        "memory_available": "node_memory_MemAvailable_bytes",
+        "memory_total": "node_memory_MemTotal_bytes",
+        "dcgm_gpu_util": "DCGM_FI_DEV_GPU_UTIL",
+        "dcgm_gpu_free": "DCGM_FI_DEV_FB_FREE",
+        "dcgm_gpu_used": "DCGM_FI_DEV_FB_USED",
+        "jetson_gpu_used": 'gpuram_kB{nvidia_gpu="mem"}',
+    }
+    try:
+        results = await asyncio.gather(
+            *(prometheus_query(query) for query in queries.values()),
+            return_exceptions=True,
+        )
+        nodes: dict[str, NodeMetrics] = {}
+        errors: list[str] = []
+        values_by_query: dict[str, dict[str, float]] = {}
+        for name, result in zip(queries.keys(), results, strict=False):
+            if isinstance(result, Exception):
+                errors.append(f"{name}: {result}")
+                values_by_query[name] = {}
+            else:
+                values_by_query[name] = prometheus_values_by_instance(result)
+
+        for node, value in values_by_query["cpu_ratio"].items():
+            ensure_node_metrics(nodes, node).cpu_ratio = clamp_ratio(value)
+        for node, value in values_by_query["memory_ratio"].items():
+            ensure_node_metrics(nodes, node).memory_ratio = clamp_ratio(value)
+        for node, value in values_by_query["memory_available"].items():
+            ensure_node_metrics(nodes, node).memory_available_mib = value / 1024 / 1024
+        for node, value in values_by_query["memory_total"].items():
+            ensure_node_metrics(nodes, node).memory_total_mib = value / 1024 / 1024
+        for node, value in values_by_query["dcgm_gpu_util"].items():
+            ensure_node_metrics(nodes, node).gpu_util_ratio = clamp_ratio(value / 100)
+        for node, value in values_by_query["dcgm_gpu_free"].items():
+            metrics = ensure_node_metrics(nodes, node)
+            metrics.gpu_memory_free_mib = (metrics.gpu_memory_free_mib or 0) + value
+        for node, value in values_by_query["dcgm_gpu_used"].items():
+            metrics = ensure_node_metrics(nodes, node)
+            metrics.gpu_memory_used_mib = (metrics.gpu_memory_used_mib or 0) + value
+        for node, value in values_by_query["jetson_gpu_used"].items():
+            ensure_node_metrics(nodes, node).jetson_gpu_memory_used_mib = value / 1024
+
+        for metrics in nodes.values():
+            if metrics.memory_ratio is None and metrics.memory_available_mib is not None and metrics.memory_total_mib:
+                metrics.memory_ratio = clamp_ratio(1 - metrics.memory_available_mib / metrics.memory_total_mib)
+
+        prometheus_cache = PrometheusSnapshot(
+            nodes=nodes,
+            error="; ".join(errors) if errors else None,
+            updated_at=now,
+        )
+    except Exception as error:  # noqa: BLE001
+        LOGGER.warning("failed to refresh prometheus metrics: %s", error)
+        prometheus_cache = PrometheusSnapshot(
+            nodes=prometheus_cache.nodes,
+            error=str(error),
+            updated_at=now,
+        )
+    return prometheus_cache
+
+
+def ready_pods_for(candidate: Candidate, snapshot: K8sSnapshot) -> list[K8sPod]:
+    ready_pods: list[K8sPod] = []
+    for service_name in candidate.service_names:
+        pods = snapshot.pods_by_service.get(service_key(candidate.k8s_namespace, service_name), [])
+        ready_pods.extend(pod for pod in pods if pod.running and pod.ready)
+        if ready_pods:
+            break
+    return ready_pods
+
+
+async def endpoint_health(candidate: Candidate) -> EndpointHealth:
+    if candidate.backend_type not in ENDPOINT_HEALTH_BACKENDS:
+        return EndpointHealth(ready=False, error="endpoint-health-disabled", updated_at=time.time())
+
+    now = time.time()
+    cached = endpoint_health_cache.get(candidate.model_id)
+    if cached and now - cached.updated_at < ENDPOINT_HEALTH_TTL_SECONDS:
+        return cached
+
+    assert http_client is not None
+    urls = [candidate.root_url.rstrip("/") + "/health", candidate.api_base.rstrip("/") + "/models"]
+    last_error = ""
+    for url in urls:
+        try:
+            response = await http_client.get(url, headers=backend_headers(), timeout=5)
+            if response.status_code < 500:
+                health = EndpointHealth(ready=response.status_code < 400, updated_at=now)
+                endpoint_health_cache[candidate.model_id] = health
+                return health
+            last_error = f"{url} status {response.status_code}"
+        except Exception as error:  # noqa: BLE001 - health probes should degrade the candidate, not the router
+            last_error = f"{url} {error}"
+
+    health = EndpointHealth(ready=False, error=last_error[:300], updated_at=now)
+    endpoint_health_cache[candidate.model_id] = health
+    return health
+
+
+def gpu_memory_ratio(metrics: NodeMetrics | None) -> float | None:
+    if metrics is None:
+        return None
+    if metrics.gpu_memory_used_mib is not None:
+        used = metrics.gpu_memory_used_mib
+        free = metrics.gpu_memory_free_mib or 0
+        total = used + free
+        if total > 0:
+            return clamp_ratio(used / total)
+    if metrics.jetson_gpu_memory_used_mib is not None and metrics.memory_total_mib:
+        return clamp_ratio(metrics.jetson_gpu_memory_used_mib / metrics.memory_total_mib)
+    return None
+
+
+def device_metric_score(metrics: NodeMetrics) -> float:
+    cpu = metrics.cpu_ratio if metrics.cpu_ratio is not None else 0.5
+    memory = metrics.memory_ratio if metrics.memory_ratio is not None else 0.5
+    gpu_util = metrics.gpu_util_ratio if metrics.gpu_util_ratio is not None else 0.0
+    gpu_memory = gpu_memory_ratio(metrics)
+    gpu_memory = gpu_memory if gpu_memory is not None else memory
+
+    score = 30 + cpu * 50 + memory * 80 + gpu_util * 50 + gpu_memory * 80
+    if metrics.memory_available_mib is not None:
+        if metrics.memory_available_mib < 1024:
+            score += 300
+        elif metrics.memory_available_mib < 2048:
+            score += 150
+    return score
+
+
+def candidate_score(
+    candidate: Candidate,
+    snapshot: K8sSnapshot,
+    state: CandidateState,
+    prometheus: PrometheusSnapshot | None = None,
+    endpoint_status: EndpointHealth | None = None,
+) -> tuple[float, str]:
+    now = time.time()
+    if state.cooldown_until > now:
+        return float("inf"), "cooldown"
+
+    ready_pods = ready_pods_for(candidate, snapshot)
+    if not ready_pods:
+        if endpoint_status and endpoint_status.ready:
+            return (
+                ENDPOINT_READY_SCORE
+                + NO_DEVICE_METRICS_PENALTY
+                + state.in_flight * 1000
+                + state.failure_count * 100,
+                "endpoint-ready",
+            )
+        if endpoint_status and endpoint_status.error:
+            return float("inf"), "endpoint-unhealthy"
+        return float("inf"), "no-ready-pod"
+
+    if candidate.backend_type == "llama_cpp":
+        device_scores = []
+        for pod in ready_pods:
+            metrics = prometheus.nodes.get(pod.node) if prometheus else None
+            if has_device_metrics(metrics):
+                assert metrics is not None
+                device_scores.append(device_metric_score(metrics))
+        if device_scores:
+            return min(device_scores) + state.in_flight * 1000 + state.failure_count * 100, "device-metrics"
+        return (
+            ENDPOINT_READY_SCORE
+            + NO_DEVICE_METRICS_PENALTY
+            + state.in_flight * 1000
+            + state.failure_count * 100,
+            "k8s-ready-no-device-metrics",
+        )
+
+    pod_scores = []
+    for pod in ready_pods:
+        cpu = pod.cpu_milli if pod.cpu_milli is not None else 500.0
+        memory = pod.memory_mib if pod.memory_mib is not None else 4096.0
+        pod_scores.append(cpu + memory * 0.02)
+
+    return min(pod_scores) + state.in_flight * 1000 + state.failure_count * 100, "ready"
+
+
+async def pick_candidate() -> tuple[Candidate, float, str]:
+    candidates = load_candidates()
+    if not candidates:
+        raise HTTPException(status_code=503, detail="No ModelNet chat candidates available")
+
+    snapshot, prometheus = await asyncio.gather(load_k8s_snapshot(), load_prometheus_snapshot())
+    endpoint_statuses: dict[str, EndpointHealth] = {}
+    endpoint_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.backend_type in ENDPOINT_HEALTH_BACKENDS and not ready_pods_for(candidate, snapshot)
+    ]
+    if endpoint_candidates:
+        health_results = await asyncio.gather(*(endpoint_health(candidate) for candidate in endpoint_candidates))
+        endpoint_statuses = {
+            candidate.model_id: health
+            for candidate, health in zip(endpoint_candidates, health_results, strict=False)
+        }
+
+    async with state_lock:
+        scored = []
+        for candidate in candidates:
+            state = states.setdefault(candidate.model_id, CandidateState())
+            score, reason = candidate_score(
+                candidate,
+                snapshot,
+                state,
+                prometheus,
+                endpoint_statuses.get(candidate.model_id),
+            )
+            scored.append((score, reason, candidate))
+        scored.sort(key=lambda item: (item[0], item[2].model_id))
+        best_score, reason, candidate = scored[0]
+        if best_score == float("inf"):
+            detail = ", ".join(f"{item[2].model_id}:{item[1]}" for item in scored[:8])
+            raise HTTPException(status_code=503, detail="No ready ModelNet backend: " + detail)
+        states[candidate.model_id].in_flight += 1
+        return candidate, best_score, reason
+
+
+async def release_candidate(candidate: Candidate, error: str | None = None) -> None:
+    async with state_lock:
+        state = states.setdefault(candidate.model_id, CandidateState())
+        state.in_flight = max(0, state.in_flight - 1)
+        if error:
+            state.failure_count += 1
+            state.cooldown_until = time.time() + FAIL_COOLDOWN_SECONDS
+            state.last_error = error[:300]
+        else:
+            state.failure_count = 0
+            state.last_error = ""
+
+
+def assert_authorized(authorization: str | None) -> None:
+    if not ROUTER_API_KEY or ROUTER_API_KEY == "none":
+        return
+    expected = "Bearer " + ROUTER_API_KEY
+    if authorization != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def backend_headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if BACKEND_API_KEY and BACKEND_API_KEY != "none":
+        headers["Authorization"] = "Bearer " + BACKEND_API_KEY
+    return headers
+
+
+def prepare_backend_body(candidate: Candidate, body: dict[str, Any]) -> dict[str, Any]:
+    prepared = dict(body)
+    prepared["model"] = candidate.backend_model
+    if candidate.backend_type == "llama_cpp":
+        prepared = {
+            key: value
+            for key, value in prepared.items()
+            if key in LLAMA_CPP_ALLOWED_BODY_KEYS or key.startswith("mirostat")
+        }
+        prepared["model"] = candidate.backend_model
+    return prepared
+
+
+def metric_label(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def best_ready_pod(candidate: Candidate, snapshot: K8sSnapshot) -> K8sPod | None:
+    ready_pods = ready_pods_for(candidate, snapshot)
+    return ready_pods[0] if ready_pods else None
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    global http_client
+    http_client = httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS, verify=False)
+    load_candidates()
+    await load_k8s_snapshot()
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    if http_client is not None:
+        await http_client.aclose()
+
+
+@app.get("/healthz")
+async def healthz() -> dict[str, Any]:
+    candidates = load_candidates()
+    snapshot, prometheus = await asyncio.gather(load_k8s_snapshot(), load_prometheus_snapshot())
+    ready = 0
+    by_backend: dict[str, dict[str, int]] = {}
+    endpoint_candidates: list[Candidate] = []
+    for candidate in candidates:
+        bucket = by_backend.setdefault(candidate.backend_type, {"candidates": 0, "ready": 0, "metrics_ready": 0})
+        bucket["candidates"] += 1
+        ready_pods = ready_pods_for(candidate, snapshot)
+        if ready_pods:
+            ready += 1
+            bucket["ready"] += 1
+            if candidate.backend_type == "llama_cpp" and any(
+                has_device_metrics(prometheus.nodes.get(pod.node)) for pod in ready_pods
+            ):
+                bucket["metrics_ready"] += 1
+        elif candidate.backend_type in ENDPOINT_HEALTH_BACKENDS:
+            endpoint_candidates.append(candidate)
+
+    if endpoint_candidates:
+        health_results = await asyncio.gather(*(endpoint_health(candidate) for candidate in endpoint_candidates))
+        for candidate, endpoint_status in zip(endpoint_candidates, health_results, strict=False):
+            if endpoint_status.ready:
+                ready += 1
+                by_backend[candidate.backend_type]["ready"] += 1
+
+    return {
+        "backends": by_backend,
+        "candidate_count": len(candidates),
+        "k8s_error": snapshot.error,
+        "prometheus_error": prometheus.error,
+        "ready_candidate_count": ready,
+        "status": "ok" if ready else "degraded",
+    }
+
+
+@app.get("/v1/models")
+async def models(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    assert_authorized(authorization)
+    return {
+        "data": [
+            {
+                "created": 0,
+                "id": PUBLIC_MODEL_NAME,
+                "object": "model",
+                "owned_by": "modelnet",
+            }
+        ],
+        "object": "list",
+    }
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> Response:
+    assert_authorized(authorization)
+    body = await request.json()
+    candidate, score, reason = await pick_candidate()
+    request_id = str(uuid.uuid4())
+    body = prepare_backend_body(candidate, body)
+    url = candidate.api_base.rstrip("/") + "/chat/completions"
+    snapshot = await load_k8s_snapshot()
+    routed_pod = best_ready_pod(candidate, snapshot)
+    LOGGER.info(
+        "route request_id=%s modelnet=%s backend=%s backend_type=%s service=%s node=%s score=%.2f reason=%s stream=%s",
+        request_id,
+        PUBLIC_MODEL_NAME,
+        candidate.model_id,
+        candidate.backend_type,
+        routed_pod.service_name if routed_pod else (candidate.service_names[0] if candidate.service_names else ""),
+        routed_pod.node if routed_pod else "",
+        score,
+        reason,
+        bool(body.get("stream")),
+    )
+
+    if body.get("stream"):
+        return StreamingResponse(
+            stream_backend(candidate, request_id, url, body),
+            media_type="text/event-stream",
+            headers={
+                "X-ModelNet-Backend": candidate.model_id,
+                "X-ModelNet-Backend-Type": candidate.backend_type,
+                "X-ModelNet-Request-ID": request_id,
+            },
+        )
+
+    try:
+        assert http_client is not None
+        response = await http_client.post(url, json=body, headers=backend_headers())
+        if response.status_code >= 500 or response.status_code in {408, 409, 425, 429}:
+            await release_candidate(candidate, f"backend status {response.status_code}")
+        else:
+            await release_candidate(candidate)
+        return Response(
+            content=response.content,
+            media_type=response.headers.get("content-type", "application/json"),
+            status_code=response.status_code,
+            headers={
+                "X-ModelNet-Backend": candidate.model_id,
+                "X-ModelNet-Backend-Type": candidate.backend_type,
+                "X-ModelNet-Request-ID": request_id,
+            },
+        )
+    except Exception as error:  # noqa: BLE001
+        await release_candidate(candidate, str(error))
+        LOGGER.exception("backend request failed request_id=%s backend=%s", request_id, candidate.model_id)
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+
+async def stream_backend(candidate: Candidate, request_id: str, url: str, body: dict[str, Any]):
+    error: str | None = None
+    try:
+        assert http_client is not None
+        async with http_client.stream("POST", url, json=body, headers=backend_headers()) as response:
+            if response.status_code >= 500 or response.status_code in {408, 409, 425, 429}:
+                error = f"backend status {response.status_code}"
+            async for chunk in response.aiter_bytes():
+                yield chunk
+    except Exception as exc:  # noqa: BLE001
+        error = str(exc)
+        LOGGER.exception("stream failed request_id=%s backend=%s", request_id, candidate.model_id)
+        yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n".encode()
+    finally:
+        await release_candidate(candidate, error)
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    candidates = load_candidates()
+    snapshot, prometheus = await asyncio.gather(load_k8s_snapshot(), load_prometheus_snapshot())
+    endpoint_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.backend_type in ENDPOINT_HEALTH_BACKENDS and not ready_pods_for(candidate, snapshot)
+    ]
+    endpoint_statuses: dict[str, EndpointHealth] = {}
+    if endpoint_candidates:
+        health_results = await asyncio.gather(*(endpoint_health(candidate) for candidate in endpoint_candidates))
+        endpoint_statuses = {
+            candidate.model_id: health
+            for candidate, health in zip(endpoint_candidates, health_results, strict=False)
+        }
+
+    lines = [
+        "# HELP modelnet_router_candidate_score Current routing score per candidate.",
+        "# TYPE modelnet_router_candidate_score gauge",
+        "# HELP modelnet_router_in_flight In-flight requests per candidate.",
+        "# TYPE modelnet_router_in_flight gauge",
+        "# HELP modelnet_router_ready_pods Ready K8S pods per candidate.",
+        "# TYPE modelnet_router_ready_pods gauge",
+        "# HELP modelnet_router_endpoint_ready Endpoint health fallback readiness per candidate.",
+        "# TYPE modelnet_router_endpoint_ready gauge",
+        "# HELP modelnet_router_node_cpu_ratio Node CPU utilisation ratio used for routing.",
+        "# TYPE modelnet_router_node_cpu_ratio gauge",
+        "# HELP modelnet_router_node_memory_ratio Node memory utilisation ratio used for routing.",
+        "# TYPE modelnet_router_node_memory_ratio gauge",
+        "# HELP modelnet_router_node_gpu_util_ratio Node GPU utilisation ratio used for routing.",
+        "# TYPE modelnet_router_node_gpu_util_ratio gauge",
+        "# HELP modelnet_router_node_gpu_memory_ratio Node GPU memory utilisation ratio used for routing.",
+        "# TYPE modelnet_router_node_gpu_memory_ratio gauge",
+    ]
+    for candidate in candidates:
+        state = states.setdefault(candidate.model_id, CandidateState())
+        endpoint_status = endpoint_statuses.get(candidate.model_id)
+        score, reason = candidate_score(candidate, snapshot, state, prometheus, endpoint_status)
+        ready_pods = len(ready_pods_for(candidate, snapshot))
+        pod = best_ready_pod(candidate, snapshot)
+        node = pod.node if pod else ""
+        node_metrics = prometheus.nodes.get(node) if node else None
+        score_value = -1 if score == float("inf") else score
+        service_label = pod.service_name if pod else (candidate.service_names[0] if candidate.service_names else "")
+        labels = (
+            f'candidate="{metric_label(candidate.model_id)}",'
+            f'backend_type="{metric_label(candidate.backend_type)}",'
+            f'service="{metric_label(service_label)}",'
+            f'node="{metric_label(node)}",'
+            f'reason="{metric_label(reason)}"'
+        )
+        lines.append(f"modelnet_router_candidate_score{{{labels}}} {score_value}")
+        lines.append(
+            f'modelnet_router_in_flight{{candidate="{metric_label(candidate.model_id)}",'
+            f'backend_type="{metric_label(candidate.backend_type)}"}} {state.in_flight}'
+        )
+        lines.append(
+            f'modelnet_router_ready_pods{{candidate="{metric_label(candidate.model_id)}",'
+            f'backend_type="{metric_label(candidate.backend_type)}"}} {ready_pods}'
+        )
+        if candidate.backend_type in ENDPOINT_HEALTH_BACKENDS:
+            endpoint_ready = 1 if endpoint_status and endpoint_status.ready else 0
+            lines.append(
+                f'modelnet_router_endpoint_ready{{candidate="{metric_label(candidate.model_id)}",'
+                f'backend_type="{metric_label(candidate.backend_type)}"}} {endpoint_ready}'
+            )
+        if node_metrics is not None:
+            if node_metrics.cpu_ratio is not None:
+                lines.append(f"modelnet_router_node_cpu_ratio{{{labels}}} {node_metrics.cpu_ratio}")
+            if node_metrics.memory_ratio is not None:
+                lines.append(f"modelnet_router_node_memory_ratio{{{labels}}} {node_metrics.memory_ratio}")
+            if node_metrics.gpu_util_ratio is not None:
+                lines.append(f"modelnet_router_node_gpu_util_ratio{{{labels}}} {node_metrics.gpu_util_ratio}")
+            node_gpu_memory_ratio = gpu_memory_ratio(node_metrics)
+            if node_gpu_memory_ratio is not None:
+                lines.append(f"modelnet_router_node_gpu_memory_ratio{{{labels}}} {node_gpu_memory_ratio}")
+    if snapshot.error:
+        lines.append(f'modelnet_router_k8s_error{{message="{metric_label(snapshot.error[:120])}"}} 1')
+    if prometheus.error:
+        lines.append(f'modelnet_router_prometheus_error{{message="{metric_label(prometheus.error[:120])}"}} 1')
+    return Response("\n".join(lines) + "\n", media_type="text/plain")
