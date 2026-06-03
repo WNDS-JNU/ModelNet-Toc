@@ -3,19 +3,23 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 from urllib.parse import quote
 
 import httpx
 import yaml
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+
+from modelnet_gateway.auth import GatewayTenant, authenticate_gateway, load_gateway_tenants
+from modelnet_gateway.schemas import EnsembleRequest, EnsembleSource, RouteRequest
 
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -32,10 +36,17 @@ PROMETHEUS_PORT = os.environ.get("MODELNET_PROMETHEUS_PORT", "9090")
 PUBLIC_MODEL_NAME = os.environ.get("MODELNET_ROUTER_MODEL_NAME", "modelnet")
 BACKEND_API_KEY = os.environ.get("MODELNET_BACKEND_API_KEY", "")
 ROUTER_API_KEY = os.environ.get("MODELNET_ROUTER_API_KEY", "")
+API_KEY_TENANTS = load_gateway_tenants(
+    api_keys_json=os.environ.get("MODELNET_API_KEYS_JSON", ""),
+    api_keys_csv=os.environ.get("MODELNET_API_KEYS", ""),
+    legacy_api_key=ROUTER_API_KEY,
+)
 METRICS_TTL_SECONDS = float(os.environ.get("MODELNET_METRICS_TTL_SECONDS", "5"))
 PROMETHEUS_TTL_SECONDS = float(os.environ.get("MODELNET_PROMETHEUS_TTL_SECONDS", "5"))
 FAIL_COOLDOWN_SECONDS = float(os.environ.get("MODELNET_FAIL_COOLDOWN_SECONDS", "30"))
 REQUEST_TIMEOUT_SECONDS = float(os.environ.get("MODELNET_BACKEND_TIMEOUT_SECONDS", "180"))
+ENSEMBLE_DEFAULT_MAX_TOKENS = int(os.environ.get("MODELNET_ENSEMBLE_DEFAULT_MAX_TOKENS", "256"))
+ENSEMBLE_MAX_SOURCES = int(os.environ.get("MODELNET_ENSEMBLE_MAX_SOURCES", "16"))
 
 CHAT_BACKENDS = {"vllm_chat", "llama_cpp"}
 ENDPOINT_HEALTH_BACKENDS = {"llama_cpp"}
@@ -78,6 +89,9 @@ class Candidate:
     root_url: str
     api_base: str
     service_names: tuple[str, ...]
+    eos: str = ""
+    expose_raw_logits: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -207,6 +221,22 @@ def is_embedding_model(model: dict[str, Any]) -> bool:
     return "embedding" in haystack or "embed" in haystack
 
 
+def coerce_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off", ""}:
+            return False
+    return default
+
+
 def slugify(value: str) -> str:
     text = value.rsplit("/", 1)[-1].lower()
     text = re.sub(r"[^a-z0-9]+", "-", text)
@@ -296,6 +326,13 @@ def load_candidates() -> list[Candidate]:
                 root_url=normalize_root_url(model_url),
                 api_base=normalize_api_base(model_url),
                 service_names=candidate_service_names(model, model_id, backend_model, backend_type),
+                eos=str(model.get("EOS") or model.get("eos") or ""),
+                expose_raw_logits=coerce_bool(model.get("expose_raw_logits")),
+                metadata={
+                    key: value
+                    for key, value in model.items()
+                    if key not in {"model_url", "api_key", "api_key_env"}
+                },
             )
         )
 
@@ -696,8 +733,23 @@ def candidate_score(
     return min(pod_scores) + state.in_flight * 1000 + state.failure_count * 100, "ready"
 
 
-async def pick_candidate() -> tuple[Candidate, float, str]:
+async def pick_candidate(
+    *,
+    tenant: GatewayTenant | None = None,
+    candidate_aliases: set[str] | None = None,
+    required_capabilities: set[str] | None = None,
+) -> tuple[Candidate, float, str]:
     candidates = load_candidates()
+    if tenant is not None:
+        candidates = [candidate for candidate in candidates if tenant.allows_model(candidate.model_id)]
+    if candidate_aliases:
+        candidates = [candidate for candidate in candidates if candidate.model_id in candidate_aliases]
+    if required_capabilities:
+        candidates = [
+            candidate
+            for candidate in candidates
+            if required_capabilities.issubset(set(candidate_capabilities(candidate)))
+        ]
     if not candidates:
         raise HTTPException(status_code=503, detail="No ModelNet chat candidates available")
 
@@ -749,12 +801,8 @@ async def release_candidate(candidate: Candidate, error: str | None = None) -> N
             state.last_error = ""
 
 
-def assert_authorized(authorization: str | None) -> None:
-    if not ROUTER_API_KEY or ROUTER_API_KEY == "none":
-        return
-    expected = "Bearer " + ROUTER_API_KEY
-    if authorization != expected:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+def assert_authorized(authorization: str | None) -> GatewayTenant:
+    return authenticate_gateway(authorization, API_KEY_TENANTS)
 
 
 def backend_headers() -> dict[str, str]:
@@ -775,6 +823,47 @@ def prepare_backend_body(candidate: Candidate, body: dict[str, Any]) -> dict[str
         }
         prepared["model"] = candidate.backend_model
     return prepared
+
+
+def candidate_capabilities(candidate: Candidate) -> list[str]:
+    base = {"chat_template", "streaming"}
+    if candidate.backend_type in {"vllm_chat", "llama_cpp"}:
+        base.update({"token_step", "top_probs"})
+    if candidate.expose_raw_logits:
+        base.add("logits_raw")
+    if coerce_bool(candidate.metadata.get("supports_vision")):
+        base.add("vision")
+    return sorted(base)
+
+
+def candidate_backend_info(
+    candidate: Candidate,
+    *,
+    score: float | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    metadata = dict(candidate.metadata)
+    metadata.update(
+        {
+            "k8s_namespace": candidate.k8s_namespace,
+            "service_names": list(candidate.service_names),
+        }
+    )
+    if score is not None and math.isfinite(score):
+        metadata["route_score"] = score
+    if reason:
+        metadata["route_reason"] = reason
+    return {
+        "id": candidate.model_id,
+        "backend": candidate.backend_type,
+        "model_name": candidate.backend_model,
+        "capabilities": candidate_capabilities(candidate),
+        "metadata": metadata,
+    }
+
+
+def visible_candidates(tenant: GatewayTenant) -> list[Candidate]:
+    return [candidate for candidate in load_candidates() if tenant.allows_model(candidate.model_id)]
 
 
 def metric_label(value: str) -> str:
@@ -859,9 +948,9 @@ async def chat_completions(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> Response:
-    assert_authorized(authorization)
+    tenant = assert_authorized(authorization)
     body = await request.json()
-    candidate, score, reason = await pick_candidate()
+    candidate, score, reason = await pick_candidate(tenant=tenant)
     request_id = str(uuid.uuid4())
     body = prepare_backend_body(candidate, body)
     url = candidate.api_base.rstrip("/") + "/chat/completions"
@@ -929,6 +1018,562 @@ async def stream_backend(candidate: Candidate, request_id: str, url: str, body: 
         yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n".encode()
     finally:
         await release_candidate(candidate, error)
+
+
+def sse(event: str, data: dict[str, Any]) -> bytes:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
+def sampling_value(source: EnsembleSource, key: str, default: Any = None) -> Any:
+    if key in source.sampling_params:
+        return source.sampling_params[key]
+    return default
+
+
+def sampling_top_k(source: EnsembleSource) -> int:
+    raw = sampling_value(source, "top_k", 5)
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 5
+
+
+def generation_max_tokens(source: EnsembleSource, default: int = ENSEMBLE_DEFAULT_MAX_TOKENS) -> int:
+    raw = sampling_value(source, "max_tokens", default)
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return default
+
+
+def generation_params(source: EnsembleSource, *, max_tokens: int | None = None) -> dict[str, Any]:
+    keys = ("temperature", "top_p", "stop", "seed")
+    out = {key: source.sampling_params[key] for key in keys if source.sampling_params.get(key) is not None}
+    out.update(source.extra)
+    if max_tokens is not None:
+        out["max_tokens"] = max_tokens
+    return out
+
+
+def message_list(source: EnsembleSource) -> list[dict[str, Any]]:
+    if source.messages:
+        return source.messages
+    return [{"role": "user", "content": source.prompt}]
+
+
+def naive_messages_to_prompt(messages: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for message in messages:
+        role = str(message.get("role") or "user")
+        content = message.get("content")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "\n".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
+        else:
+            text = str(content or "")
+        parts.append(f"{role}: {text}")
+    return "\n".join(parts)
+
+
+async def post_json(url: str, body: dict[str, Any]) -> Any:
+    assert http_client is not None
+    response = await http_client.post(url, json=body, headers=backend_headers())
+    response.raise_for_status()
+    return response.json()
+
+
+async def llama_apply_template(candidate: Candidate, messages: list[dict[str, Any]]) -> str:
+    try:
+        payload = await post_json(candidate.root_url.rstrip("/") + "/apply-template", {"messages": messages})
+    except Exception:  # noqa: BLE001 - fallback keeps non-template forks usable
+        return naive_messages_to_prompt(messages)
+    if isinstance(payload, dict) and isinstance(payload.get("prompt"), str):
+        return payload["prompt"]
+    return naive_messages_to_prompt(messages)
+
+
+def fallback_end_candidate() -> list[dict[str, Any]]:
+    return [{"token": "<end>", "prob": 0.01, "logit": None}]
+
+
+def normalize_candidate_token(value: Any, eos: str) -> str:
+    token = "" if value is None else str(value)
+    if token in {"", eos}:
+        return "<end>"
+    return token
+
+
+def coerce_logprob(value: Any) -> float | None:
+    if isinstance(value, dict):
+        value = value.get("logprob")
+    try:
+        logprob = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(logprob):
+        return None
+    return logprob
+
+
+def parse_logprob_map(raw: dict[str, Any], eos: str) -> list[tuple[str, float]]:
+    out: list[tuple[str, float]] = []
+    for token, value in raw.items():
+        logprob = coerce_logprob(value)
+        if logprob is not None:
+            out.append((normalize_candidate_token(token, eos), logprob))
+    return out
+
+
+def parse_logprob_items(raw: list[Any], eos: str) -> list[tuple[str, float]]:
+    if len(raw) == 1 and isinstance(raw[0], dict) and "token" not in raw[0]:
+        return parse_logprob_map(raw[0], eos)
+    out: list[tuple[str, float]] = []
+    for item in raw:
+        if isinstance(item, dict) and "token" in item:
+            logprob = coerce_logprob(item.get("logprob"))
+            if logprob is not None:
+                out.append((normalize_candidate_token(item.get("token"), eos), logprob))
+        elif isinstance(item, dict):
+            out.extend(parse_logprob_map(item, eos))
+    return out
+
+
+def first_top_logprobs(payload: dict[str, Any]) -> Any | None:
+    completion_probabilities = payload.get("completion_probabilities")
+    if isinstance(completion_probabilities, list) and completion_probabilities:
+        head = completion_probabilities[0]
+        if isinstance(head, dict) and "top_logprobs" in head:
+            return head["top_logprobs"]
+        if isinstance(head, dict) and "top_probs" in head:
+            return head["top_probs"]
+
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices:
+        choice = choices[0]
+        if isinstance(choice, dict):
+            logprobs = choice.get("logprobs")
+            if isinstance(logprobs, dict):
+                top_logprobs = logprobs.get("top_logprobs")
+                if isinstance(top_logprobs, list) and top_logprobs:
+                    return top_logprobs[0]
+                if top_logprobs is not None:
+                    return top_logprobs
+                content = logprobs.get("content")
+                if isinstance(content, list) and content:
+                    first = content[0]
+                    if isinstance(first, dict) and "top_logprobs" in first:
+                        return first["top_logprobs"]
+    return payload.get("top_logprobs")
+
+
+def parse_vllm_candidates(payload: dict[str, Any], eos: str) -> list[dict[str, Any]]:
+    raw = first_top_logprobs(payload)
+    if isinstance(raw, dict):
+        parsed = parse_logprob_map(raw, eos)
+    elif isinstance(raw, list):
+        parsed = parse_logprob_items(raw, eos)
+    else:
+        return fallback_end_candidate()
+    if not parsed:
+        return fallback_end_candidate()
+    pivot = max(logprob for _, logprob in parsed)
+    exp_values = [math.exp(logprob - pivot) for _, logprob in parsed]
+    total = sum(exp_values)
+    if total <= 0 or not math.isfinite(total):
+        prob = 1.0 / len(parsed)
+        return [{"token": token, "prob": prob, "logit": None} for token, _ in parsed]
+    return [
+        {"token": token, "prob": exp_value / total, "logit": None}
+        for (token, _), exp_value in zip(parsed, exp_values)
+    ]
+
+
+def parse_llama_candidates(payload: dict[str, Any], eos: str, *, raw_logits: bool = False) -> list[dict[str, Any]]:
+    completion_probabilities = payload.get("completion_probabilities")
+    if not isinstance(completion_probabilities, list) or not completion_probabilities:
+        return [] if raw_logits else fallback_end_candidate()
+    head = completion_probabilities[0]
+    if not isinstance(head, dict):
+        return [] if raw_logits else fallback_end_candidate()
+    raw_top = head.get("top_logprobs") if raw_logits else head.get("top_probs")
+    if raw_top is None:
+        raw_top = head.get("top_probs")
+    if not isinstance(raw_top, list):
+        return [] if raw_logits else fallback_end_candidate()
+    out: list[dict[str, Any]] = []
+    if raw_logits:
+        logits: list[float] = []
+        tokens: list[str] = []
+        for item in raw_top:
+            if not isinstance(item, dict):
+                continue
+            raw_logit = item.get("logit", item.get("raw_logit"))
+            try:
+                logit = float(raw_logit)
+            except (TypeError, ValueError):
+                continue
+            tokens.append(normalize_candidate_token(item.get("token"), eos))
+            logits.append(logit)
+        if not logits:
+            return []
+        pivot = max(logits)
+        exp_values = [math.exp(value - pivot) for value in logits]
+        total = sum(exp_values) or 1.0
+        return [
+            {"token": token, "prob": exp_value / total, "logit": logit}
+            for token, logit, exp_value in zip(tokens, logits, exp_values)
+        ]
+    for item in raw_top:
+        if not isinstance(item, dict):
+            continue
+        try:
+            prob = float(item.get("prob", 0.0))
+        except (TypeError, ValueError):
+            prob = 0.0
+        out.append({"token": normalize_candidate_token(item.get("token"), eos), "prob": prob, "logit": None})
+    return out or fallback_end_candidate()
+
+
+async def step_token(candidate: Candidate, source: EnsembleSource, state: dict[str, Any]) -> list[dict[str, Any]]:
+    top_k = sampling_top_k(source)
+    params = generation_params(source)
+    if candidate.backend_type == "vllm_chat":
+        messages = list(state["messages"])
+        assistant_prefix = state["generated"]
+        body: dict[str, Any] = {
+            "model": candidate.backend_model,
+            "messages": messages,
+            "max_tokens": 1,
+            "logprobs": True,
+            "top_logprobs": top_k,
+            **params,
+        }
+        if assistant_prefix:
+            body["messages"] = [*messages, {"role": "assistant", "content": assistant_prefix}]
+            body["continue_final_message"] = True
+            body["add_generation_prompt"] = False
+        else:
+            body["add_generation_prompt"] = True
+        payload = await post_json(candidate.api_base.rstrip("/") + "/chat/completions", body)
+        return parse_vllm_candidates(payload if isinstance(payload, dict) else {}, candidate.eos)
+
+    body = {
+        "prompt": state["prompt"] + state["generated"],
+        "max_tokens": 1,
+        "n_probs": top_k,
+        "post_sampling_probs": not candidate.expose_raw_logits,
+        **params,
+    }
+    payload = await post_json(candidate.root_url.rstrip("/") + "/completion", body)
+    return parse_llama_candidates(payload if isinstance(payload, dict) else {}, candidate.eos, raw_logits=candidate.expose_raw_logits)
+
+
+def aggregate_token(
+    source_candidates: dict[str, list[dict[str, Any]]],
+    sources: dict[str, EnsembleSource],
+    aggregator: str,
+) -> tuple[str, dict[str, float]]:
+    scores: dict[str, float] = {}
+    for source_id, candidates in source_candidates.items():
+        weight = sources[source_id].weight
+        for candidate in candidates:
+            token = str(candidate.get("token", ""))
+            if not token:
+                continue
+            score = float(candidate.get("prob") or 0.0) * weight
+            if aggregator == "max_score":
+                scores[token] = max(scores.get(token, 0.0), score)
+            else:
+                scores[token] = scores.get(token, 0.0) + score
+    if not scores:
+        return "<end>", {}
+    return max(scores.items(), key=lambda item: (item[1], item[0]))[0], scores
+
+
+async def generate_text(candidate: Candidate, source: EnsembleSource, *, prompt_override: str | None = None) -> dict[str, Any]:
+    max_tokens = generation_max_tokens(source)
+    params = generation_params(source, max_tokens=max_tokens)
+    if candidate.backend_type == "vllm_chat":
+        messages = message_list(source)
+        if prompt_override is not None:
+            messages = [*messages, {"role": "user", "content": prompt_override}]
+        body = {
+            "model": candidate.backend_model,
+            "messages": messages,
+            "stream": False,
+            **params,
+        }
+        payload = await post_json(candidate.api_base.rstrip("/") + "/chat/completions", body)
+        choice = ((payload.get("choices") or [{}])[0] if isinstance(payload, dict) else {})
+        message = choice.get("message") if isinstance(choice, dict) else {}
+        return {
+            "text": message.get("content", "") if isinstance(message, dict) else "",
+            "metadata": {"usage": payload.get("usage")} if isinstance(payload, dict) else {},
+        }
+
+    prompt = prompt_override if prompt_override is not None else source.prompt
+    if source.messages and prompt_override is None:
+        prompt = await llama_apply_template(candidate, source.messages)
+    body = {
+        "prompt": prompt,
+        "stream": False,
+        **params,
+    }
+    payload = await post_json(candidate.root_url.rstrip("/") + "/completion", body)
+    text = ""
+    if isinstance(payload, dict):
+        text = str(payload.get("content") or payload.get("text") or "")
+    return {"text": text, "metadata": {}}
+
+
+async def pick_source_candidate(tenant: GatewayTenant, source: EnsembleSource) -> tuple[Candidate, float, str]:
+    aliases = {source.model_alias} if source.model_alias else None
+    return await pick_candidate(tenant=tenant, candidate_aliases=aliases)
+
+
+async def run_token_step_ensemble(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
+    if len(request.sources) > ENSEMBLE_MAX_SOURCES:
+        yield sse("error", {"error": f"too many sources; max={ENSEMBLE_MAX_SOURCES}"})
+        return
+    max_len = int(request.runner_config.get("max_len") or ENSEMBLE_DEFAULT_MAX_TOKENS)
+    max_len = max(1, max_len)
+    picked: dict[str, Candidate] = {}
+    source_by_id = {source.source_id: source for source in request.sources}
+    states_by_id: dict[str, dict[str, Any]] = {}
+    started = time.perf_counter()
+    text = ""
+    error_count = 0
+    try:
+        for source in request.sources:
+            candidate, score, reason = await pick_source_candidate(tenant, source)
+            picked[source.source_id] = candidate
+            if candidate.backend_type == "llama_cpp":
+                prompt = await llama_apply_template(candidate, source.messages) if source.messages else source.prompt
+                states_by_id[source.source_id] = {"prompt": prompt, "generated": ""}
+            else:
+                states_by_id[source.source_id] = {"messages": message_list(source), "generated": ""}
+            yield sse(
+                "source_selected",
+                {
+                    "source_id": source.source_id,
+                    "backend": candidate_backend_info(candidate, score=score, reason=reason),
+                },
+            )
+
+        for step in range(max_len):
+            tasks = {
+                source_id: step_token(picked[source_id], source_by_id[source_id], states_by_id[source_id])
+                for source_id in source_by_id
+            }
+            results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+            source_candidates: dict[str, list[dict[str, Any]]] = {}
+            errors: dict[str, str] = {}
+            for source_id, result in zip(tasks.keys(), results, strict=False):
+                if isinstance(result, Exception):
+                    errors[source_id] = str(result)
+                    error_count += 1
+                    continue
+                source_candidates[source_id] = result
+            token, scores = aggregate_token(source_candidates, source_by_id, request.aggregator)
+            trace_payload = {
+                "step": step,
+                "selected_token": token,
+                "scores": scores if request.diagnostics.include_scores else {},
+                "candidates": source_candidates if request.diagnostics.include_candidates else {},
+                "errors": errors,
+            }
+            if request.diagnostics.enable_trace_stream and tenant.trace_allowed:
+                yield sse("trace_step", trace_payload)
+            if token == "<end>":
+                break
+            text += token
+            for state in states_by_id.values():
+                state["generated"] += token
+            yield sse("token", {"delta": token, "text": text})
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        yield sse(
+            "done",
+            {
+                "text": text,
+                "metadata": {
+                    "runner": request.runner,
+                    "aggregator": request.aggregator,
+                    "elapsed_ms": elapsed_ms,
+                    "tokens_count": len(text),
+                    "trace_summary": {"error_count": error_count, "backend_count": len(picked)},
+                },
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("ensemble token_step failed request_id=%s", request.request_id)
+        yield sse("error", {"error": str(exc)})
+    finally:
+        for candidate in picked.values():
+            await release_candidate(candidate)
+
+
+async def run_route_ensemble(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
+    source = request.sources[0]
+    candidate, score, reason = await pick_source_candidate(tenant, source)
+    try:
+        result = await generate_text(candidate, source)
+        text = result["text"]
+        yield sse("source_selected", {"source_id": source.source_id, "backend": candidate_backend_info(candidate, score=score, reason=reason)})
+        yield sse("token", {"delta": text, "text": text})
+        yield sse("done", {"text": text, "metadata": {"runner": request.runner, "aggregator": request.aggregator, **result["metadata"]}})
+    except Exception as exc:  # noqa: BLE001
+        await release_candidate(candidate, str(exc))
+        yield sse("error", {"error": str(exc)})
+        return
+    await release_candidate(candidate)
+
+
+async def run_dynamic_collab_ensemble(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
+    picked: dict[str, Candidate] = {}
+    try:
+        answer = ""
+        for index, source in enumerate(request.sources):
+            candidate, score, reason = await pick_source_candidate(tenant, source)
+            picked[source.source_id] = candidate
+            yield sse("source_selected", {"source_id": source.source_id, "backend": candidate_backend_info(candidate, score=score, reason=reason)})
+            prompt_override = None
+            if index > 0:
+                prompt_override = (
+                    "Review the current answer. Return an improved final answer if needed; "
+                    "otherwise return the same answer.\n\nCurrent answer:\n"
+                    + answer
+                )
+            result = await generate_text(candidate, source, prompt_override=prompt_override)
+            answer = result["text"] or answer
+            yield sse("full_response", {"source_id": source.source_id, "text": answer})
+        yield sse("token", {"delta": answer, "text": answer})
+        yield sse("done", {"text": answer, "metadata": {"runner": request.runner, "aggregator": request.aggregator}})
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("ensemble dynamic route failed request_id=%s", request.request_id)
+        yield sse("error", {"error": str(exc)})
+    finally:
+        for candidate in picked.values():
+            await release_candidate(candidate)
+
+
+async def run_ensemble_stream(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
+    if not tenant.allows_runner(request.runner):
+        yield sse("error", {"error": f"runner '{request.runner}' is not allowed for tenant '{tenant.tenant_id}'"})
+        return
+    if not tenant.allows_aggregator(request.aggregator):
+        yield sse("error", {"error": f"aggregator '{request.aggregator}' is not allowed for tenant '{tenant.tenant_id}'"})
+        return
+    yield sse("run_started", {"request_id": request.request_id, "tenant_id": tenant.tenant_id, "runner": request.runner})
+    if request.runner == "token_step":
+        async for event in run_token_step_ensemble(request, tenant):
+            yield event
+        return
+    if request.runner == "dynamic_collab_route":
+        async for event in run_dynamic_collab_ensemble(request, tenant):
+            yield event
+        return
+    async for event in run_route_ensemble(request, tenant):
+        yield event
+
+
+@app.get("/v1/registry/status")
+async def registry_status(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    tenant = assert_authorized(authorization)
+    candidates = visible_candidates(tenant)
+    mtime = REGISTRY_PATH.stat().st_mtime if REGISTRY_PATH.exists() else None
+    return {
+        "registry_path": str(REGISTRY_PATH),
+        "registry_mtime": mtime,
+        "tenant_id": tenant.tenant_id,
+        "models": [candidate_backend_info(candidate) for candidate in candidates],
+    }
+
+
+@app.post("/v1/registry/refresh")
+async def registry_refresh(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    tenant = assert_authorized(authorization)
+    global registry_cache, k8s_cache, prometheus_cache
+    registry_cache = (0, [])
+    k8s_cache = K8sSnapshot()
+    prometheus_cache = PrometheusSnapshot()
+    candidates = visible_candidates(tenant)
+    return {"status": "ok", "tenant_id": tenant.tenant_id, "candidate_count": len(candidates)}
+
+
+@app.post("/v1/routing/route")
+async def route_candidate(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    tenant = assert_authorized(authorization)
+    route_request = RouteRequest.model_validate(await request.json())
+    aliases = set(route_request.candidate_aliases or []) or None
+    required_capabilities = {capability for capability in route_request.required_capabilities if capability}
+    candidate, score, reason = await pick_candidate(
+        tenant=tenant,
+        candidate_aliases=aliases,
+        required_capabilities=required_capabilities or None,
+    )
+    await release_candidate(candidate)
+    return {
+        "selected": candidate_backend_info(candidate, score=score, reason=reason),
+        "source_id": route_request.source_id,
+        "strategy": route_request.strategy,
+    }
+
+
+@app.get("/v1/topology/snapshot")
+async def topology_snapshot(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    tenant = assert_authorized(authorization)
+    candidates = visible_candidates(tenant)
+    snapshot, prometheus = await asyncio.gather(load_k8s_snapshot(), load_prometheus_snapshot())
+    models = []
+    for candidate in candidates:
+        ready_pods = ready_pods_for(candidate, snapshot)
+        models.append(
+            {
+                **candidate_backend_info(candidate),
+                "ready_pods": [
+                    {
+                        "namespace": pod.namespace,
+                        "name": pod.name,
+                        "node": pod.node,
+                        "service_name": pod.service_name,
+                        "cpu_milli": pod.cpu_milli,
+                        "memory_mib": pod.memory_mib,
+                    }
+                    for pod in ready_pods
+                ],
+            }
+        )
+    return {
+        "generated_at": time.time(),
+        "tenant_id": tenant.tenant_id,
+        "models": models,
+        "nodes": {
+            node: metrics.__dict__
+            for node, metrics in prometheus.nodes.items()
+        },
+        "errors": [err for err in (snapshot.error, prometheus.error) if err],
+    }
+
+
+@app.post("/v1/ensemble/stream")
+async def ensemble_stream(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> StreamingResponse:
+    tenant = assert_authorized(authorization)
+    payload = await request.json()
+    ensemble_request = EnsembleRequest.model_validate(payload)
+    if not ensemble_request.request_id:
+        ensemble_request = ensemble_request.model_copy(update={"request_id": str(uuid.uuid4())})
+    return StreamingResponse(
+        run_ensemble_stream(ensemble_request, tenant),
+        media_type="text/event-stream",
+        headers={"X-ModelNet-Request-ID": ensemble_request.request_id},
+    )
 
 
 @app.get("/metrics")
