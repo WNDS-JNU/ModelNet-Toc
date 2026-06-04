@@ -47,6 +47,11 @@ FAIL_COOLDOWN_SECONDS = float(os.environ.get("MODELNET_FAIL_COOLDOWN_SECONDS", "
 REQUEST_TIMEOUT_SECONDS = float(os.environ.get("MODELNET_BACKEND_TIMEOUT_SECONDS", "180"))
 ENSEMBLE_DEFAULT_MAX_TOKENS = int(os.environ.get("MODELNET_ENSEMBLE_DEFAULT_MAX_TOKENS", "256"))
 ENSEMBLE_MAX_SOURCES = int(os.environ.get("MODELNET_ENSEMBLE_MAX_SOURCES", "16"))
+ENSEMBLE_THINK_MAX_TOKENS = int(os.environ.get("MODELNET_ENSEMBLE_THINK_MAX_TOKENS", "1024"))
+ENSEMBLE_THINK_FINAL_ANSWER_INSTRUCTION = os.environ.get(
+    "MODELNET_ENSEMBLE_THINK_FINAL_ANSWER_INSTRUCTION",
+    "Now provide only the final answer. Do not include reasoning, analysis, hidden thinking, or headings. /no_think",
+)
 
 CHAT_BACKENDS = {"vllm_chat", "llama_cpp"}
 ENDPOINT_HEALTH_BACKENDS = {"llama_cpp"}
@@ -1038,12 +1043,16 @@ def sampling_top_k(source: EnsembleSource) -> int:
         return 5
 
 
-def generation_max_tokens(source: EnsembleSource, default: int = ENSEMBLE_DEFAULT_MAX_TOKENS) -> int:
-    raw = sampling_value(source, "max_tokens", default)
+def positive_int(value: Any, default: int) -> int:
     try:
-        return max(1, int(raw))
+        return max(1, int(value))
     except (TypeError, ValueError):
         return default
+
+
+def generation_max_tokens(source: EnsembleSource, default: int = ENSEMBLE_DEFAULT_MAX_TOKENS) -> int:
+    raw = sampling_value(source, "max_tokens", default)
+    return positive_int(raw, default)
 
 
 def generation_params(source: EnsembleSource, *, max_tokens: int | None = None) -> dict[str, Any]:
@@ -1053,6 +1062,91 @@ def generation_params(source: EnsembleSource, *, max_tokens: int | None = None) 
     if max_tokens is not None:
         out["max_tokens"] = max_tokens
     return out
+
+
+def stop_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item)]
+    return [str(value)] if str(value) else []
+
+
+def merge_stop_marker(existing: Any, marker: str) -> str | list[str]:
+    stops = stop_values(existing)
+    if marker and marker not in stops:
+        stops.append(marker)
+    if len(stops) == 1:
+        return stops[0]
+    return stops
+
+
+def think_stop_marker(candidate: Candidate) -> str | None:
+    if str(candidate.metadata.get("type") or "").strip().lower() != "think":
+        return None
+    marker = str(candidate.metadata.get("stop_think") or "").strip()
+    return marker or None
+
+
+def append_think_stop_marker(text: str, marker: str) -> tuple[str, str]:
+    if marker in text:
+        think_text = text.split(marker, 1)[0]
+    else:
+        think_text = text
+    return think_text, think_text + marker
+
+
+def chat_message_text(payload: Any) -> str:
+    choice = ((payload.get("choices") or [{}])[0] if isinstance(payload, dict) else {})
+    message = choice.get("message") if isinstance(choice, dict) else {}
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
+    return ""
+
+
+def think_final_answer_instruction(request: EnsembleRequest) -> str:
+    raw = request.runner_config.get(
+        "think_final_answer_instruction",
+        ENSEMBLE_THINK_FINAL_ANSWER_INSTRUCTION,
+    )
+    if raw is None or raw is False:
+        return ""
+    return str(raw)
+
+
+def prepare_answer_state_after_think(
+    candidate: Candidate,
+    state: dict[str, Any],
+    *,
+    think_text: str,
+    instruction: str,
+) -> None:
+    if candidate.backend_type == "vllm_chat":
+        messages = list(state["messages"])
+        if think_text:
+            messages.append({"role": "assistant", "content": think_text})
+        if instruction:
+            messages.append({"role": "user", "content": instruction})
+        state["messages"] = messages
+        state["generated"] = ""
+        state["disable_thinking"] = True
+        return
+
+    prompt_parts = [str(state.get("prompt") or "")]
+    if think_text:
+        prompt_parts.append("\nassistant: " + think_text)
+    if instruction:
+        prompt_parts.append("\nuser: " + instruction + "\nassistant: ")
+    state["prompt"] = "".join(prompt_parts)
+    state["generated"] = ""
+    state["disable_thinking"] = True
 
 
 def message_list(source: EnsembleSource) -> list[dict[str, Any]]:
@@ -1079,7 +1173,13 @@ def naive_messages_to_prompt(messages: list[dict[str, Any]]) -> str:
 async def post_json(url: str, body: dict[str, Any]) -> Any:
     assert http_client is not None
     response = await http_client.post(url, json=body, headers=backend_headers())
-    response.raise_for_status()
+    if response.is_error:
+        detail = response.text[:500]
+        raise httpx.HTTPStatusError(
+            f"{response.status_code} {response.reason_phrase} for {url}: {detail}",
+            request=response.request,
+            response=response,
+        )
     return response.json()
 
 
@@ -1249,6 +1349,8 @@ async def step_token(candidate: Candidate, source: EnsembleSource, state: dict[s
             "top_logprobs": top_k,
             **params,
         }
+        if state.get("disable_thinking"):
+            body["chat_template_kwargs"] = {"enable_thinking": False}
         if assistant_prefix:
             body["messages"] = [*messages, {"role": "assistant", "content": assistant_prefix}]
             body["continue_final_message"] = True
@@ -1267,6 +1369,252 @@ async def step_token(candidate: Candidate, source: EnsembleSource, state: dict[s
     }
     payload = await post_json(candidate.root_url.rstrip("/") + "/completion", body)
     return parse_llama_candidates(payload if isinstance(payload, dict) else {}, candidate.eos, raw_logits=candidate.expose_raw_logits)
+
+
+async def generate_think_suffix(
+    candidate: Candidate,
+    source: EnsembleSource,
+    state: dict[str, Any],
+    stop_think: str,
+    max_tokens: int,
+) -> dict[str, Any]:
+    attempts: list[int] = []
+    for value in (max_tokens, 4096, 2048, 1024, 512, 256):
+        if value > 0 and value not in attempts:
+            attempts.append(value)
+
+    last_error: Exception | None = None
+    for attempt_max_tokens in attempts:
+        try:
+            result = await generate_think_suffix_once(
+                candidate,
+                source,
+                state,
+                stop_think,
+                max_tokens=attempt_max_tokens,
+            )
+            result["max_tokens"] = attempt_max_tokens
+            return result
+        except httpx.HTTPStatusError as exc:
+            last_error = exc
+            if exc.response.status_code not in {400, 422}:
+                raise
+            LOGGER.warning(
+                "think prepass retry request max_tokens=%s failed backend=%s status=%s",
+                attempt_max_tokens,
+                candidate.model_id,
+                exc.response.status_code,
+            )
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("think prepass has no max_tokens attempts")
+
+
+async def generate_think_suffix_once(
+    candidate: Candidate,
+    source: EnsembleSource,
+    state: dict[str, Any],
+    stop_think: str,
+    *,
+    max_tokens: int,
+) -> dict[str, Any]:
+    start = time.perf_counter()
+    params = generation_params(source, max_tokens=max_tokens)
+    params["stop"] = merge_stop_marker(params.get("stop"), stop_think)
+
+    if candidate.backend_type == "vllm_chat":
+        messages = list(state["messages"])
+        assistant_prefix = str(state.get("generated") or "")
+        body: dict[str, Any] = {
+            "model": candidate.backend_model,
+            "messages": messages,
+            "stream": False,
+            **params,
+        }
+        if assistant_prefix:
+            body["messages"] = [*messages, {"role": "assistant", "content": assistant_prefix}]
+            body["continue_final_message"] = True
+            body["add_generation_prompt"] = False
+        else:
+            body["add_generation_prompt"] = True
+        payload = await post_json(candidate.api_base.rstrip("/") + "/chat/completions", body)
+        think_text, suffix = append_think_stop_marker(chat_message_text(payload), stop_think)
+    else:
+        payload = await post_json(
+            candidate.root_url.rstrip("/") + "/completion",
+            {
+                "prompt": str(state.get("prompt") or "") + str(state.get("generated") or ""),
+                "stream": False,
+                **params,
+            },
+        )
+        text = str(payload.get("content") or payload.get("text") or "") if isinstance(payload, dict) else ""
+        think_text, suffix = append_think_stop_marker(text, stop_think)
+
+    return {
+        "elapsed_ms": int((time.perf_counter() - start) * 1000),
+        "stop_think": stop_think,
+        "suffix": suffix,
+        "think_text": think_text,
+        "think_chars": len(think_text),
+    }
+
+
+async def run_think_prepass(
+    request: EnsembleRequest,
+    picked: dict[str, Candidate],
+    source_by_id: dict[str, EnsembleSource],
+    states_by_id: dict[str, dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], int]:
+    if not coerce_bool(request.runner_config.get("enable_think"), default=True):
+        return {}, 0
+
+    tasks: dict[str, Any] = {}
+    think_max_tokens = positive_int(
+        request.runner_config.get("think_max_tokens", ENSEMBLE_THINK_MAX_TOKENS),
+        ENSEMBLE_THINK_MAX_TOKENS,
+    )
+    answer_instruction = think_final_answer_instruction(request)
+    for source_id, candidate in picked.items():
+        marker = think_stop_marker(candidate)
+        if marker is None:
+            continue
+        tasks[source_id] = generate_think_suffix(
+            candidate,
+            source_by_id[source_id],
+            states_by_id[source_id],
+            marker,
+            think_max_tokens,
+        )
+    if not tasks:
+        return {}, 0
+
+    summary: dict[str, dict[str, Any]] = {}
+    error_count = 0
+    results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+    for source_id, result in zip(tasks.keys(), results, strict=False):
+        candidate = picked[source_id]
+        if isinstance(result, Exception):
+            error_count += 1
+            summary[source_id] = {
+                "backend": candidate.model_id,
+                "error": str(result),
+                "status": "failed",
+            }
+            LOGGER.warning(
+                "think prepass failed request_id=%s source_id=%s backend=%s error=%s",
+                request.request_id,
+                source_id,
+                candidate.model_id,
+                result,
+            )
+            continue
+
+        suffix = str(result.get("suffix") or "")
+        think_text = str(result.get("think_text") or "")
+        if suffix or think_text or answer_instruction:
+            prepare_answer_state_after_think(
+                candidate,
+                states_by_id[source_id],
+                think_text=think_text,
+                instruction=answer_instruction,
+            )
+        summary[source_id] = {
+            "answer_instruction_chars": len(answer_instruction),
+            "backend": candidate.model_id,
+            "elapsed_ms": int(result.get("elapsed_ms") or 0),
+            "max_tokens": int(result.get("max_tokens") or 0),
+            "status": "success",
+            "stop_think": result.get("stop_think"),
+            "think_chars": int(result.get("think_chars") or 0),
+        }
+    return summary, error_count
+
+
+async def warmup_after_think(
+    source_id: str,
+    candidate: Candidate,
+    source: EnsembleSource,
+    state: dict[str, Any],
+    *,
+    max_steps: int,
+) -> dict[str, Any]:
+    skipped_tokens = 0
+    skipped_chars = 0
+    for _ in range(max_steps):
+        candidates = await step_token(candidate, source, state)
+        token, _ = aggregate_token({source_id: candidates}, {source_id: source}, "sum_score")
+        if token == "<end>":
+            return {
+                "warmup_status": "disabled",
+                "warmup_reason": "ended_after_think",
+                "warmup_skipped_chars": skipped_chars,
+                "warmup_skipped_tokens": skipped_tokens,
+            }
+        if token.strip():
+            return {
+                "warmup_status": "ready",
+                "warmup_skipped_chars": skipped_chars,
+                "warmup_skipped_tokens": skipped_tokens,
+            }
+        state["generated"] += token
+        skipped_tokens += 1
+        skipped_chars += len(token)
+    return {
+        "warmup_status": "disabled",
+        "warmup_reason": "only_whitespace_after_think",
+        "warmup_skipped_chars": skipped_chars,
+        "warmup_skipped_tokens": skipped_tokens,
+    }
+
+
+async def warmup_think_sources(
+    request: EnsembleRequest,
+    picked: dict[str, Candidate],
+    source_by_id: dict[str, EnsembleSource],
+    states_by_id: dict[str, dict[str, Any]],
+    think_summary: dict[str, dict[str, Any]],
+) -> tuple[set[str], int]:
+    max_steps = positive_int(
+        request.runner_config.get("think_skip_leading_whitespace_steps", 16),
+        16,
+    )
+    disabled: set[str] = set()
+    error_count = 0
+    for source_id, summary in think_summary.items():
+        if summary.get("status") != "success":
+            disabled.add(source_id)
+            continue
+        try:
+            warmup = await warmup_after_think(
+                source_id,
+                picked[source_id],
+                source_by_id[source_id],
+                states_by_id[source_id],
+                max_steps=max_steps,
+            )
+        except Exception as exc:  # noqa: BLE001
+            error_count += 1
+            disabled.add(source_id)
+            summary.update(
+                {
+                    "error": str(exc),
+                    "status": "failed",
+                    "warmup_status": "failed",
+                }
+            )
+            LOGGER.warning(
+                "think warmup failed request_id=%s source_id=%s backend=%s error=%s",
+                request.request_id,
+                source_id,
+                picked[source_id].model_id,
+                exc,
+            )
+            continue
+        summary.update(warmup)
+        if warmup.get("warmup_status") == "disabled":
+            disabled.add(source_id)
+    return disabled, error_count
 
 
 def aggregate_token(
@@ -1344,6 +1692,17 @@ async def run_token_step_ensemble(request: EnsembleRequest, tenant: GatewayTenan
     started = time.perf_counter()
     text = ""
     error_count = 0
+    think_summary: dict[str, dict[str, Any]] = {}
+    max_consecutive_whitespace_tokens = positive_int(
+        request.runner_config.get("max_consecutive_whitespace_tokens", 3),
+        3,
+    )
+    max_leading_whitespace_tokens = positive_int(
+        request.runner_config.get("max_leading_whitespace_tokens", 8),
+        8,
+    )
+    consecutive_whitespace_tokens = 0
+    stopped_by = "max_len"
     try:
         for source in request.sources:
             candidate, score, reason = await pick_source_candidate(tenant, source)
@@ -1361,10 +1720,42 @@ async def run_token_step_ensemble(request: EnsembleRequest, tenant: GatewayTenan
                 },
             )
 
+        think_summary, think_error_count = await run_think_prepass(
+            request,
+            picked,
+            source_by_id,
+            states_by_id,
+        )
+        error_count += think_error_count
+        warmup_disabled_source_ids, warmup_error_count = await warmup_think_sources(
+            request,
+            picked,
+            source_by_id,
+            states_by_id,
+            think_summary,
+        )
+        error_count += warmup_error_count
+        if think_summary and request.diagnostics.enable_trace_stream and tenant.trace_allowed:
+            yield sse("think_phase", {"sources": think_summary})
+        disabled_source_ids = {
+            source_id
+            for source_id, summary in think_summary.items()
+            if summary.get("status") == "failed"
+        } | warmup_disabled_source_ids
+        active_source_ids = [
+            source_id
+            for source_id in source_by_id
+            if source_id not in disabled_source_ids
+        ]
+        if not active_source_ids:
+            yield sse("error", {"error": "all thinking sources failed before token collaboration"})
+            return
+        active_sources = {source_id: source_by_id[source_id] for source_id in active_source_ids}
+
         for step in range(max_len):
             tasks = {
                 source_id: step_token(picked[source_id], source_by_id[source_id], states_by_id[source_id])
-                for source_id in source_by_id
+                for source_id in active_source_ids
             }
             results = await asyncio.gather(*tasks.values(), return_exceptions=True)
             source_candidates: dict[str, list[dict[str, Any]]] = {}
@@ -1373,9 +1764,20 @@ async def run_token_step_ensemble(request: EnsembleRequest, tenant: GatewayTenan
                 if isinstance(result, Exception):
                     errors[source_id] = str(result)
                     error_count += 1
+                    disabled_source_ids.add(source_id)
                     continue
                 source_candidates[source_id] = result
-            token, scores = aggregate_token(source_candidates, source_by_id, request.aggregator)
+            if disabled_source_ids:
+                active_source_ids = [
+                    source_id
+                    for source_id in active_source_ids
+                    if source_id not in disabled_source_ids
+                ]
+                active_sources = {source_id: source_by_id[source_id] for source_id in active_source_ids}
+            if not source_candidates:
+                yield sse("error", {"error": "all active sources failed during token collaboration", "errors": errors})
+                return
+            token, scores = aggregate_token(source_candidates, active_sources, request.aggregator)
             trace_payload = {
                 "step": step,
                 "selected_token": token,
@@ -1386,10 +1788,23 @@ async def run_token_step_ensemble(request: EnsembleRequest, tenant: GatewayTenan
             if request.diagnostics.enable_trace_stream and tenant.trace_allowed:
                 yield sse("trace_step", trace_payload)
             if token == "<end>":
+                stopped_by = "end"
                 break
+            if not token.strip():
+                consecutive_whitespace_tokens += 1
+                whitespace_limit = (
+                    max_leading_whitespace_tokens
+                    if not text
+                    else max_consecutive_whitespace_tokens
+                )
+                if consecutive_whitespace_tokens > whitespace_limit:
+                    stopped_by = "whitespace_loop"
+                    break
+            else:
+                consecutive_whitespace_tokens = 0
             text += token
-            for state in states_by_id.values():
-                state["generated"] += token
+            for source_id in active_source_ids:
+                states_by_id[source_id]["generated"] += token
             yield sse("token", {"delta": token, "text": text})
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         yield sse(
@@ -1401,7 +1816,19 @@ async def run_token_step_ensemble(request: EnsembleRequest, tenant: GatewayTenan
                     "aggregator": request.aggregator,
                     "elapsed_ms": elapsed_ms,
                     "tokens_count": len(text),
-                    "trace_summary": {"error_count": error_count, "backend_count": len(picked)},
+                    "trace_summary": {
+                        "backend_count": len(picked),
+                        "disabled_source_count": len(disabled_source_ids),
+                        "error_count": error_count,
+                        "stopped_by": stopped_by,
+                        "think_error_count": think_error_count if think_summary else 0,
+                        "think_source_count": len(think_summary),
+                        "think_warmup_error_count": warmup_error_count if think_summary else 0,
+                        "whitespace_guard": {
+                            "max_consecutive": max_consecutive_whitespace_tokens,
+                            "max_leading": max_leading_whitespace_tokens,
+                        },
+                    },
                 },
             },
         )
