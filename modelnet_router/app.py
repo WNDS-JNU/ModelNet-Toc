@@ -19,7 +19,24 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from modelnet_gateway.auth import GatewayTenant, authenticate_gateway, load_gateway_tenants
-from modelnet_gateway.schemas import EnsembleRequest, EnsembleSource, RouteRequest
+from modelnet_gateway.adapters import ir_to_ensemble_request, native_to_ir, openai_chat_to_ir
+from modelnet_gateway.plugins import (
+    BACKEND_ADAPTERS,
+    aggregator_payload,
+    canonical_runner,
+    runner_payload,
+)
+from modelnet_gateway.schemas import (
+    BackendCapability,
+    EnsembleRequest,
+    EnsembleSource,
+    MODELNET_EVENT_SCHEMA_VERSION,
+    MODELNET_RUN_SCHEMA_VERSION,
+    ModelNetEvent,
+    ModelNetRunRequest,
+    ModelSpec,
+    RouteRequest,
+)
 
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -167,7 +184,7 @@ class EndpointHealth:
     updated_at: float = 0
 
 
-app = FastAPI(title="ModelNet Router", version="1.1.0")
+app = FastAPI(title="ModelNet Gateway", version="2.0.0")
 http_client: httpx.AsyncClient | None = None
 registry_cache: tuple[float, list[Candidate]] = (0, [])
 k8s_cache: K8sSnapshot = K8sSnapshot()
@@ -846,13 +863,20 @@ def prepare_backend_body(candidate: Candidate, body: dict[str, Any]) -> dict[str
 
 
 def candidate_capabilities(candidate: Candidate) -> list[str]:
-    base = {"chat_template", "streaming"}
+    base = {"chat", "chat_template", "streaming"}
+    adapter = BACKEND_ADAPTERS.get(candidate.backend_type, {})
+    if adapter.get("completion"):
+        base.add("completion")
     if candidate.backend_type in {"vllm_chat", "llama_cpp"}:
         base.update({"token_step", "top_probs"})
     if candidate.expose_raw_logits:
         base.add("logits_raw")
     if coerce_bool(candidate.metadata.get("supports_vision")):
         base.add("vision")
+    if coerce_bool(candidate.metadata.get("supports_tools")) or adapter.get("tools"):
+        base.add("tools")
+    if coerce_bool(candidate.metadata.get("supports_structured_output")) or adapter.get("structured_output"):
+        base.add("structured_output")
     return sorted(base)
 
 
@@ -880,6 +904,63 @@ def candidate_backend_info(
         "capabilities": candidate_capabilities(candidate),
         "metadata": metadata,
     }
+
+
+def candidate_context_length(candidate: Candidate) -> int | None:
+    for key in ("context_length", "max_context_length", "max_model_len", "max_tokens"):
+        raw = candidate.metadata.get(key)
+        try:
+            if raw is not None:
+                return int(raw)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def candidate_model_spec(
+    candidate: Candidate,
+    *,
+    health: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata = dict(candidate.metadata)
+    metadata.update(
+        {
+            "api_base": candidate.api_base,
+            "k8s_namespace": candidate.k8s_namespace,
+            "service_names": list(candidate.service_names),
+        }
+    )
+    spec = ModelSpec(
+        id=candidate.model_id,
+        backend=candidate.backend_type,
+        backend_model=candidate.backend_model,
+        capabilities=candidate_capabilities(candidate),
+        context_length=candidate_context_length(candidate),
+        cost={"source": metadata.get("cost_source", "registry")},
+        latency={"source": "router-metrics"},
+        health=health or {},
+        metadata=metadata,
+    )
+    return spec.model_dump(exclude_none=True)
+
+
+def backend_capability(candidate: Candidate, *, health: dict[str, Any] | None = None) -> dict[str, Any]:
+    adapter = dict(BACKEND_ADAPTERS.get(candidate.backend_type, {}))
+    adapter.setdefault("adapter", candidate.backend_type)
+    capability = BackendCapability(
+        backend=candidate.model_id,
+        adapter=str(adapter.get("adapter")),
+        chat=bool(adapter.get("chat", True)),
+        completion=bool(adapter.get("completion", candidate.backend_type == "llama_cpp")),
+        token_step="token_step" in candidate_capabilities(candidate),
+        logits_raw=bool(candidate.expose_raw_logits or adapter.get("logits_raw")),
+        vision="vision" in candidate_capabilities(candidate),
+        tools="tools" in candidate_capabilities(candidate),
+        structured_output="structured_output" in candidate_capabilities(candidate),
+        context_length=candidate_context_length(candidate),
+        health=health or {},
+    )
+    return capability.model_dump(exclude_none=True)
 
 
 def visible_candidates(tenant: GatewayTenant) -> list[Candidate]:
@@ -949,17 +1030,79 @@ async def healthz() -> dict[str, Any]:
 
 @app.get("/v1/models")
 async def models(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    assert_authorized(authorization)
+    tenant = assert_authorized(authorization)
+    candidates = visible_candidates(tenant)
+    data = [
+        {
+            "created": 0,
+            "id": PUBLIC_MODEL_NAME,
+            "object": "model",
+            "owned_by": "modelnet",
+            "metadata": {
+                "description": "ModelNet automatic route entrypoint",
+                "native_schema_version": MODELNET_RUN_SCHEMA_VERSION,
+            },
+        }
+    ]
+    data.extend(
+        {
+            "created": 0,
+            "id": candidate.model_id,
+            "object": "model",
+            "owned_by": "modelnet",
+            "metadata": {
+                "backend": candidate.backend_type,
+                "backend_model": candidate.backend_model,
+                "capabilities": candidate_capabilities(candidate),
+            },
+        }
+        for candidate in candidates
+    )
     return {
-        "data": [
-            {
-                "created": 0,
-                "id": PUBLIC_MODEL_NAME,
-                "object": "model",
-                "owned_by": "modelnet",
-            }
-        ],
+        "data": data,
         "object": "list",
+    }
+
+
+@app.get("/v1/capabilities")
+async def capabilities(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    tenant = assert_authorized(authorization)
+    candidates = visible_candidates(tenant)
+    snapshot = await load_k8s_snapshot()
+    model_capabilities = []
+    for candidate in candidates:
+        ready_pods = ready_pods_for(candidate, snapshot)
+        health = {
+            "ready": bool(ready_pods),
+            "ready_pod_count": len(ready_pods),
+            "k8s_error": snapshot.error,
+        }
+        model_capabilities.append(backend_capability(candidate, health=health))
+    return {
+        "schema_version": MODELNET_RUN_SCHEMA_VERSION,
+        "tenant_id": tenant.tenant_id,
+        "northbound_protocols": [
+            {
+                "name": "openai-compatible",
+                "endpoints": ["/v1/chat/completions", "/v1/models"],
+                "advanced_collaboration": False,
+            },
+            {
+                "name": "anthropic-compatible",
+                "endpoints": [],
+                "advanced_collaboration": False,
+                "status": "adapter-contract-defined",
+            },
+            {
+                "name": "modelnet-native",
+                "endpoints": ["/v1/runs/stream", "/v1/capabilities", "/v1/topology"],
+                "advanced_collaboration": True,
+            },
+        ],
+        "runners": runner_payload(),
+        "aggregators": aggregator_payload(),
+        "backend_adapters": BACKEND_ADAPTERS,
+        "models": model_capabilities,
     }
 
 
@@ -970,8 +1113,23 @@ async def chat_completions(
 ) -> Response:
     tenant = assert_authorized(authorization)
     body = await request.json()
-    candidate, score, reason = await pick_candidate(tenant=tenant)
-    request_id = str(uuid.uuid4())
+    ir = openai_chat_to_ir(body)
+    plan = ir.collaboration_plan
+    candidate_aliases: set[str] = set()
+    if ir.model and ir.model != PUBLIC_MODEL_NAME:
+        candidate_aliases.add(ir.model)
+    raw_aliases = plan.get("candidate_aliases")
+    if isinstance(raw_aliases, str):
+        candidate_aliases.add(raw_aliases)
+    elif isinstance(raw_aliases, list):
+        candidate_aliases.update(str(alias) for alias in raw_aliases if alias)
+    required_capabilities = {capability for capability in ir.required_capabilities if capability}
+    candidate, score, reason = await pick_candidate(
+        tenant=tenant,
+        candidate_aliases=candidate_aliases or None,
+        required_capabilities=required_capabilities or None,
+    )
+    request_id = ir.request_id or str(uuid.uuid4())
     body = prepare_backend_body(candidate, body)
     url = candidate.api_base.rstrip("/") + "/chat/completions"
     snapshot = await load_k8s_snapshot()
@@ -1042,6 +1200,79 @@ async def stream_backend(candidate: Candidate, request_id: str, url: str, body: 
 
 def sse(event: str, data: dict[str, Any]) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
+LEGACY_NATIVE_EVENT_MAP = {
+    "run_started": "run_started",
+    "source_selected": "model_selected",
+    "token": "token_delta",
+    "full_response": "source_response",
+    "trace_step": "aggregation_step",
+    "think_phase": "trace",
+    "done": "done",
+    "error": "error",
+}
+
+
+def modelnet_sse(event: str, request_id: str, data: dict[str, Any]) -> bytes:
+    payload = ModelNetEvent(
+        request_id=request_id,
+        event=event,
+        data=data,
+    ).model_dump()
+    return sse(event, payload)
+
+
+def parse_sse_chunk(chunk: bytes) -> tuple[str, dict[str, Any]]:
+    text = chunk.decode("utf-8", errors="replace")
+    event = "message"
+    data_lines: list[str] = []
+    for raw_line in text.splitlines():
+        if raw_line.startswith("event:"):
+            event = raw_line.removeprefix("event:").strip()
+        elif raw_line.startswith("data:"):
+            data_lines.append(raw_line.removeprefix("data:").strip())
+    if not data_lines:
+        return event, {}
+    try:
+        data = json.loads("\n".join(data_lines))
+    except json.JSONDecodeError:
+        data = {"raw": "\n".join(data_lines)}
+    return event, data if isinstance(data, dict) else {"value": data}
+
+
+def native_event_data(legacy_event: str, data: dict[str, Any], native_runner: str) -> dict[str, Any]:
+    payload = dict(data)
+    payload["runner"] = native_runner
+    if legacy_event == "token":
+        payload = {
+            "delta": data.get("delta", ""),
+            "text": data.get("text", ""),
+            "runner": native_runner,
+        }
+    elif legacy_event == "source_selected":
+        payload.setdefault("selection_type", "backend")
+    elif legacy_event == "done":
+        metadata = dict(data.get("metadata") or {})
+        metadata.setdefault("native_runner", native_runner)
+        payload["metadata"] = metadata
+    return payload
+
+
+async def run_native_stream(ir: ModelNetRunRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
+    if not ir.request_id:
+        ir = ir.model_copy(update={"request_id": str(uuid.uuid4())})
+    ir = native_to_ir(ir.model_dump(exclude_none=True))
+    native_runner = canonical_runner(ir.collaboration_plan.get("runner"))
+    ensemble_request = ir_to_ensemble_request(ir)
+    async for chunk in run_ensemble_stream(ensemble_request, tenant):
+        legacy_event, data = parse_sse_chunk(chunk)
+        native_event = LEGACY_NATIVE_EVENT_MAP.get(legacy_event, "trace")
+        yield modelnet_sse(
+            native_event,
+            ir.request_id or ensemble_request.request_id or "",
+            native_event_data(legacy_event, data, native_runner),
+        )
 
 
 def sampling_value(source: EnsembleSource, key: str, default: Any = None) -> Any:
@@ -1975,18 +2206,21 @@ async def run_token_step_ensemble(request: EnsembleRequest, tenant: GatewayTenan
 
 async def run_route_ensemble(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
     source = request.sources[0]
-    candidate, score, reason = await pick_source_candidate(tenant, source)
+    candidate: Candidate | None = None
     try:
+        candidate, score, reason = await pick_source_candidate(tenant, source)
         result = await generate_text(candidate, source)
         text = result["text"]
         yield sse("source_selected", {"source_id": source.source_id, "backend": candidate_backend_info(candidate, score=score, reason=reason)})
         yield sse("token", {"delta": text, "text": text})
         yield sse("done", {"text": text, "metadata": {"runner": request.runner, "aggregator": request.aggregator, **result["metadata"]}})
     except Exception as exc:  # noqa: BLE001
-        await release_candidate(candidate, str(exc))
+        if candidate is not None:
+            await release_candidate(candidate, str(exc))
         yield sse("error", {"error": str(exc)})
         return
-    await release_candidate(candidate)
+    if candidate is not None:
+        await release_candidate(candidate)
 
 
 async def run_dynamic_collab_ensemble(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
@@ -2117,20 +2351,24 @@ async def run_ensemble_stream(request: EnsembleRequest, tenant: GatewayTenant) -
         yield sse("error", {"error": f"aggregator '{request.aggregator}' is not allowed for tenant '{tenant.tenant_id}'"})
         return
     yield sse("run_started", {"request_id": request.request_id, "tenant_id": tenant.tenant_id, "runner": request.runner})
-    if request.runner == "token_step":
-        async for event in run_token_step_ensemble(request, tenant):
+    try:
+        if request.runner == "token_step":
+            async for event in run_token_step_ensemble(request, tenant):
+                yield event
+            return
+        if request.runner == "dynamic_collab_route":
+            async for event in run_dynamic_collab_ensemble(request, tenant):
+                yield event
+            return
+        if request.runner == "response_aggregate":
+            async for event in run_response_aggregate_ensemble(request, tenant):
+                yield event
+            return
+        async for event in run_route_ensemble(request, tenant):
             yield event
-        return
-    if request.runner == "dynamic_collab_route":
-        async for event in run_dynamic_collab_ensemble(request, tenant):
-            yield event
-        return
-    if request.runner == "response_aggregate":
-        async for event in run_response_aggregate_ensemble(request, tenant):
-            yield event
-        return
-    async for event in run_route_ensemble(request, tenant):
-        yield event
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("ensemble runner failed request_id=%s runner=%s", request.request_id, request.runner)
+        yield sse("error", {"error": str(exc), "runner": request.runner})
 
 
 @app.get("/v1/registry/status")
@@ -2204,6 +2442,7 @@ async def topology_snapshot(authorization: str | None = Header(default=None)) ->
             }
         )
     return {
+        "schema_version": MODELNET_RUN_SCHEMA_VERSION,
         "generated_at": time.time(),
         "tenant_id": tenant.tenant_id,
         "models": models,
@@ -2213,6 +2452,11 @@ async def topology_snapshot(authorization: str | None = Header(default=None)) ->
         },
         "errors": [err for err in (snapshot.error, prometheus.error) if err],
     }
+
+
+@app.get("/v1/topology")
+async def topology(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    return await topology_snapshot(authorization)
 
 
 @app.post("/v1/ensemble/stream")
@@ -2229,6 +2473,26 @@ async def ensemble_stream(
         run_ensemble_stream(ensemble_request, tenant),
         media_type="text/event-stream",
         headers={"X-ModelNet-Request-ID": ensemble_request.request_id},
+    )
+
+
+@app.post("/v1/runs/stream")
+async def runs_stream(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> StreamingResponse:
+    tenant = assert_authorized(authorization)
+    payload = await request.json()
+    run_request = native_to_ir(payload)
+    if not run_request.request_id:
+        run_request = run_request.model_copy(update={"request_id": str(uuid.uuid4())})
+    return StreamingResponse(
+        run_native_stream(run_request, tenant),
+        media_type="text/event-stream",
+        headers={
+            "X-ModelNet-Request-ID": run_request.request_id,
+            "X-ModelNet-Schema-Version": MODELNET_EVENT_SCHEMA_VERSION,
+        },
     )
 
 
