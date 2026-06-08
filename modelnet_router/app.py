@@ -20,6 +20,16 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from modelnet_gateway.auth import GatewayTenant, authenticate_gateway, load_gateway_tenants
 from modelnet_gateway.adapters import ir_to_ensemble_request, native_to_ir, openai_chat_to_ir
+from modelnet_gateway.backend_adapters import (
+    CHAT_BACKENDS,
+    ENDPOINT_HEALTH_BACKENDS,
+    chat_response as backend_chat_response,
+    endpoint_health_urls,
+    generate_text as backend_generate_text,
+    prepare_chat_body,
+    response_should_cooldown,
+    stream_chat as backend_stream_chat,
+)
 from modelnet_gateway.plugins import (
     AGGREGATOR_PLUGINS,
     BACKEND_ADAPTERS,
@@ -88,36 +98,9 @@ RESPONSE_AGGREGATE_SYSTEM_PROMPT = (
     "matters to the user."
 )
 
-CHAT_BACKENDS = {"vllm_chat", "llama_cpp"}
-ENDPOINT_HEALTH_BACKENDS = {"llama_cpp"}
 ENDPOINT_HEALTH_TTL_SECONDS = float(os.environ.get("MODELNET_ENDPOINT_HEALTH_TTL_SECONDS", "15"))
 ENDPOINT_READY_SCORE = float(os.environ.get("MODELNET_ENDPOINT_READY_SCORE", "100"))
 NO_DEVICE_METRICS_PENALTY = float(os.environ.get("MODELNET_NO_DEVICE_METRICS_PENALTY", "250"))
-LLAMA_CPP_ALLOWED_BODY_KEYS = {
-    "cache_prompt",
-    "frequency_penalty",
-    "grammar",
-    "json_schema",
-    "logit_bias",
-    "max_tokens",
-    "messages",
-    "min_p",
-    "mirostat",
-    "mirostat_eta",
-    "mirostat_tau",
-    "model",
-    "n",
-    "presence_penalty",
-    "repeat_penalty",
-    "response_format",
-    "seed",
-    "stop",
-    "stream",
-    "temperature",
-    "top_k",
-    "top_p",
-    "typical_p",
-}
 
 
 @dataclass(frozen=True)
@@ -129,6 +112,7 @@ class Candidate:
     root_url: str
     api_base: str
     service_names: tuple[str, ...]
+    api_key: str = ""
     eos: str = ""
     expose_raw_logits: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -395,6 +379,13 @@ def candidate_service_names(
     return tuple(deduped)
 
 
+def model_api_key(model: dict[str, Any]) -> str:
+    api_key_env = str(model.get("api_key_env") or "").strip()
+    if api_key_env:
+        return os.environ.get(api_key_env, "")
+    return str(model.get("api_key") or "").strip()
+
+
 def load_candidates() -> list[Candidate]:
     global registry_cache
     mtime = REGISTRY_PATH.stat().st_mtime
@@ -426,6 +417,7 @@ def load_candidates() -> list[Candidate]:
                 root_url=normalize_root_url(model_url),
                 api_base=normalize_api_base(model_url),
                 service_names=candidate_service_names(model, model_id, backend_model, backend_type),
+                api_key=model_api_key(model),
                 eos=str(model.get("EOS") or model.get("eos") or ""),
                 expose_raw_logits=coerce_bool(model.get("expose_raw_logits")),
                 metadata={
@@ -734,11 +726,11 @@ async def endpoint_health(candidate: Candidate) -> EndpointHealth:
         return cached
 
     assert http_client is not None
-    urls = [candidate.root_url.rstrip("/") + "/health", candidate.api_base.rstrip("/") + "/models"]
+    urls = endpoint_health_urls(candidate)
     last_error = ""
     for url in urls:
         try:
-            response = await http_client.get(url, headers=backend_headers(), timeout=5)
+            response = await http_client.get(url, headers=backend_headers(candidate), timeout=5)
             if response.status_code < 500:
                 health = EndpointHealth(ready=response.status_code < 400, updated_at=now)
                 endpoint_health_cache[candidate.model_id] = health
@@ -747,7 +739,7 @@ async def endpoint_health(candidate: Candidate) -> EndpointHealth:
         except Exception as error:  # noqa: BLE001 - health probes should degrade the candidate, not the router
             last_error = f"{url} {error}"
 
-    health = EndpointHealth(ready=False, error=last_error[:300], updated_at=now)
+    health = EndpointHealth(ready=False, error=(last_error or "no endpoint health URLs")[:300], updated_at=now)
     endpoint_health_cache[candidate.model_id] = health
     return health
 
@@ -905,24 +897,16 @@ def assert_authorized(authorization: str | None) -> GatewayTenant:
     return authenticate_gateway(authorization, API_KEY_TENANTS)
 
 
-def backend_headers() -> dict[str, str]:
+def backend_headers(candidate: Candidate | None = None) -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
-    if BACKEND_API_KEY and BACKEND_API_KEY != "none":
-        headers["Authorization"] = "Bearer " + BACKEND_API_KEY
+    api_key = candidate.api_key if candidate and candidate.api_key else BACKEND_API_KEY
+    if api_key and api_key != "none":
+        headers["Authorization"] = "Bearer " + api_key
     return headers
 
 
 def prepare_backend_body(candidate: Candidate, body: dict[str, Any]) -> dict[str, Any]:
-    prepared = dict(body)
-    prepared["model"] = candidate.backend_model
-    if candidate.backend_type == "llama_cpp":
-        prepared = {
-            key: value
-            for key, value in prepared.items()
-            if key in LLAMA_CPP_ALLOWED_BODY_KEYS or key.startswith("mirostat")
-        }
-        prepared["model"] = candidate.backend_model
-    return prepared
+    return prepare_chat_body(candidate, body)
 
 
 CAPABILITY_ALIASES = {
@@ -1204,11 +1188,18 @@ async def capabilities(authorization: str | None = Header(default=None)) -> dict
     model_capabilities = []
     for candidate in candidates:
         ready_pods = ready_pods_for(candidate, snapshot)
+        endpoint_status: EndpointHealth | None = None
+        if not ready_pods and candidate.backend_type in ENDPOINT_HEALTH_BACKENDS:
+            endpoint_status = await endpoint_health(candidate)
         health = {
-            "ready": bool(ready_pods),
+            "ready": bool(ready_pods) or bool(endpoint_status and endpoint_status.ready),
             "ready_pod_count": len(ready_pods),
             "k8s_error": snapshot.error,
         }
+        if endpoint_status is not None:
+            health["endpoint_ready"] = endpoint_status.ready
+            if endpoint_status.error:
+                health["endpoint_error"] = endpoint_status.error
         model_capabilities.append(backend_capability(candidate, health=health))
     return {
         "schema_version": MODELNET_RUN_SCHEMA_VERSION,
@@ -1279,8 +1270,6 @@ async def chat_completions(
             },
         ) from exc
     request_id = ir.request_id or str(uuid.uuid4())
-    body = prepare_backend_body(candidate, body)
-    url = candidate.api_base.rstrip("/") + "/chat/completions"
     snapshot = await load_k8s_snapshot()
     routed_pod = best_ready_pod(candidate, snapshot)
     LOGGER.info(
@@ -1298,7 +1287,7 @@ async def chat_completions(
 
     if body.get("stream"):
         return StreamingResponse(
-            stream_backend(candidate, request_id, url, body),
+            stream_backend(candidate, request_id, body),
             media_type="text/event-stream",
             headers={
                 "X-ModelNet-Backend": candidate.model_id,
@@ -1309,14 +1298,19 @@ async def chat_completions(
 
     try:
         assert http_client is not None
-        response = await http_client.post(url, json=body, headers=backend_headers())
-        if response.status_code >= 500 or response.status_code in {408, 409, 425, 429}:
+        response = await backend_chat_response(
+            candidate,
+            body,
+            http_client=http_client,
+            headers=backend_headers(candidate),
+        )
+        if response_should_cooldown(response.status_code):
             await release_candidate(candidate, f"backend status {response.status_code}")
         else:
             await release_candidate(candidate)
         return Response(
             content=response.content,
-            media_type=response.headers.get("content-type", "application/json"),
+            media_type=response.media_type,
             status_code=response.status_code,
             headers={
                 "X-ModelNet-Backend": candidate.model_id,
@@ -1330,15 +1324,22 @@ async def chat_completions(
         raise HTTPException(status_code=502, detail=str(error)) from error
 
 
-async def stream_backend(candidate: Candidate, request_id: str, url: str, body: dict[str, Any]):
+async def stream_backend(candidate: Candidate, request_id: str, body: dict[str, Any]):
     error: str | None = None
     try:
         assert http_client is not None
-        async with http_client.stream("POST", url, json=body, headers=backend_headers()) as response:
-            if response.status_code >= 500 or response.status_code in {408, 409, 425, 429}:
-                error = f"backend status {response.status_code}"
-            async for chunk in response.aiter_bytes():
-                yield chunk
+        async for chunk in backend_stream_chat(
+            candidate,
+            body,
+            http_client=http_client,
+            headers=backend_headers(candidate),
+        ):
+            yield chunk
+    except httpx.HTTPStatusError as exc:
+        if response_should_cooldown(exc.response.status_code):
+            error = f"backend status {exc.response.status_code}"
+        LOGGER.exception("stream failed request_id=%s backend=%s", request_id, candidate.model_id)
+        yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n".encode()
     except Exception as exc:  # noqa: BLE001
         error = str(exc)
         LOGGER.exception("stream failed request_id=%s backend=%s", request_id, candidate.model_id)
@@ -1607,9 +1608,9 @@ def naive_messages_to_prompt(messages: list[dict[str, Any]]) -> str:
     return "\n".join(parts)
 
 
-async def post_json(url: str, body: dict[str, Any]) -> Any:
+async def post_json(url: str, body: dict[str, Any], candidate: Candidate | None = None) -> Any:
     assert http_client is not None
-    response = await http_client.post(url, json=body, headers=backend_headers())
+    response = await http_client.post(url, json=body, headers=backend_headers(candidate))
     if response.is_error:
         detail = response.text[:500]
         raise httpx.HTTPStatusError(
@@ -1622,7 +1623,11 @@ async def post_json(url: str, body: dict[str, Any]) -> Any:
 
 async def llama_apply_template(candidate: Candidate, messages: list[dict[str, Any]]) -> str:
     try:
-        payload = await post_json(candidate.root_url.rstrip("/") + "/apply-template", {"messages": messages})
+        payload = await post_json(
+            candidate.root_url.rstrip("/") + "/apply-template",
+            {"messages": messages},
+            candidate,
+        )
     except Exception:  # noqa: BLE001 - fallback keeps non-template forks usable
         return naive_messages_to_prompt(messages)
     if isinstance(payload, dict) and isinstance(payload.get("prompt"), str):
@@ -1794,8 +1799,11 @@ async def step_token(candidate: Candidate, source: EnsembleSource, state: dict[s
             body["add_generation_prompt"] = False
         else:
             body["add_generation_prompt"] = True
-        payload = await post_json(candidate.api_base.rstrip("/") + "/chat/completions", body)
+        payload = await post_json(candidate.api_base.rstrip("/") + "/chat/completions", body, candidate)
         return parse_vllm_candidates(payload if isinstance(payload, dict) else {}, candidate.eos)
+
+    if candidate.backend_type != "llama_cpp":
+        raise RuntimeError(f"backend '{candidate.backend_type}' does not implement token_step")
 
     body = {
         "prompt": state["prompt"] + state["generated"],
@@ -1804,7 +1812,7 @@ async def step_token(candidate: Candidate, source: EnsembleSource, state: dict[s
         "post_sampling_probs": not candidate.expose_raw_logits,
         **params,
     }
-    payload = await post_json(candidate.root_url.rstrip("/") + "/completion", body)
+    payload = await post_json(candidate.root_url.rstrip("/") + "/completion", body, candidate)
     return parse_llama_candidates(payload if isinstance(payload, dict) else {}, candidate.eos, raw_logits=candidate.expose_raw_logits)
 
 
@@ -1874,7 +1882,7 @@ async def generate_think_suffix_once(
             body["add_generation_prompt"] = False
         else:
             body["add_generation_prompt"] = True
-        payload = await post_json(candidate.api_base.rstrip("/") + "/chat/completions", body)
+        payload = await post_json(candidate.api_base.rstrip("/") + "/chat/completions", body, candidate)
         think_text, suffix = append_think_stop_marker(chat_message_text(payload), stop_think)
     else:
         payload = await post_json(
@@ -1884,6 +1892,7 @@ async def generate_think_suffix_once(
                 "stream": False,
                 **params,
             },
+            candidate,
         )
         text = str(payload.get("content") or payload.get("text") or "") if isinstance(payload, dict) else ""
         think_text, suffix = append_think_stop_marker(text, stop_think)
@@ -2079,42 +2088,35 @@ def aggregate_token(
 async def generate_text(candidate: Candidate, source: EnsembleSource, *, prompt_override: str | None = None) -> dict[str, Any]:
     max_tokens = generation_max_tokens(source)
     params = generation_params(source, max_tokens=max_tokens)
-    if candidate.backend_type == "vllm_chat":
-        messages = message_list(source)
-        if prompt_override is not None:
-            messages = [*messages, {"role": "user", "content": prompt_override}]
-        body = {
-            "model": candidate.backend_model,
-            "messages": messages,
-            "stream": False,
-            **params,
-        }
-        payload = await post_json(candidate.api_base.rstrip("/") + "/chat/completions", body)
-        choice = ((payload.get("choices") or [{}])[0] if isinstance(payload, dict) else {})
-        message = choice.get("message") if isinstance(choice, dict) else {}
-        return {
-            "text": message.get("content", "") if isinstance(message, dict) else "",
-            "metadata": {"usage": payload.get("usage")} if isinstance(payload, dict) else {},
-        }
-
+    messages = message_list(source)
+    if prompt_override is not None:
+        messages = [*messages, {"role": "user", "content": prompt_override}]
     prompt = prompt_override if prompt_override is not None else source.prompt
-    if source.messages and prompt_override is None:
+    if candidate.backend_type == "llama_cpp" and source.messages and prompt_override is None:
         prompt = await llama_apply_template(candidate, source.messages)
-    body = {
-        "prompt": prompt,
-        "stream": False,
-        **params,
-    }
-    payload = await post_json(candidate.root_url.rstrip("/") + "/completion", body)
-    text = ""
-    if isinstance(payload, dict):
-        text = str(payload.get("content") or payload.get("text") or "")
-    return {"text": text, "metadata": {}}
+    assert http_client is not None
+    return await backend_generate_text(
+        candidate,
+        source,
+        params=params,
+        messages=messages,
+        prompt=prompt,
+        http_client=http_client,
+        headers=backend_headers(candidate),
+    )
 
 
-async def pick_source_candidate(tenant: GatewayTenant, source: EnsembleSource) -> tuple[Candidate, float, str]:
+async def pick_source_candidate(
+    tenant: GatewayTenant,
+    source: EnsembleSource,
+    required_capabilities: set[str] | None = None,
+) -> tuple[Candidate, float, str]:
     aliases = {source.model_alias} if source.model_alias else None
-    return await pick_candidate(tenant=tenant, candidate_aliases=aliases)
+    return await pick_candidate(
+        tenant=tenant,
+        candidate_aliases=aliases,
+        required_capabilities=required_capabilities,
+    )
 
 
 async def generate_response_source(tenant: GatewayTenant, source: EnsembleSource) -> dict[str, Any]:
@@ -2218,7 +2220,11 @@ async def run_token_step_ensemble(request: EnsembleRequest, tenant: GatewayTenan
     stopped_by = "max_len"
     try:
         for source in request.sources:
-            candidate, score, reason = await pick_source_candidate(tenant, source)
+            candidate, score, reason = await pick_source_candidate(
+                tenant,
+                source,
+                {"token_step", "top_probs"},
+            )
             picked[source.source_id] = candidate
             if candidate.backend_type == "llama_cpp":
                 prompt = await llama_apply_template(candidate, source.messages) if source.messages else source.prompt
