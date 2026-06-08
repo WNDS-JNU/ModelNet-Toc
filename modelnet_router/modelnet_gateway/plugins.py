@@ -12,6 +12,8 @@ class RunnerPlugin:
     description: str
     supported_aggregators: tuple[str, ...]
     required_capabilities: tuple[str, ...] = ()
+    status: str = "implemented"
+    status_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -20,6 +22,8 @@ class AggregatorPlugin:
     scope: str
     description: str
     required_capabilities: tuple[str, ...] = ()
+    status: str = "implemented"
+    status_reason: str = ""
 
 
 RUNNER_ALIASES = {
@@ -47,30 +51,32 @@ RUNNER_PLUGINS = {
         legacy_name="route",
         scope="route",
         description="Select one backend by capability, health, load and policy, then run a normal chat.",
-        supported_aggregators=("load_aware", "capability_aware", "cost_aware", "latency_aware"),
+        supported_aggregators=("load_aware", "capability_aware"),
     ),
     "token.parallel": RunnerPlugin(
         name="token.parallel",
         legacy_name="token_step",
         scope="token",
         description="Fan out multiple models one token at a time and aggregate each token decision.",
-        supported_aggregators=("sum_score", "max_score", "duet_net", "learned_router"),
+        supported_aggregators=("sum_score", "max_score"),
         required_capabilities=("token_step", "top_probs"),
     ),
     "token.serial": RunnerPlugin(
         name="token.serial",
         legacy_name="token_step",
         scope="token",
-        description="Token or chunk level serial refinement; currently executed through the token-step engine.",
+        description="Token or chunk level serial refinement.",
         supported_aggregators=("sum_score", "max_score"),
         required_capabilities=("token_step", "top_probs"),
+        status="reserved",
+        status_reason="Token-serial execution is not implemented as a distinct v1 runner.",
     ),
     "response.parallel": RunnerPlugin(
         name="response.parallel",
         legacy_name="response_aggregate",
         scope="response",
         description="Fan out complete source responses, then synthesize the final response.",
-        supported_aggregators=("synthesize", "select_best", "rank_vote", "judge_refine"),
+        supported_aggregators=("synthesize",),
     ),
     "response.serial": RunnerPlugin(
         name="response.serial",
@@ -78,13 +84,17 @@ RUNNER_PLUGINS = {
         scope="response",
         description="Run complete responses in sequence, with later models judging or refining earlier output.",
         supported_aggregators=("judge_refine", "synthesize"),
+        status="degraded",
+        status_reason="Implemented through the legacy serial-refinement fallback, not a full native v1 runner.",
     ),
     "hybrid.graph": RunnerPlugin(
         name="hybrid.graph",
         legacy_name="dynamic_collab_route",
         scope="graph",
-        description="Execute a DAG-shaped collaboration plan; currently lowered to serial response refinement.",
+        description="Execute a DAG-shaped collaboration plan.",
         supported_aggregators=("synthesize", "judge_refine", "load_aware"),
+        status="reserved",
+        status_reason="The native DAG scheduler is not implemented yet.",
     ),
 }
 
@@ -106,12 +116,16 @@ AGGREGATOR_PLUGINS = {
         scope="token",
         description="Reserved token-level duet network aggregator.",
         required_capabilities=("token_step", "logits_raw"),
+        status="reserved",
+        status_reason="The duet network scorer is not implemented yet.",
     ),
     "learned_router": AggregatorPlugin(
         name="learned_router",
         scope="token",
         description="Reserved learned token router aggregator.",
         required_capabilities=("token_step",),
+        status="reserved",
+        status_reason="The learned token router is not implemented yet.",
     ),
     "synthesize": AggregatorPlugin(
         name="synthesize",
@@ -122,16 +136,22 @@ AGGREGATOR_PLUGINS = {
         name="select_best",
         scope="response",
         description="Reserved response-level best-answer selector.",
+        status="reserved",
+        status_reason="Response selection has no implemented scoring policy yet.",
     ),
     "rank_vote": AggregatorPlugin(
         name="rank_vote",
         scope="response",
         description="Reserved response-level ranked voting aggregator.",
+        status="reserved",
+        status_reason="Ranked voting has no implemented response ranking policy yet.",
     ),
     "judge_refine": AggregatorPlugin(
         name="judge_refine",
         scope="response",
         description="Judge and refine a previous response.",
+        status="degraded",
+        status_reason="Only available through the legacy response.serial fallback.",
     ),
     "load_aware": AggregatorPlugin(
         name="load_aware",
@@ -147,11 +167,15 @@ AGGREGATOR_PLUGINS = {
         name="cost_aware",
         scope="route",
         description="Reserved cost-sensitive route aggregator.",
+        status="reserved",
+        status_reason="Registry cost data is not wired into routing yet.",
     ),
     "latency_aware": AggregatorPlugin(
         name="latency_aware",
         scope="route",
         description="Reserved latency-sensitive route aggregator.",
+        status="reserved",
+        status_reason="Live latency histograms are not wired into routing yet.",
     ),
 }
 
@@ -247,9 +271,12 @@ def runner_payload() -> list[dict[str, Any]]:
             "name": plugin.name,
             "legacy_name": plugin.legacy_name,
             "scope": plugin.scope,
+            "status": plugin.status,
+            "available": plugin.status == "implemented",
             "description": plugin.description,
             "supported_aggregators": list(plugin.supported_aggregators),
             "required_capabilities": list(plugin.required_capabilities),
+            "status_reason": plugin.status_reason,
         }
         for plugin in RUNNER_PLUGINS.values()
     ]
@@ -260,9 +287,11 @@ def aggregator_payload() -> list[dict[str, Any]]:
         {
             "name": plugin.name,
             "scope": plugin.scope,
+            "status": plugin.status,
+            "available": plugin.status == "implemented",
             "description": plugin.description,
             "required_capabilities": list(plugin.required_capabilities),
+            "status_reason": plugin.status_reason,
         }
         for plugin in AGGREGATOR_PLUGINS.values()
     ]
-

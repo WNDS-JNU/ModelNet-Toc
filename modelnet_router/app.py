@@ -21,9 +21,12 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from modelnet_gateway.auth import GatewayTenant, authenticate_gateway, load_gateway_tenants
 from modelnet_gateway.adapters import ir_to_ensemble_request, native_to_ir, openai_chat_to_ir
 from modelnet_gateway.plugins import (
+    AGGREGATOR_PLUGINS,
     BACKEND_ADAPTERS,
+    RUNNER_PLUGINS,
     aggregator_payload,
     canonical_runner,
+    legacy_runner_name,
     runner_payload,
 )
 from modelnet_gateway.schemas import (
@@ -251,11 +254,71 @@ def load_yaml(path: Path) -> Any:
         return {"models": simple_registry_load(path)}
 
 
-def is_embedding_model(model: dict[str, Any]) -> bool:
+def registry_string_set(model: dict[str, Any], keys: tuple[str, ...]) -> set[str]:
+    values: set[str] = set()
+    for key in keys:
+        raw = model.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, str):
+            items = [part.strip() for part in re.split(r"[,;\s]+", raw) if part.strip()]
+        elif isinstance(raw, (list, tuple, set)):
+            items = [str(item).strip() for item in raw if str(item).strip()]
+        else:
+            items = [str(raw).strip()]
+        values.update(item.lower().replace("-", "_") for item in items if item)
+    return values
+
+
+def registry_chat_support(model: dict[str, Any]) -> bool | None:
+    explicit = registry_string_set(
+        model,
+        (
+            "capabilities",
+            "capability",
+            "tasks",
+            "task",
+            "supported_tasks",
+            "model_capabilities",
+        ),
+    )
+    if not explicit:
+        return None
+    chat_markers = {
+        "chat",
+        "chat_completion",
+        "chat_completions",
+        "completion",
+        "conversational",
+        "text_generation",
+        "instruct",
+    }
+    non_chat_markers = {
+        "embedding",
+        "embeddings",
+        "embed",
+        "rerank",
+        "reranker",
+        "rank",
+        "score",
+        "classification",
+    }
+    if explicit & chat_markers:
+        return True
+    if explicit & non_chat_markers:
+        return False
+    return None
+
+
+def is_non_chat_model(model: dict[str, Any]) -> bool:
+    explicit = registry_chat_support(model)
+    if explicit is not None:
+        return not explicit
     haystack = " ".join(
         str(model.get(key, "")) for key in ("id", "model_name", "model_url", "type")
     ).lower()
-    return "embedding" in haystack or "embed" in haystack
+    non_chat_terms = ("embedding", "embed", "reranker", "rerank", "cross-encoder", "cross_encoder")
+    return any(term in haystack for term in non_chat_terms)
 
 
 def coerce_bool(value: Any, *, default: bool = False) -> bool:
@@ -347,7 +410,7 @@ def load_candidates() -> list[Candidate]:
         backend_type = str(model.get("backend", "")).strip()
         if backend_type not in CHAT_BACKENDS:
             continue
-        if is_embedding_model(model):
+        if is_non_chat_model(model):
             continue
         model_id = str(model.get("id", "")).strip()
         backend_model = str(model.get("model_name", "")).strip()
@@ -862,20 +925,53 @@ def prepare_backend_body(candidate: Candidate, body: dict[str, Any]) -> dict[str
     return prepared
 
 
+CAPABILITY_ALIASES = {
+    "chat_completion": "chat",
+    "chat_completions": "chat",
+    "conversational": "chat",
+    "text_generation": "completion",
+    "tool_calling": "tools",
+    "function_calling": "tools",
+    "json_schema": "structured_output",
+    "json_mode": "structured_output",
+    "top_logprobs": "top_probs",
+    "raw_logits": "logits_raw",
+}
+
+
+def explicit_candidate_capabilities(candidate: Candidate) -> set[str] | None:
+    values = registry_string_set(
+        candidate.metadata,
+        (
+            "capabilities",
+            "capability",
+            "supported_capabilities",
+            "model_capabilities",
+        ),
+    )
+    if not values:
+        return None
+    return {CAPABILITY_ALIASES.get(value, value) for value in values}
+
+
 def candidate_capabilities(candidate: Candidate) -> list[str]:
-    base = {"chat", "chat_template", "streaming"}
+    explicit = explicit_candidate_capabilities(candidate)
+    base = set(explicit) if explicit is not None else {"chat", "chat_template", "streaming"}
     adapter = BACKEND_ADAPTERS.get(candidate.backend_type, {})
-    if adapter.get("completion"):
+    if explicit is None and adapter.get("completion"):
         base.add("completion")
-    if candidate.backend_type in {"vllm_chat", "llama_cpp"}:
+    if explicit is None and candidate.backend_type in {"vllm_chat", "llama_cpp"}:
         base.update({"token_step", "top_probs"})
-    if candidate.expose_raw_logits:
+    if explicit is None and candidate.expose_raw_logits:
         base.add("logits_raw")
-    if coerce_bool(candidate.metadata.get("supports_vision")):
+    if explicit is None and coerce_bool(candidate.metadata.get("supports_vision")):
         base.add("vision")
-    if coerce_bool(candidate.metadata.get("supports_tools")) or adapter.get("tools"):
+    if explicit is None and (coerce_bool(candidate.metadata.get("supports_tools")) or adapter.get("tools")):
         base.add("tools")
-    if coerce_bool(candidate.metadata.get("supports_structured_output")) or adapter.get("structured_output"):
+    if explicit is None and (
+        coerce_bool(candidate.metadata.get("supports_structured_output"))
+        or adapter.get("structured_output")
+    ):
         base.add("structured_output")
     return sorted(base)
 
@@ -965,6 +1061,42 @@ def backend_capability(candidate: Candidate, *, health: dict[str, Any] | None = 
 
 def visible_candidates(tenant: GatewayTenant) -> list[Candidate]:
     return [candidate for candidate in load_candidates() if tenant.allows_model(candidate.model_id)]
+
+
+def capability_diagnostics(
+    tenant: GatewayTenant,
+    *,
+    candidate_aliases: set[str] | None = None,
+    required_capabilities: set[str] | None = None,
+) -> dict[str, Any]:
+    candidates = visible_candidates(tenant)
+    if candidate_aliases:
+        candidates = [candidate for candidate in candidates if candidate.model_id in candidate_aliases]
+    capabilities_by_model = {
+        candidate.model_id: candidate_capabilities(candidate)
+        for candidate in candidates
+    }
+    available_capabilities = sorted(
+        {
+            capability
+            for capabilities in capabilities_by_model.values()
+            for capability in capabilities
+        }
+    )
+    matching_models = []
+    if required_capabilities:
+        matching_models = [
+            model_id
+            for model_id, capabilities in capabilities_by_model.items()
+            if required_capabilities.issubset(set(capabilities))
+        ]
+    return {
+        "candidate_aliases": sorted(candidate_aliases or []),
+        "candidate_count": len(candidates),
+        "required_capabilities": sorted(required_capabilities or []),
+        "available_capabilities": available_capabilities,
+        "matching_models": matching_models,
+    }
 
 
 def metric_label(value: str) -> str:
@@ -1124,11 +1256,28 @@ async def chat_completions(
     elif isinstance(raw_aliases, list):
         candidate_aliases.update(str(alias) for alias in raw_aliases if alias)
     required_capabilities = {capability for capability in ir.required_capabilities if capability}
-    candidate, score, reason = await pick_candidate(
-        tenant=tenant,
-        candidate_aliases=candidate_aliases or None,
-        required_capabilities=required_capabilities or None,
-    )
+    try:
+        candidate, score, reason = await pick_candidate(
+            tenant=tenant,
+            candidate_aliases=candidate_aliases or None,
+            required_capabilities=required_capabilities or None,
+        )
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+        diagnostics = capability_diagnostics(
+            tenant,
+            candidate_aliases=candidate_aliases or None,
+            required_capabilities=required_capabilities or None,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": exc.detail,
+                "message": "No ready ModelNet backend satisfies the requested model/capability constraints.",
+                **diagnostics,
+            },
+        ) from exc
     request_id = ir.request_id or str(uuid.uuid4())
     body = prepare_backend_body(candidate, body)
     url = candidate.api_base.rstrip("/") + "/chat/completions"
@@ -2343,32 +2492,113 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
         yield sse("error", {"error": str(exc)})
 
 
-async def run_ensemble_stream(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
-    if not tenant.allows_runner(request.runner):
-        yield sse("error", {"error": f"runner '{request.runner}' is not allowed for tenant '{tenant.tenant_id}'"})
-        return
+def allow_degraded_execution(request: EnsembleRequest) -> bool:
+    return coerce_bool(request.runner_config.get("allow_degraded"), default=False)
+
+
+def execution_contract_error(request: EnsembleRequest, tenant: GatewayTenant) -> dict[str, Any] | None:
+    native_runner = canonical_runner(str(request.runner_config.get("native_runner") or request.runner))
+    runner = RUNNER_PLUGINS.get(native_runner)
+    if runner is None:
+        return {
+            "error": f"unknown runner '{native_runner}'",
+            "runner": native_runner,
+            "available_runners": sorted(RUNNER_PLUGINS),
+        }
+
+    degraded_allowed = allow_degraded_execution(request)
+    if runner.status == "reserved" or (runner.status == "degraded" and not degraded_allowed):
+        return {
+            "error": f"runner '{native_runner}' is {runner.status}",
+            "runner": native_runner,
+            "status": runner.status,
+            "status_reason": runner.status_reason,
+            "allow_degraded_hint": "Set runner_config.allow_degraded=true to run degraded legacy fallbacks."
+            if runner.status == "degraded"
+            else None,
+        }
+
+    aggregator = AGGREGATOR_PLUGINS.get(request.aggregator)
+    if aggregator is None:
+        return {
+            "error": f"unknown aggregator '{request.aggregator}'",
+            "aggregator": request.aggregator,
+            "available_aggregators": sorted(AGGREGATOR_PLUGINS),
+        }
+    if aggregator.status == "reserved" or (aggregator.status == "degraded" and not degraded_allowed):
+        return {
+            "error": f"aggregator '{request.aggregator}' is {aggregator.status}",
+            "aggregator": request.aggregator,
+            "status": aggregator.status,
+            "status_reason": aggregator.status_reason,
+            "allow_degraded_hint": "Set runner_config.allow_degraded=true to run degraded legacy fallbacks."
+            if aggregator.status == "degraded"
+            else None,
+        }
+    if request.aggregator not in runner.supported_aggregators:
+        return {
+            "error": f"aggregator '{request.aggregator}' is not supported by runner '{native_runner}'",
+            "runner": native_runner,
+            "aggregator": request.aggregator,
+            "supported_aggregators": list(runner.supported_aggregators),
+        }
+
+    legacy_runner = legacy_runner_name(native_runner)
+    if tenant.allowed_runners and not (
+        tenant.allows_runner(request.runner)
+        or tenant.allows_runner(native_runner)
+        or tenant.allows_runner(legacy_runner)
+    ):
+        return {
+            "error": f"runner '{native_runner}' is not allowed for tenant '{tenant.tenant_id}'",
+            "runner": native_runner,
+            "legacy_runner": legacy_runner,
+            "tenant_id": tenant.tenant_id,
+        }
     if not tenant.allows_aggregator(request.aggregator):
-        yield sse("error", {"error": f"aggregator '{request.aggregator}' is not allowed for tenant '{tenant.tenant_id}'"})
+        return {
+            "error": f"aggregator '{request.aggregator}' is not allowed for tenant '{tenant.tenant_id}'",
+            "aggregator": request.aggregator,
+            "tenant_id": tenant.tenant_id,
+        }
+    return None
+
+
+async def run_ensemble_stream(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
+    contract_error = execution_contract_error(request, tenant)
+    if contract_error is not None:
+        yield sse("error", contract_error)
         return
-    yield sse("run_started", {"request_id": request.request_id, "tenant_id": tenant.tenant_id, "runner": request.runner})
+    native_runner = canonical_runner(str(request.runner_config.get("native_runner") or request.runner))
+    effective_runner = legacy_runner_name(native_runner)
+    yield sse(
+        "run_started",
+        {
+            "request_id": request.request_id,
+            "tenant_id": tenant.tenant_id,
+            "runner": effective_runner,
+            "native_runner": native_runner,
+            "aggregator": request.aggregator,
+        },
+    )
     try:
-        if request.runner == "token_step":
+        if effective_runner == "token_step":
             async for event in run_token_step_ensemble(request, tenant):
                 yield event
             return
-        if request.runner == "dynamic_collab_route":
+        if effective_runner == "dynamic_collab_route":
             async for event in run_dynamic_collab_ensemble(request, tenant):
                 yield event
             return
-        if request.runner == "response_aggregate":
+        if effective_runner == "response_aggregate":
             async for event in run_response_aggregate_ensemble(request, tenant):
                 yield event
             return
         async for event in run_route_ensemble(request, tenant):
             yield event
     except Exception as exc:  # noqa: BLE001
-        LOGGER.exception("ensemble runner failed request_id=%s runner=%s", request.request_id, request.runner)
-        yield sse("error", {"error": str(exc), "runner": request.runner})
+        LOGGER.exception("ensemble runner failed request_id=%s runner=%s", request.request_id, effective_runner)
+        yield sse("error", {"error": str(exc), "runner": effective_runner, "native_runner": native_runner})
 
 
 @app.get("/v1/registry/status")
