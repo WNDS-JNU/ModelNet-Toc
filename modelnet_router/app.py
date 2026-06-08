@@ -731,8 +731,8 @@ async def endpoint_health(candidate: Candidate) -> EndpointHealth:
     for url in urls:
         try:
             response = await http_client.get(url, headers=backend_headers(candidate), timeout=5)
-            if response.status_code < 500:
-                health = EndpointHealth(ready=response.status_code < 400, updated_at=now)
+            if response.status_code < 400:
+                health = EndpointHealth(ready=True, updated_at=now)
                 endpoint_health_cache[candidate.model_id] = health
                 return health
             last_error = f"{url} status {response.status_code}"
