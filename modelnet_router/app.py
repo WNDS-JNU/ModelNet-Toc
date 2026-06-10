@@ -64,6 +64,7 @@ PROMETHEUS_NAMESPACE = os.environ.get("MODELNET_PROMETHEUS_NAMESPACE", "kuboard"
 PROMETHEUS_SERVICE = os.environ.get("MODELNET_PROMETHEUS_SERVICE", "prometheus-k8s")
 PROMETHEUS_PORT = os.environ.get("MODELNET_PROMETHEUS_PORT", "9090")
 PUBLIC_MODEL_NAME = os.environ.get("MODELNET_ROUTER_MODEL_NAME", "modelnet")
+PUBLIC_AUTO_MODEL_NAME = os.environ.get("MODELNET_AUTO_MODEL_NAME", "modelnet-auto")
 BACKEND_API_KEY = os.environ.get("MODELNET_BACKEND_API_KEY", "")
 ROUTER_API_KEY = os.environ.get("MODELNET_ROUTER_API_KEY", "")
 API_KEY_TENANTS = load_gateway_tenants(
@@ -77,6 +78,25 @@ FAIL_COOLDOWN_SECONDS = float(os.environ.get("MODELNET_FAIL_COOLDOWN_SECONDS", "
 REQUEST_TIMEOUT_SECONDS = float(os.environ.get("MODELNET_BACKEND_TIMEOUT_SECONDS", "180"))
 ENSEMBLE_DEFAULT_MAX_TOKENS = int(os.environ.get("MODELNET_ENSEMBLE_DEFAULT_MAX_TOKENS", "256"))
 ENSEMBLE_MAX_SOURCES = int(os.environ.get("MODELNET_ENSEMBLE_MAX_SOURCES", "16"))
+AUTO_NETWORK_MAX_SOURCES = int(os.environ.get("MODELNET_AUTO_NETWORK_MAX_SOURCES", "2"))
+AUTO_NETWORK_MEDIUM_COMPLEXITY_THRESHOLD = int(
+    os.environ.get("MODELNET_AUTO_NETWORK_MEDIUM_COMPLEXITY_THRESHOLD", "2")
+)
+AUTO_NETWORK_HIGH_COMPLEXITY_THRESHOLD = int(
+    os.environ.get("MODELNET_AUTO_NETWORK_HIGH_COMPLEXITY_THRESHOLD", "4")
+)
+AUTO_ROLE_GRAPH_EXPERT_MAX_TOKENS = int(os.environ.get("MODELNET_AUTO_ROLE_GRAPH_EXPERT_MAX_TOKENS", "160"))
+AUTO_ROLE_GRAPH_CRITIC_MAX_TOKENS = int(os.environ.get("MODELNET_AUTO_ROLE_GRAPH_CRITIC_MAX_TOKENS", "180"))
+AUTO_ROLE_GRAPH_SYNTHESIS_MAX_TOKENS = int(os.environ.get("MODELNET_AUTO_ROLE_GRAPH_SYNTHESIS_MAX_TOKENS", "256"))
+AUTO_NETWORK_HIGH_QUALITY_MAX_SOURCES = int(
+    os.environ.get("MODELNET_AUTO_NETWORK_HIGH_QUALITY_MAX_SOURCES", "3")
+)
+AUTO_NETWORK_MAX_EXTRA_CALLS = int(os.environ.get("MODELNET_AUTO_NETWORK_MAX_EXTRA_CALLS", "1"))
+AUTO_NETWORK_LOAD_SHED_SCORE = float(os.environ.get("MODELNET_AUTO_NETWORK_LOAD_SHED_SCORE", "900"))
+AUTO_NETWORK_CONFIDENCE_THRESHOLD = float(os.environ.get("MODELNET_AUTO_NETWORK_CONFIDENCE_THRESHOLD", "0.68"))
+AUTO_CASCADE_VERIFIER_MAX_TOKENS = int(os.environ.get("MODELNET_AUTO_CASCADE_VERIFIER_MAX_TOKENS", "160"))
+AUTO_CONTRIBUTION_MAX_CHARS = int(os.environ.get("MODELNET_AUTO_CONTRIBUTION_MAX_CHARS", "1200"))
+AUTO_ROUTER_TRACE_PATH = Path(os.environ.get("MODELNET_ROUTER_TRACE_PATH", "/tmp/router_trace.jsonl"))
 ENSEMBLE_THINK_MAX_TOKENS = int(os.environ.get("MODELNET_ENSEMBLE_THINK_MAX_TOKENS", "1024"))
 RESPONSE_AGGREGATE_MAX_TOKENS = int(
     os.environ.get("MODELNET_RESPONSE_AGGREGATE_MAX_TOKENS", str(ENSEMBLE_DEFAULT_MAX_TOKENS))
@@ -893,6 +913,1832 @@ async def release_candidate(candidate: Candidate, error: str | None = None) -> N
             state.last_error = ""
 
 
+def cjk_text(values: tuple[int, ...]) -> str:
+    return "".join(chr(value) for value in values)
+
+
+AUTO_COMPLEXITY_KEYWORDS = {
+    "analyze",
+    "analysis",
+    "compare",
+    "design",
+    "derive",
+    "explain",
+    "implement",
+    "plan",
+    "prove",
+    "reason",
+    "review",
+    "tradeoff",
+    cjk_text((0x5206, 0x6790)),
+    cjk_text((0x5bf9, 0x6bd4)),
+    cjk_text((0x8bbe, 0x8ba1)),
+    cjk_text((0x5b9e, 0x73b0)),
+    cjk_text((0x63a8, 0x5bfc)),
+    cjk_text((0x8bc1, 0x660e)),
+    cjk_text((0x7cfb, 0x7edf)),
+    cjk_text((0x65b9, 0x6848)),
+    cjk_text((0x67b6, 0x6784)),
+    cjk_text((0x5305, 0x62ec)),
+    cjk_text((0x6743, 0x8861)),
+    cjk_text((0x98ce, 0x9669)),
+    cjk_text((0x5b89, 0x5168)),
+    cjk_text((0x81ea, 0x52a8, 0x7ec4, 0x7f51)),
+}
+
+AUTO_CODE_KEYWORDS = {
+    "api",
+    "bug",
+    "code",
+    "docker",
+    "implement",
+    "kubernetes",
+    "python",
+    "router",
+    "server",
+    "test",
+}
+
+AUTO_SECURITY_KEYWORDS = {
+    "abuse",
+    "auth",
+    "isolation",
+    "leak",
+    "prompt injection",
+    "risk",
+    "security",
+    "tenant",
+    "trace",
+    cjk_text((0x5b89, 0x5168)),
+    cjk_text((0x98ce, 0x9669)),
+    cjk_text((0x9694, 0x79bb)),
+}
+
+AUTO_DESIGN_KEYWORDS = {
+    "architecture",
+    "design",
+    "plan",
+    "roadmap",
+    "system",
+    "tradeoff",
+    cjk_text((0x67b6, 0x6784)),
+    cjk_text((0x65b9, 0x6848)),
+    cjk_text((0x7cfb, 0x7edf)),
+    cjk_text((0x6743, 0x8861)),
+}
+
+AUTO_MATH_REASONING_KEYWORDS = {
+    "calculate",
+    "derive",
+    "logic",
+    "math",
+    "prove",
+    "reason",
+    "solve",
+    cjk_text((0x63a8, 0x5bfc)),
+    cjk_text((0x8bc1, 0x660e)),
+}
+
+AUTO_CONCISE_KEYWORDS = {
+    "answer yes or no",
+    "briefly",
+    "concise",
+    "in five words",
+    "in one sentence",
+    "one short sentence",
+    "one sentence",
+    "short sentence",
+    cjk_text((0x4e00, 0x53e5, 0x8bdd)),
+    cjk_text((0x7b80, 0x77ed)),
+    cjk_text((0x7b80, 0x6d01)),
+}
+
+AUTO_STRONG_COMPLEXITY_KEYWORDS = {
+    "analyze",
+    "analysis",
+    "compare",
+    "design",
+    "derive",
+    "implement",
+    "plan",
+    "prove",
+    "review",
+    "tradeoff",
+    cjk_text((0x5206, 0x6790)),
+    cjk_text((0x5bf9, 0x6bd4)),
+    cjk_text((0x8bbe, 0x8ba1)),
+    cjk_text((0x5b9e, 0x73b0)),
+    cjk_text((0x63a8, 0x5bfc)),
+    cjk_text((0x8bc1, 0x660e)),
+    cjk_text((0x6743, 0x8861)),
+    cjk_text((0x98ce, 0x9669)),
+    cjk_text((0x5b89, 0x5168)),
+}
+
+ROLE_GRAPH_EXPERT_ROLES = (
+    "primary_solver",
+    "specialist",
+    "skeptic",
+)
+
+ROLE_GRAPH_CRITIC_PROMPT = (
+    "You are the critic in a multi-model network. Review the expert responses "
+    "against the original user request. Identify mistakes, missing constraints, "
+    "weak assumptions, and which expert contributions should be trusted. Return "
+    "a concise critique with actionable synthesis guidance."
+)
+
+ROLE_GRAPH_SYNTHESIS_PROMPT = (
+    "You are the synthesizer in a multi-model network. Use the expert responses "
+    "and the critic review as evidence. Produce the final answer for the user. "
+    "Do not mention internal model names unless they are relevant to the answer."
+)
+
+
+def text_from_messages(messages: list[dict[str, Any]]) -> str:
+    return "\n".join(chat_message_text({"choices": [{"message": message}]}) for message in messages)
+
+
+def estimate_token_count(text: str) -> int:
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
+
+
+def auto_task_features(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    text = text_from_messages(messages)
+    lowered = text.lower()
+    has_cjk = any("\u4e00" <= char <= "\u9fff" for char in text)
+    has_code = "```" in text or any(keyword in lowered for keyword in AUTO_CODE_KEYWORDS)
+    keyword_hits = sorted(keyword for keyword in AUTO_COMPLEXITY_KEYWORDS if keyword in lowered or keyword in text)
+    concise_hits = sorted(keyword for keyword in AUTO_CONCISE_KEYWORDS if keyword in lowered or keyword in text)
+    strong_hits = sorted(keyword for keyword in AUTO_STRONG_COMPLEXITY_KEYWORDS if keyword in lowered or keyword in text)
+    security_hits = sorted(keyword for keyword in AUTO_SECURITY_KEYWORDS if keyword in lowered or keyword in text)
+    design_hits = sorted(keyword for keyword in AUTO_DESIGN_KEYWORDS if keyword in lowered or keyword in text)
+    reasoning_hits = sorted(keyword for keyword in AUTO_MATH_REASONING_KEYWORDS if keyword in lowered or keyword in text)
+    question_count = text.count("?") + text.count("\uff1f")
+    complexity = 0
+    if len(text) >= 240:
+        complexity += 1
+    if len(text) >= 700:
+        complexity += 1
+    if len(messages) >= 4:
+        complexity += 1
+    if question_count >= 2:
+        complexity += 1
+    if keyword_hits:
+        complexity += 1
+    if len(keyword_hits) >= 2:
+        complexity += 1
+    if has_code:
+        complexity += 1
+    if len(security_hits) >= 2 or len(design_hits) >= 2 or len(reasoning_hits) >= 2:
+        complexity += 1
+    if concise_hits and len(text) <= 180 and not strong_hits and complexity <= 2:
+        complexity = min(complexity, 1)
+    return {
+        "chars": len(text),
+        "complexity": complexity,
+        "concise_hits": concise_hits[:8],
+        "has_design": bool(design_hits),
+        "has_cjk": has_cjk,
+        "has_code": has_code,
+        "has_reasoning": bool(reasoning_hits),
+        "has_security": bool(security_hits),
+        "design_hits": design_hits[:8],
+        "keyword_hits": keyword_hits[:8],
+        "question_count": question_count,
+        "reasoning_hits": reasoning_hits[:8],
+        "security_hits": security_hits[:8],
+        "strong_complexity_hits": strong_hits[:8],
+    }
+
+
+def infer_auto_task_type(features: dict[str, Any]) -> str:
+    if features.get("has_code"):
+        return "code"
+    if features.get("has_security"):
+        return "security"
+    if features.get("has_design"):
+        return "design"
+    if features.get("has_reasoning"):
+        return "reasoning"
+    if features.get("has_cjk"):
+        return "multilingual"
+    return "general"
+
+
+def extract_auto_features(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    features = dict(auto_task_features(messages))
+    user_turns = sum(1 for message in messages if str(message.get("role") or "").lower() == "user")
+    features["task_type"] = infer_auto_task_type(features)
+    features["history_turns"] = max(0, len(messages) - 1)
+    features["user_turns"] = user_turns
+    features["prompt_chars"] = int(features.get("chars") or 0)
+    return features
+
+
+def model_family(candidate: Candidate) -> str:
+    haystack = f"{candidate.model_id} {candidate.backend_model}".lower()
+    for family in (
+        "qwen",
+        "llama",
+        "gemma",
+        "granite",
+        "hunyuan",
+        "ministral",
+        "glm",
+        "kimi",
+        "gpt-oss",
+        "intel",
+    ):
+        if family in haystack:
+            return family
+    return candidate.backend_type
+
+
+def model_size_b(candidate: Candidate) -> float:
+    haystack = f"{candidate.model_id} {candidate.backend_model}".lower()
+    values = []
+    for match in re.finditer(r"(\d+(?:\.\d+)?)\s*b", haystack):
+        try:
+            values.append(float(match.group(1)))
+        except ValueError:
+            continue
+    return max(values) if values else 0.0
+
+
+def auto_adjusted_score(candidate: Candidate, route_score: float, features: dict[str, Any]) -> float:
+    adjusted = route_score
+    size = min(model_size_b(candidate), 40.0)
+    complexity = int(features.get("complexity") or 0)
+    family = model_family(candidate)
+    if complexity >= AUTO_NETWORK_HIGH_COMPLEXITY_THRESHOLD:
+        adjusted -= size * 4.0
+    elif complexity <= 1:
+        adjusted += size * 2.5
+    if features.get("has_cjk") and family in {"qwen", "hunyuan", "glm"}:
+        adjusted -= 40.0
+    if features.get("has_code") and family in {"qwen", "llama", "gpt-oss"}:
+        adjusted -= 25.0
+    return adjusted
+
+
+def auto_role_score(candidate: Candidate, route_score: float, features: dict[str, Any], role: str) -> float:
+    adjusted = auto_adjusted_score(candidate, route_score, features)
+    family = model_family(candidate)
+    size = min(model_size_b(candidate), 40.0)
+    if role == "primary_solver":
+        if size >= 7:
+            adjusted -= 10.0
+        return adjusted
+    if role == "specialist":
+        if features.get("has_code") and family in {"qwen", "llama", "gpt-oss"}:
+            adjusted -= 35.0
+        if features.get("has_security") and family in {"qwen", "llama", "granite"}:
+            adjusted -= 25.0
+        if features.get("has_design") and family in {"qwen", "llama", "granite"}:
+            adjusted -= 20.0
+        if features.get("has_reasoning") and family in {"qwen", "llama"}:
+            adjusted -= 25.0
+        if features.get("has_cjk") and family in {"qwen", "hunyuan", "glm"}:
+            adjusted -= 30.0
+        return adjusted
+    if role == "skeptic":
+        if family in {"granite", "gemma", "ministral"}:
+            adjusted -= 30.0
+        adjusted += size * 1.0
+        return adjusted
+    if role == "critic":
+        if family in {"qwen", "llama", "granite"}:
+            adjusted -= 20.0
+        return adjusted
+    if role == "synthesizer":
+        if size >= 7:
+            adjusted -= 20.0
+        if features.get("has_cjk") and family in {"qwen", "hunyuan", "glm"}:
+            adjusted -= 20.0
+        return adjusted
+    return adjusted
+
+
+async def scored_candidate_pool(
+    tenant: GatewayTenant,
+    *,
+    candidate_aliases: set[str] | None = None,
+    required_capabilities: set[str] | None = None,
+) -> list[tuple[Candidate, float, str]]:
+    candidates = visible_candidates(tenant)
+    if candidate_aliases:
+        candidates = [candidate for candidate in candidates if candidate.model_id in candidate_aliases]
+    if required_capabilities:
+        candidates = [
+            candidate
+            for candidate in candidates
+            if required_capabilities.issubset(set(candidate_capabilities(candidate)))
+        ]
+    if not candidates:
+        return []
+
+    snapshot, prometheus = await asyncio.gather(load_k8s_snapshot(), load_prometheus_snapshot())
+    endpoint_statuses: dict[str, EndpointHealth] = {}
+    endpoint_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.backend_type in ENDPOINT_HEALTH_BACKENDS and not ready_pods_for(candidate, snapshot)
+    ]
+    if endpoint_candidates:
+        health_results = await asyncio.gather(*(endpoint_health(candidate) for candidate in endpoint_candidates))
+        endpoint_statuses = {
+            candidate.model_id: health
+            for candidate, health in zip(endpoint_candidates, health_results, strict=False)
+        }
+
+    async with state_lock:
+        scored = []
+        for candidate in candidates:
+            state = states.setdefault(candidate.model_id, CandidateState())
+            score, reason = candidate_score(
+                candidate,
+                snapshot,
+                state,
+                prometheus,
+                endpoint_statuses.get(candidate.model_id),
+            )
+            if math.isfinite(score):
+                scored.append((candidate, score, reason))
+    return sorted(scored, key=lambda item: (item[1], item[0].model_id))
+
+
+def explicit_auto_aliases(request: EnsembleRequest) -> set[str] | None:
+    aliases = {
+        source.model_alias
+        for source in request.sources
+        if source.model_alias and source.model_alias not in {PUBLIC_MODEL_NAME, PUBLIC_AUTO_MODEL_NAME}
+    }
+    raw = request.runner_config.get("candidate_aliases")
+    if isinstance(raw, str) and raw:
+        aliases.add(raw)
+    elif isinstance(raw, list):
+        aliases.update(str(item) for item in raw if item)
+    return aliases or None
+
+
+def select_auto_candidates(
+    scored: list[tuple[Candidate, float, str]],
+    *,
+    count: int,
+    features: dict[str, Any],
+) -> list[tuple[Candidate, float, str]]:
+    ordered = sorted(
+        scored,
+        key=lambda item: (
+            auto_adjusted_score(item[0], item[1], features),
+            item[1],
+            item[0].model_id,
+        ),
+    )
+    selected: list[tuple[Candidate, float, str]] = []
+    families: set[str] = set()
+    for item in ordered:
+        family = model_family(item[0])
+        if family in families and len(ordered) - len(selected) > count - len(selected):
+            continue
+        selected.append(item)
+        families.add(family)
+        if len(selected) >= count:
+            return selected
+    for item in ordered:
+        if item not in selected:
+            selected.append(item)
+            if len(selected) >= count:
+                break
+    return selected
+
+
+def select_role_candidate(
+    scored: list[tuple[Candidate, float, str]],
+    *,
+    features: dict[str, Any],
+    role: str,
+    used_model_ids: set[str],
+    used_families: set[str],
+    prefer_new_family: bool = True,
+) -> tuple[Candidate, float, str] | None:
+    ordered = sorted(
+        scored,
+        key=lambda item: (
+            auto_role_score(item[0], item[1], features, role),
+            item[1],
+            item[0].model_id,
+        ),
+    )
+    for item in ordered:
+        candidate = item[0]
+        if candidate.model_id in used_model_ids:
+            continue
+        if prefer_new_family and model_family(candidate) in used_families:
+            continue
+        return item
+    for item in ordered:
+        if item[0].model_id not in used_model_ids:
+            return item
+    return None
+
+
+def select_role_graph_candidates(
+    scored: list[tuple[Candidate, float, str]],
+    *,
+    features: dict[str, Any],
+    expert_count: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None, dict[str, Any] | None]:
+    used_model_ids: set[str] = set()
+    used_families: set[str] = set()
+    experts: list[dict[str, Any]] = []
+    for role in ROLE_GRAPH_EXPERT_ROLES[:expert_count]:
+        item = select_role_candidate(
+            scored,
+            features=features,
+            role=role,
+            used_model_ids=used_model_ids,
+            used_families=used_families,
+            prefer_new_family=True,
+        )
+        if item is None:
+            item = select_role_candidate(
+                scored,
+                features=features,
+                role=role,
+                used_model_ids=used_model_ids,
+                used_families=used_families,
+                prefer_new_family=False,
+            )
+        if item is None:
+            break
+        candidate, score, reason = item
+        used_model_ids.add(candidate.model_id)
+        used_families.add(model_family(candidate))
+        experts.append({"role": role, "candidate": candidate, "score": score, "reason": reason})
+
+    critic_item = select_role_candidate(
+        scored,
+        features=features,
+        role="critic",
+        used_model_ids=used_model_ids,
+        used_families=used_families,
+        prefer_new_family=True,
+    ) or select_role_candidate(
+        scored,
+        features=features,
+        role="critic",
+        used_model_ids=used_model_ids,
+        used_families=used_families,
+        prefer_new_family=False,
+    )
+    critic = None
+    if critic_item is not None:
+        candidate, score, reason = critic_item
+        used_model_ids.add(candidate.model_id)
+        used_families.add(model_family(candidate))
+        critic = {"role": "critic", "candidate": candidate, "score": score, "reason": reason}
+
+    synthesizer_item = select_role_candidate(
+        scored,
+        features=features,
+        role="synthesizer",
+        used_model_ids=used_model_ids,
+        used_families=used_families,
+        prefer_new_family=False,
+    )
+    if synthesizer_item is None:
+        synthesizer_item = scored[0] if scored else None
+    synthesizer = None
+    if synthesizer_item is not None:
+        candidate, score, reason = synthesizer_item
+        synthesizer = {"role": "synthesizer", "candidate": candidate, "score": score, "reason": reason}
+    return experts, critic, synthesizer
+
+
+def target_auto_source_count(
+    request: EnsembleRequest,
+    features: dict[str, Any],
+    available_count: int,
+) -> int:
+    requested_max = positive_int(
+        request.runner_config.get("max_auto_sources", AUTO_NETWORK_MAX_SOURCES),
+        AUTO_NETWORK_MAX_SOURCES,
+    )
+    requested_max = max(1, min(requested_max, ENSEMBLE_MAX_SOURCES, AUTO_NETWORK_MAX_SOURCES))
+    strategy = str(request.runner_config.get("strategy") or "").strip()
+    if strategy == "single_best":
+        return 1
+    if strategy == "role_graph":
+        return min(max(2, requested_max), available_count)
+    if strategy in {"parallel_consensus", "specialist_synthesis"}:
+        return min(max(2, requested_max), available_count)
+    complexity = int(features.get("complexity") or 0)
+    if complexity >= AUTO_NETWORK_HIGH_COMPLEXITY_THRESHOLD:
+        return min(max(2, requested_max), available_count)
+    if complexity >= AUTO_NETWORK_MEDIUM_COMPLEXITY_THRESHOLD:
+        return min(max(2, requested_max), available_count)
+    return 1
+
+
+def clamp_float(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
+def requested_high_quality(request: EnsembleRequest) -> bool:
+    quality = str(request.runner_config.get("quality") or "").strip().lower()
+    return quality in {"high", "best"} or coerce_bool(request.runner_config.get("high_quality"), default=False)
+
+
+def estimate_auto_confidence(
+    scored: list[tuple[Candidate, float, str]],
+    features: dict[str, Any],
+) -> tuple[float, list[str]]:
+    complexity = int(features.get("complexity") or 0)
+    confidence = 0.84 - min(complexity, 6) * 0.055
+    reasons: list[str] = []
+    ordered = sorted(
+        scored,
+        key=lambda item: (
+            auto_adjusted_score(item[0], item[1], features),
+            item[1],
+            item[0].model_id,
+        ),
+    )
+    if features.get("concise_hits") and complexity <= 1:
+        confidence += 0.06
+        reasons.append("concise_prompt")
+    if features.get("has_code") or features.get("has_security") or features.get("has_reasoning"):
+        confidence -= 0.05
+        reasons.append("specialized_task")
+    if len(ordered) >= 2:
+        first = auto_adjusted_score(ordered[0][0], ordered[0][1], features)
+        second = auto_adjusted_score(ordered[1][0], ordered[1][1], features)
+        gap = max(0.0, second - first)
+        confidence += min(0.12, gap / 500.0)
+        if gap >= 80:
+            reasons.append("clear_route_gap")
+    else:
+        confidence -= 0.08
+        reasons.append("single_candidate")
+    if ordered and str(ordered[0][2]).endswith("no-device-metrics"):
+        confidence -= 0.04
+        reasons.append("limited_metrics")
+    return round(clamp_float(confidence, 0.05, 0.95), 3), reasons
+
+
+def estimate_runtime_budget(
+    request: EnsembleRequest,
+    features: dict[str, Any],
+    scored: list[tuple[Candidate, float, str]],
+) -> dict[str, Any]:
+    available_count = len(scored)
+    requested_max = positive_int(
+        request.runner_config.get("max_auto_sources", AUTO_NETWORK_MAX_SOURCES),
+        AUTO_NETWORK_MAX_SOURCES,
+    )
+    if requested_high_quality(request):
+        requested_max = max(requested_max, AUTO_NETWORK_HIGH_QUALITY_MAX_SOURCES)
+    requested_max = max(1, min(requested_max, ENSEMBLE_MAX_SOURCES, max(1, available_count)))
+
+    best_score = min((score for _, score, _ in scored), default=float("inf"))
+    best_reason = next((reason for _, score, reason in scored if score == best_score), "")
+    high_load = math.isfinite(best_score) and best_score >= AUTO_NETWORK_LOAD_SHED_SCORE
+    load_state = "shed" if high_load else "normal"
+    if available_count < 2:
+        load_state = "limited"
+
+    complexity = int(features.get("complexity") or 0)
+    source_limit = requested_max
+    if high_load:
+        source_limit = min(source_limit, 2 if complexity >= AUTO_NETWORK_HIGH_COMPLEXITY_THRESHOLD else 1)
+    source_limit = max(1, min(source_limit, available_count or 1))
+
+    max_extra_calls = positive_int(
+        request.runner_config.get("max_extra_calls", AUTO_NETWORK_MAX_EXTRA_CALLS),
+        AUTO_NETWORK_MAX_EXTRA_CALLS,
+    )
+    if load_state in {"shed", "limited"}:
+        max_extra_calls = 0
+    max_extra_calls = max(0, min(max_extra_calls, max(0, source_limit - 1)))
+
+    return {
+        "requested_max_sources": requested_max,
+        "max_sources": source_limit,
+        "max_extra_calls": max_extra_calls,
+        "load_state": load_state,
+        "load_shed_threshold": AUTO_NETWORK_LOAD_SHED_SCORE,
+        "best_route_score": best_score if math.isfinite(best_score) else None,
+        "best_route_reason": best_reason,
+        "ready_candidates": available_count,
+    }
+
+
+def choose_auto_topology(
+    request: EnsembleRequest,
+    features: dict[str, Any],
+    scored: list[tuple[Candidate, float, str]],
+    budget: dict[str, Any],
+) -> dict[str, Any]:
+    requested_strategy = str(request.runner_config.get("strategy") or "").strip()
+    strategy = requested_strategy or "adaptive_sparse_graph"
+    available_count = len(scored)
+    source_limit = max(1, int(budget.get("max_sources") or 1))
+    confidence, confidence_reasons = estimate_auto_confidence(scored, features)
+    complexity = int(features.get("complexity") or 0)
+    load_state = str(budget.get("load_state") or "normal")
+
+    def route_topology(reason: str, selected_strategy: str = strategy) -> dict[str, Any]:
+        return {
+            "strategy": selected_strategy,
+            "runner": "route",
+            "native_runner": "route.once",
+            "aggregator": "load_aware",
+            "source_count": 1,
+            "stages": ["route.once"],
+            "confidence_score": confidence,
+            "confidence_reasons": confidence_reasons,
+            "escalation_reason": reason,
+        }
+
+    if strategy == "single_best":
+        return route_topology("explicit_single_best", "single_best")
+
+    if strategy == "parallel_consensus":
+        count = min(max(2, source_limit), available_count)
+        if count < 2:
+            return route_topology("parallel_consensus_insufficient_candidates", "parallel_consensus")
+        return {
+            "strategy": "parallel_consensus",
+            "runner": "response_aggregate",
+            "native_runner": "response.parallel",
+            "aggregator": "synthesize",
+            "source_count": count,
+            "stages": ["sources.parallel", "synthesizer.final"],
+            "confidence_score": confidence,
+            "confidence_reasons": confidence_reasons,
+            "escalation_reason": "explicit_parallel_consensus",
+        }
+
+    if strategy == "role_graph":
+        count = min(max(2, source_limit), available_count)
+        if count < 2:
+            return route_topology("role_graph_insufficient_candidates", "role_graph")
+        return {
+            "strategy": "role_graph",
+            "runner": "role_graph",
+            "native_runner": "auto.role_graph",
+            "aggregator": "synthesize",
+            "source_count": count,
+            "stages": ["experts.parallel", "synthesizer.final"],
+            "confidence_score": confidence,
+            "confidence_reasons": confidence_reasons,
+            "escalation_reason": "explicit_role_graph",
+        }
+
+    if strategy == "cascade_verify":
+        count = min(2, source_limit, available_count)
+        if count < 2 or int(budget.get("max_extra_calls") or 0) < 1:
+            return route_topology("cascade_verify_budget_exhausted", "cascade_verify")
+        return {
+            "strategy": "cascade_verify",
+            "runner": "cascade_verify",
+            "native_runner": "auto.cascade_verify",
+            "aggregator": "verify_then_escalate",
+            "source_count": count,
+            "stages": ["primary.answer", "verifier.check", "optional.escalation"],
+            "confidence_score": confidence,
+            "confidence_reasons": confidence_reasons,
+            "escalation_reason": "explicit_cascade_verify",
+        }
+
+    if strategy not in {"adaptive_sparse_graph", "adaptive"}:
+        confidence_reasons = [*confidence_reasons, f"unknown_strategy:{strategy}"]
+        strategy = "adaptive_sparse_graph"
+
+    if load_state == "shed":
+        return route_topology("load_shed_route_once", strategy)
+    if confidence >= AUTO_NETWORK_CONFIDENCE_THRESHOLD and complexity < AUTO_NETWORK_MEDIUM_COMPLEXITY_THRESHOLD:
+        return route_topology("high_confidence_low_complexity", strategy)
+    if (
+        requested_high_quality(request)
+        and complexity >= AUTO_NETWORK_HIGH_COMPLEXITY_THRESHOLD
+        and source_limit >= 3
+        and available_count >= 3
+    ):
+        return {
+            "strategy": strategy,
+            "runner": "role_graph",
+            "native_runner": "auto.role_graph",
+            "aggregator": "synthesize",
+            "source_count": 3,
+            "stages": ["experts.parallel", "synthesizer.final"],
+            "confidence_score": confidence,
+            "confidence_reasons": confidence_reasons,
+            "escalation_reason": "high_quality_complex_task",
+        }
+    if available_count >= 2 and int(budget.get("max_extra_calls") or 0) >= 1:
+        return {
+            "strategy": strategy,
+            "runner": "cascade_verify",
+            "native_runner": "auto.cascade_verify",
+            "aggregator": "verify_then_escalate",
+            "source_count": 2,
+            "stages": ["primary.answer", "verifier.check", "optional.escalation"],
+            "confidence_score": confidence,
+            "confidence_reasons": confidence_reasons,
+            "escalation_reason": "verify_complex_or_low_confidence",
+        }
+    return route_topology("budget_exhausted_route_once", strategy)
+
+
+def role_system_prompt(role: str, features: dict[str, Any]) -> str:
+    domain_notes: list[str] = []
+    if features.get("has_code"):
+        domain_notes.append("Pay close attention to code behavior, edge cases, and implementation feasibility.")
+    if features.get("has_security"):
+        domain_notes.append("Pay close attention to tenant isolation, leakage, abuse controls, and adversarial prompts.")
+    if features.get("has_design"):
+        domain_notes.append("Pay close attention to architecture, operational tradeoffs, and staged rollout.")
+    if features.get("has_reasoning"):
+        domain_notes.append("Pay close attention to the reasoning chain and final numeric or logical correctness.")
+    domain_text = " ".join(domain_notes)
+    if role == "primary_solver":
+        return (
+            "You are the primary solver in a multi-model network. Produce a direct, correct answer "
+            "to the user request. Favor practical detail over speculation. " + domain_text
+        ).strip()
+    if role == "specialist":
+        return (
+            "You are the specialist expert in a multi-model network. Focus on domain-specific details, "
+            "constraints, failure modes, and implementation implications that a general answer may miss. "
+            + domain_text
+        ).strip()
+    if role == "skeptic":
+        return (
+            "You are the skeptical expert in a multi-model network. Look for hidden assumptions, weak "
+            "claims, missing edge cases, and alternatives. Give useful corrections, not generic caveats. "
+            + domain_text
+        ).strip()
+    return "You are an expert node in a multi-model network. Answer the user request concisely."
+
+
+def role_source_from_base(
+    base_source: EnsembleSource,
+    *,
+    role: str,
+    source_id: str,
+    model_alias: str,
+    max_tokens: int,
+    features: dict[str, Any],
+) -> EnsembleSource:
+    sampling_params = dict(base_source.sampling_params)
+    sampling_params["max_tokens"] = positive_int(sampling_params.get("max_tokens", max_tokens), max_tokens)
+    sampling_params["auto_role"] = role
+    messages = [{"role": "system", "content": role_system_prompt(role, features)}, *message_list(base_source)]
+    return EnsembleSource(
+        source_id=source_id,
+        model_alias=model_alias,
+        prompt=base_source.prompt,
+        messages=messages,
+        sampling_params=sampling_params,
+        extra=dict(base_source.extra),
+        weight=base_source.weight,
+    )
+
+
+def role_selection_payload(item: dict[str, Any], source_id: str | None = None) -> dict[str, Any]:
+    candidate = item["candidate"]
+    payload = {
+        "role": item["role"],
+        "backend": candidate_backend_info(candidate, score=item["score"], reason=item["reason"]),
+        "family": model_family(candidate),
+        "model_size_b": model_size_b(candidate),
+    }
+    if source_id:
+        payload["source_id"] = source_id
+    return payload
+
+
+def compress_contribution_text(text: str, max_chars: int | None = None) -> str:
+    limit = positive_int(max_chars or AUTO_CONTRIBUTION_MAX_CHARS, AUTO_CONTRIBUTION_MAX_CHARS)
+    compact = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(compact) <= limit:
+        return compact
+    return compact[: max(0, limit - 20)].rstrip() + " ... [truncated]"
+
+
+def compressed_contributions(results: list[dict[str, Any]]) -> dict[str, str]:
+    return {
+        str(result.get("source_id") or f"source-{index + 1}"): compress_contribution_text(str(result.get("text") or ""))
+        for index, result in enumerate(results)
+    }
+
+
+def token_set_for_overlap(text: str) -> set[str]:
+    return set(re.findall(r"[\w\u4e00-\u9fff]{2,}", text.lower()))
+
+
+def expert_conflict_score(results: list[dict[str, Any]]) -> float:
+    texts = [str(result.get("text") or "") for result in results if result.get("text")]
+    if len(texts) < 2:
+        return 0.0
+    scores: list[float] = []
+    for index, left in enumerate(texts):
+        left_tokens = token_set_for_overlap(left)
+        for right in texts[index + 1 :]:
+            right_tokens = token_set_for_overlap(right)
+            if not left_tokens or not right_tokens:
+                continue
+            overlap = len(left_tokens & right_tokens) / max(1, len(left_tokens | right_tokens))
+            scores.append(1.0 - overlap)
+    yes_no = [
+        bool(re.search(r"\b(yes|true|correct)\b", text.lower()))
+        - bool(re.search(r"\b(no|false|incorrect)\b", text.lower()))
+        for text in texts
+    ]
+    if any(value > 0 for value in yes_no) and any(value < 0 for value in yes_no):
+        scores.append(0.9)
+    return round(max(scores or [0.0]), 3)
+
+
+def build_critic_prompt(original_prompt: str, expert_results: list[dict[str, Any]]) -> str:
+    sections = [
+        "Original user request:",
+        original_prompt,
+        "",
+        "Expert responses:",
+    ]
+    for index, result in enumerate(expert_results, start=1):
+        sections.extend(
+            [
+                "",
+                f"Expert {index} role={result.get('role')} source_id={result.get('source_id')}:",
+                "```text",
+                compress_contribution_text(str(result.get("text") or "")),
+                "```",
+            ]
+        )
+    return "\n".join(sections)
+
+
+def build_role_graph_synthesis_prompt(
+    original_prompt: str,
+    expert_results: list[dict[str, Any]],
+    critic_text: str,
+) -> str:
+    sections = [
+        "Original user request:",
+        original_prompt,
+        "",
+        "Expert responses:",
+    ]
+    for index, result in enumerate(expert_results, start=1):
+        sections.extend(
+            [
+                "",
+                f"Expert {index} role={result.get('role')} source_id={result.get('source_id')}:",
+                "```text",
+                compress_contribution_text(str(result.get("text") or "")),
+                "```",
+            ]
+        )
+    if critic_text:
+        sections.extend(["", "Critic review:", "```text", critic_text, "```"])
+    sections.extend(["", "Now produce the final user-facing answer."])
+    return "\n".join(sections)
+
+
+async def plan_auto_ensemble(
+    request: EnsembleRequest,
+    tenant: GatewayTenant,
+) -> tuple[EnsembleRequest, dict[str, Any]]:
+    base_source = request.sources[0]
+    features = extract_auto_features(message_list(base_source))
+    required_capabilities = set(str(item) for item in request.runner_config.get("required_capabilities", []) if item)
+    alias_pool = explicit_auto_aliases(request)
+    scored = await scored_candidate_pool(
+        tenant,
+        candidate_aliases=alias_pool,
+        required_capabilities=required_capabilities or None,
+    )
+    if not scored:
+        raise HTTPException(status_code=503, detail="No ready ModelNet backend for auto network planning")
+
+    budget = estimate_runtime_budget(request, features, scored)
+    topology = choose_auto_topology(request, features, scored, budget)
+    source_count = int(topology["source_count"])
+    native_runner = str(topology["native_runner"])
+    runner = str(topology["runner"])
+    aggregator = str(topology["aggregator"])
+    strategy = str(topology["strategy"])
+
+    common_plan: dict[str, Any] = {
+        "planner": "query-conditioned-template-v3",
+        "optimization_target": "adaptive_sparse_latency_quality",
+        "strategy": strategy,
+        "runner": native_runner,
+        "aggregator": aggregator,
+        "features": features,
+        "alias_pool": sorted(alias_pool or []),
+        "call_budget": budget,
+        "load_state": budget.get("load_state"),
+        "confidence_score": topology.get("confidence_score"),
+        "confidence_reasons": topology.get("confidence_reasons", []),
+        "escalation_reason": topology.get("escalation_reason"),
+        "stages": topology.get("stages", []),
+    }
+
+    if runner == "role_graph":
+        experts, critic_role, synthesizer_role = select_role_graph_candidates(
+            scored,
+            features=features,
+            expert_count=source_count,
+        )
+        if len(experts) >= 2:
+            expert_max_tokens = positive_int(
+                request.runner_config.get("expert_max_tokens", AUTO_ROLE_GRAPH_EXPERT_MAX_TOKENS),
+                AUTO_ROLE_GRAPH_EXPERT_MAX_TOKENS,
+            )
+            sources = [
+                role_source_from_base(
+                    base_source,
+                    role=item["role"],
+                    source_id=f"expert-{index + 1}",
+                    model_alias=item["candidate"].model_id,
+                    max_tokens=expert_max_tokens,
+                    features=features,
+                )
+                for index, item in enumerate(experts)
+            ]
+            runner_config = dict(request.runner_config)
+            runner_config["native_runner"] = native_runner
+            runner_config["auto_strategy"] = strategy
+            explicit_critic = runner_config["enable_critic"] if "enable_critic" in runner_config else None
+            runner_config["role_graph"] = {
+                "critic": role_selection_payload(critic_role) if critic_role else None,
+                "enable_critic": explicit_critic,
+                "critic_policy": "adaptive",
+                "synthesizer": role_selection_payload(synthesizer_role) if synthesizer_role else None,
+            }
+            plan = {
+                **common_plan,
+                "source_count": len(sources),
+                "selected_sources": [
+                    role_selection_payload(item, source.source_id)
+                    for item, source in zip(experts, sources, strict=False)
+                ],
+                "selected_roles": {
+                    "experts": [
+                        role_selection_payload(item, source.source_id)
+                        for item, source in zip(experts, sources, strict=False)
+                    ],
+                    "critic": role_selection_payload(critic_role) if critic_role else None,
+                    "synthesizer": role_selection_payload(synthesizer_role) if synthesizer_role else None,
+                },
+            }
+            runner_config["auto_plan"] = plan
+            planned_request = request.model_copy(
+                update={
+                    "sources": sources,
+                    "runner": runner,
+                    "runner_config": runner_config,
+                    "aggregator": aggregator,
+                }
+            )
+            return planned_request, plan
+
+        topology = choose_auto_topology(
+            request.model_copy(update={"runner_config": {**request.runner_config, "strategy": "single_best"}}),
+            features,
+            scored,
+            {**budget, "max_sources": 1, "max_extra_calls": 0},
+        )
+        source_count = 1
+        native_runner = str(topology["native_runner"])
+        runner = str(topology["runner"])
+        aggregator = str(topology["aggregator"])
+        strategy = str(topology["strategy"])
+        common_plan.update(
+            {
+                "strategy": strategy,
+                "runner": native_runner,
+                "aggregator": aggregator,
+                "escalation_reason": "role_graph_planning_fallback",
+                "stages": topology.get("stages", []),
+            }
+        )
+
+    selected = select_auto_candidates(scored, count=source_count, features=features)
+
+    sources = [
+        EnsembleSource(
+            source_id=(
+                "primary"
+                if runner == "cascade_verify" and index == 0
+                else "escalation"
+                if runner == "cascade_verify" and index == 1
+                else f"auto-source-{index + 1}"
+            ),
+            model_alias=candidate.model_id,
+            prompt=base_source.prompt,
+            messages=base_source.messages,
+            sampling_params=dict(base_source.sampling_params),
+            extra=dict(base_source.extra),
+            weight=1.0,
+        )
+        for index, (candidate, _, _) in enumerate(selected)
+    ]
+    runner_config = dict(request.runner_config)
+    runner_config["native_runner"] = native_runner
+    runner_config["auto_strategy"] = strategy
+    runner_config["adaptive_budget"] = budget
+    if native_runner == "response.parallel":
+        runner_config.setdefault("instruction", response_aggregate_instruction(request))
+    if runner == "cascade_verify":
+        verifier_item = selected[1] if len(selected) > 1 else selected[0]
+        verifier_candidate, verifier_score, verifier_reason = verifier_item
+        runner_config["cascade_verify"] = {
+            "verifier": {
+                "source_id": "verifier",
+                "backend": candidate_backend_info(
+                    verifier_candidate,
+                    score=verifier_score,
+                    reason=verifier_reason,
+                ),
+                "family": model_family(verifier_candidate),
+                "model_size_b": model_size_b(verifier_candidate),
+            },
+            "confidence_threshold": AUTO_NETWORK_CONFIDENCE_THRESHOLD,
+            "max_extra_calls": budget.get("max_extra_calls", 0),
+            "verifier_max_tokens": positive_int(
+                request.runner_config.get("verifier_max_tokens", AUTO_CASCADE_VERIFIER_MAX_TOKENS),
+                AUTO_CASCADE_VERIFIER_MAX_TOKENS,
+            ),
+        }
+
+    plan = {
+        **common_plan,
+        "source_count": len(sources),
+        "selected_sources": [
+            {
+                "source_id": source.source_id,
+                "backend": candidate_backend_info(candidate, score=score, reason=reason),
+                "family": model_family(candidate),
+                "model_size_b": model_size_b(candidate),
+                "adjusted_score": auto_adjusted_score(candidate, score, features),
+            }
+            for source, (candidate, score, reason) in zip(sources, selected, strict=False)
+        ],
+    }
+    if runner == "cascade_verify":
+        plan["verifier"] = runner_config["cascade_verify"]["verifier"]
+    runner_config["auto_plan"] = plan
+    planned_request = request.model_copy(
+        update={
+            "sources": sources,
+            "runner": runner,
+            "runner_config": runner_config,
+            "aggregator": aggregator,
+        }
+    )
+    return planned_request, plan
+
+
+async def run_role_graph_ensemble(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
+    if len(request.sources) > ENSEMBLE_MAX_SOURCES:
+        yield sse("error", {"error": f"too many sources; max={ENSEMBLE_MAX_SOURCES}"})
+        return
+    if len(request.sources) < 2:
+        yield sse("error", {"error": "role_graph requires at least two expert sources"})
+        return
+
+    started = time.perf_counter()
+    role_graph = dict(request.runner_config.get("role_graph") or {})
+    original_prompt = request.sources[0].prompt or text_from_messages(message_list(request.sources[0]))
+    try:
+        expert_results = await asyncio.gather(
+            *(generate_response_source(tenant, source) for source in request.sources),
+            return_exceptions=False,
+        )
+        for source, result in zip(request.sources, expert_results, strict=False):
+            result["role"] = str(source.sampling_params.get("auto_role") or source.source_id or "expert")
+            result["role_prompt"] = str((source.messages or [{}])[0].get("content") if source.messages else "")
+
+        successful = [result for result in expert_results if result.get("error") is None and result.get("text")]
+        failed = [result for result in expert_results if result not in successful]
+        for result in expert_results:
+            backend = result.get("backend")
+            if backend is not None:
+                yield sse(
+                    "source_selected",
+                    {
+                        "source_id": result["source_id"],
+                        "backend": backend,
+                        "role": result.get("role", "expert"),
+                        "stage": "experts.parallel",
+                    },
+                )
+            if result.get("error") is None:
+                yield sse(
+                    "full_response",
+                    {
+                        "source_id": result["source_id"],
+                        "role": result.get("role", "expert"),
+                        "text": result.get("text", ""),
+                        "metadata": result.get("metadata", {}),
+                    },
+                )
+
+        if len(successful) < 2:
+            yield sse(
+                "error",
+                {
+                    "error": "role_graph needs at least two successful expert responses",
+                    "source_errors": {item["source_id"]: item.get("error") for item in failed},
+                },
+            )
+            return
+
+        critic_text = ""
+        critic_error = ""
+        critic_selection = role_graph.get("critic") if isinstance(role_graph.get("critic"), dict) else None
+        plan = request.runner_config.get("auto_plan") if isinstance(request.runner_config.get("auto_plan"), dict) else {}
+        plan_confidence = float(plan.get("confidence_score") or 0.0) if isinstance(plan, dict) else 0.0
+        conflict_score = expert_conflict_score(successful)
+        critic_default = plan_confidence < AUTO_NETWORK_CONFIDENCE_THRESHOLD or conflict_score >= 0.55
+        critic_enabled = coerce_bool(role_graph.get("enable_critic"), default=critic_default)
+        if critic_enabled and critic_selection:
+            critic_backend = critic_selection.get("backend") if isinstance(critic_selection.get("backend"), dict) else {}
+            critic_model = str(critic_backend.get("id") or "")
+            critic_source = EnsembleSource(
+                source_id="critic",
+                model_alias=critic_model or None,
+                prompt=build_critic_prompt(original_prompt, successful),
+                messages=[
+                    {"role": "system", "content": ROLE_GRAPH_CRITIC_PROMPT},
+                    {"role": "user", "content": build_critic_prompt(original_prompt, successful)},
+                ],
+                sampling_params={"max_tokens": positive_int(
+                    request.runner_config.get("critic_max_tokens", AUTO_ROLE_GRAPH_CRITIC_MAX_TOKENS),
+                    AUTO_ROLE_GRAPH_CRITIC_MAX_TOKENS,
+                )},
+                weight=1.0,
+            )
+            critic_result = await generate_response_source(tenant, critic_source)
+            if critic_result.get("error"):
+                critic_error = str(critic_result.get("error") or "")
+            else:
+                critic_text = str(critic_result.get("text") or "")
+                if critic_result.get("backend") is not None:
+                    yield sse(
+                        "source_selected",
+                        {
+                            "source_id": "critic",
+                            "backend": critic_result["backend"],
+                            "role": "critic",
+                            "stage": "critic.review",
+                        },
+                    )
+                yield sse(
+                    "full_response",
+                    {
+                        "source_id": "critic",
+                        "role": "critic",
+                        "text": critic_text,
+                        "metadata": critic_result.get("metadata", {}),
+                    },
+                )
+
+        synthesis_selection = role_graph.get("synthesizer") if isinstance(role_graph.get("synthesizer"), dict) else None
+        synthesis_backend = synthesis_selection.get("backend") if synthesis_selection and isinstance(synthesis_selection.get("backend"), dict) else {}
+        synthesis_model = str(synthesis_backend.get("id") or "")
+        synthesis_prompt = build_role_graph_synthesis_prompt(original_prompt, successful, critic_text)
+        synthesis_source = EnsembleSource(
+            source_id="synthesizer",
+            model_alias=synthesis_model or None,
+            prompt=synthesis_prompt,
+            messages=[
+                {"role": "system", "content": ROLE_GRAPH_SYNTHESIS_PROMPT},
+                {"role": "user", "content": synthesis_prompt},
+            ],
+            sampling_params={"max_tokens": positive_int(
+                request.runner_config.get("aggregation_max_tokens", AUTO_ROLE_GRAPH_SYNTHESIS_MAX_TOKENS),
+                AUTO_ROLE_GRAPH_SYNTHESIS_MAX_TOKENS,
+            )},
+            weight=1.0,
+        )
+        synthesis = await generate_response_source(tenant, synthesis_source)
+        if synthesis.get("error"):
+            yield sse("error", {"error": synthesis.get("error"), "stage": "synthesizer.final"})
+            return
+        if synthesis.get("backend") is not None:
+            yield sse(
+                "source_selected",
+                {
+                    "source_id": "synthesizer",
+                    "backend": synthesis["backend"],
+                    "role": "synthesizer",
+                    "stage": "synthesizer.final",
+                },
+            )
+        text = str(synthesis.get("text") or "")
+        yield sse("token", {"delta": text, "text": text})
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        yield sse(
+            "done",
+            {
+                "text": text,
+                "metadata": {
+                    "runner": request.runner,
+                    "aggregator": request.aggregator,
+                    "elapsed_ms": elapsed_ms,
+                    "source_count": len(successful),
+                    "failed_source_count": len(failed),
+                    "source_errors": {item["source_id"]: item.get("error") for item in failed},
+                    "contributions": {item["source_id"]: item.get("text", "") for item in successful},
+                    "compressed_contributions": compressed_contributions(successful),
+                    "confidence_score": plan_confidence,
+                    "escalation_reason": plan.get("escalation_reason") if isinstance(plan, dict) else None,
+                    "critic": {
+                        "enabled": bool(critic_enabled and critic_selection),
+                        "text": critic_text,
+                        "error": critic_error,
+                        "conflict_score": conflict_score,
+                    },
+                    "response_aggregator": {
+                        "backend": synthesis.get("backend"),
+                        "stage": "synthesizer.final",
+                    },
+                    "trace_summary": {
+                        "tokens_count": len(text),
+                        "elapsed_ms": elapsed_ms,
+                        "source_count": len(successful),
+                        "failed_source_count": len(failed),
+                        "critic_enabled": bool(critic_enabled and critic_selection),
+                        "critic_failed": bool(critic_error),
+                        "conflict_score": conflict_score,
+                        "stopped_by": "role_graph_synthesized",
+                    },
+                },
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("ensemble role graph failed request_id=%s", request.request_id)
+        yield sse("error", {"error": str(exc), "runner": request.runner, "stage": "role_graph"})
+
+
+CASCADE_VERIFIER_SYSTEM_PROMPT = (
+    "You are a strict verifier in a sparse multi-model network. Decide whether "
+    "the primary answer satisfies the user request. Return only compact JSON."
+)
+
+
+def build_cascade_verifier_prompt(original_prompt: str, primary_text: str) -> str:
+    return "\n".join(
+        [
+            "Original user request:",
+            original_prompt,
+            "",
+            "Primary answer:",
+            "```text",
+            primary_text,
+            "```",
+            "",
+            "Return JSON with keys: pass (boolean), confidence (0 to 1), reason (short string).",
+        ]
+    )
+
+
+def parse_cascade_verifier_decision(text: str) -> dict[str, Any]:
+    raw = str(text or "").strip()
+    match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+    if match:
+        raw = match.group(0)
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"pass": False, "confidence": 0.0, "reason": "verifier_non_json", "raw": text[:500]}
+    if not isinstance(payload, dict):
+        return {"pass": False, "confidence": 0.0, "reason": "verifier_invalid_json", "raw": text[:500]}
+    confidence = payload.get("confidence", 0.0)
+    try:
+        confidence_value = clamp_float(float(confidence), 0.0, 1.0)
+    except (TypeError, ValueError):
+        confidence_value = 0.0
+    return {
+        "pass": coerce_bool(payload.get("pass"), default=False),
+        "confidence": round(confidence_value, 3),
+        "reason": str(payload.get("reason") or "")[:300],
+        "raw": text[:500],
+    }
+
+
+def verifier_source_from_base(
+    base_source: EnsembleSource,
+    *,
+    model_alias: str | None,
+    original_prompt: str,
+    primary_text: str,
+    max_tokens: int,
+) -> EnsembleSource:
+    prompt = build_cascade_verifier_prompt(original_prompt, primary_text)
+    return EnsembleSource(
+        source_id="verifier",
+        model_alias=model_alias,
+        prompt=prompt,
+        messages=[
+            {"role": "system", "content": CASCADE_VERIFIER_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        sampling_params={"max_tokens": max_tokens, "temperature": 0},
+        extra=dict(base_source.extra),
+        weight=1.0,
+    )
+
+
+def escalation_source_with_context(
+    source: EnsembleSource,
+    *,
+    primary_text: str,
+    verifier_decision: dict[str, Any],
+) -> EnsembleSource:
+    messages = message_list(source)
+    review = (
+        "A verifier found possible issues in an earlier answer. Produce a corrected final answer "
+        "for the original user request.\n\nVerifier reason: "
+        + str(verifier_decision.get("reason") or "low confidence")
+        + "\n\nEarlier answer:\n"
+        + primary_text
+    )
+    return source.model_copy(update={"messages": [*messages, {"role": "user", "content": review}]})
+
+
+async def run_cascade_verify_ensemble(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
+    if not request.sources:
+        yield sse("error", {"error": "cascade_verify requires at least one source"})
+        return
+
+    started = time.perf_counter()
+    plan = request.runner_config.get("auto_plan") if isinstance(request.runner_config.get("auto_plan"), dict) else {}
+    cascade_config = request.runner_config.get("cascade_verify")
+    cascade_config = cascade_config if isinstance(cascade_config, dict) else {}
+    threshold = float(cascade_config.get("confidence_threshold") or AUTO_NETWORK_CONFIDENCE_THRESHOLD)
+    max_extra_calls = int(cascade_config.get("max_extra_calls") or 0)
+    original_prompt = request.sources[0].prompt or text_from_messages(message_list(request.sources[0]))
+
+    primary = await generate_response_source(tenant, request.sources[0])
+    if primary.get("backend") is not None:
+        yield sse(
+            "source_selected",
+            {
+                "source_id": primary["source_id"],
+                "backend": primary["backend"],
+                "role": "primary",
+                "stage": "primary.answer",
+            },
+        )
+    if primary.get("error"):
+        if len(request.sources) < 2:
+            yield sse("error", {"error": primary.get("error"), "stage": "primary.answer"})
+            return
+        decision = {"pass": False, "confidence": 0.0, "reason": "primary_error", "raw": ""}
+    else:
+        yield sse(
+            "full_response",
+            {
+                "source_id": primary["source_id"],
+                "role": "primary",
+                "text": primary.get("text", ""),
+                "metadata": primary.get("metadata", {}),
+            },
+        )
+        verifier = cascade_config.get("verifier") if isinstance(cascade_config.get("verifier"), dict) else {}
+        verifier_backend = verifier.get("backend") if isinstance(verifier.get("backend"), dict) else {}
+        verifier_model = str(verifier_backend.get("id") or request.sources[0].model_alias or "")
+        verifier_source = verifier_source_from_base(
+            request.sources[0],
+            model_alias=verifier_model or None,
+            original_prompt=original_prompt,
+            primary_text=str(primary.get("text") or ""),
+            max_tokens=positive_int(
+                cascade_config.get("verifier_max_tokens", AUTO_CASCADE_VERIFIER_MAX_TOKENS),
+                AUTO_CASCADE_VERIFIER_MAX_TOKENS,
+            ),
+        )
+        verifier_result = await generate_response_source(tenant, verifier_source)
+        if verifier_result.get("backend") is not None:
+            yield sse(
+                "source_selected",
+                {
+                    "source_id": "verifier",
+                    "backend": verifier_result["backend"],
+                    "role": "verifier",
+                    "stage": "verifier.check",
+                },
+            )
+        verifier_text = str(verifier_result.get("text") or "")
+        if verifier_result.get("error"):
+            decision = {
+                "pass": False,
+                "confidence": 0.0,
+                "reason": "verifier_error: " + str(verifier_result.get("error") or "")[:200],
+                "raw": "",
+            }
+        else:
+            yield sse(
+                "full_response",
+                {
+                    "source_id": "verifier",
+                    "role": "verifier",
+                    "text": verifier_text,
+                    "metadata": verifier_result.get("metadata", {}),
+                },
+            )
+            decision = parse_cascade_verifier_decision(verifier_text)
+
+    approved = bool(decision.get("pass")) and float(decision.get("confidence") or 0.0) >= threshold
+    if approved:
+        text = str(primary.get("text") or "")
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        yield sse("token", {"delta": text, "text": text})
+        yield sse(
+            "done",
+            {
+                "text": text,
+                "metadata": {
+                    "runner": request.runner,
+                    "aggregator": request.aggregator,
+                    "elapsed_ms": elapsed_ms,
+                    "source_count": 1,
+                    "failed_source_count": 0,
+                    "confidence_score": decision.get("confidence"),
+                    "escalation_reason": "verifier_passed",
+                    "compressed_contributions": compressed_contributions([primary]),
+                    "verifier": decision,
+                    "trace_summary": {
+                        "tokens_count": len(text),
+                        "elapsed_ms": elapsed_ms,
+                        "source_count": 1,
+                        "stopped_by": "cascade_verifier_passed",
+                    },
+                },
+            },
+        )
+        return
+
+    if len(request.sources) < 2 or max_extra_calls < 1:
+        text = str(primary.get("text") or "")
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        yield sse("token", {"delta": text, "text": text})
+        yield sse(
+            "done",
+            {
+                "text": text,
+                "metadata": {
+                    "runner": request.runner,
+                    "aggregator": request.aggregator,
+                    "elapsed_ms": elapsed_ms,
+                    "source_count": 1,
+                    "failed_source_count": 0 if primary.get("error") is None else 1,
+                    "confidence_score": decision.get("confidence"),
+                    "escalation_reason": "verifier_failed_budget_exhausted",
+                    "compressed_contributions": compressed_contributions([primary]),
+                    "verifier": decision,
+                    "trace_summary": {
+                        "tokens_count": len(text),
+                        "elapsed_ms": elapsed_ms,
+                        "source_count": 1,
+                        "stopped_by": "cascade_budget_exhausted",
+                    },
+                },
+            },
+        )
+        return
+
+    escalation_source = escalation_source_with_context(
+        request.sources[1],
+        primary_text=str(primary.get("text") or ""),
+        verifier_decision=decision,
+    )
+    escalation = await generate_response_source(tenant, escalation_source)
+    if escalation.get("backend") is not None:
+        yield sse(
+            "source_selected",
+            {
+                "source_id": escalation["source_id"],
+                "backend": escalation["backend"],
+                "role": "escalation",
+                "stage": "optional.escalation",
+            },
+        )
+    if escalation.get("error"):
+        yield sse(
+            "error",
+            {
+                "error": escalation.get("error"),
+                "stage": "optional.escalation",
+                "verifier": decision,
+            },
+        )
+        return
+    yield sse(
+        "full_response",
+        {
+            "source_id": escalation["source_id"],
+            "role": "escalation",
+            "text": escalation.get("text", ""),
+            "metadata": escalation.get("metadata", {}),
+        },
+    )
+    text = str(escalation.get("text") or "")
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    yield sse("token", {"delta": text, "text": text})
+    yield sse(
+        "done",
+        {
+            "text": text,
+            "metadata": {
+                "runner": request.runner,
+                "aggregator": request.aggregator,
+                "elapsed_ms": elapsed_ms,
+                "source_count": 2,
+                "failed_source_count": 0 if primary.get("error") is None else 1,
+                "confidence_score": decision.get("confidence"),
+                "escalation_reason": "verifier_failed_escalated",
+                "compressed_contributions": compressed_contributions([primary, escalation]),
+                "verifier": decision,
+                "trace_summary": {
+                    "tokens_count": len(text),
+                    "elapsed_ms": elapsed_ms,
+                    "source_count": 2,
+                    "stopped_by": "cascade_escalated",
+                },
+            },
+        },
+    )
+
+
+def merge_auto_plan_execution(plan: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(plan)
+    for key in ("confidence_score", "escalation_reason", "fallback_from", "compressed_contributions"):
+        if key in metadata:
+            merged[key] = metadata[key]
+    if "source_count" in metadata:
+        merged["executed_source_count"] = metadata["source_count"]
+    if "failed_source_count" in metadata:
+        merged["failed_source_count"] = metadata["failed_source_count"]
+    if "verifier" in metadata:
+        merged["verifier_result"] = metadata["verifier"]
+    if "critic" in metadata:
+        merged["critic"] = metadata["critic"]
+    return merged
+
+
+def append_router_trace(request: EnsembleRequest, plan: dict[str, Any], metadata: dict[str, Any]) -> None:
+    try:
+        AUTO_ROUTER_TRACE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "created_at": time.time(),
+            "request_id": request.request_id,
+            "strategy": plan.get("strategy"),
+            "runner": plan.get("runner"),
+            "aggregator": plan.get("aggregator"),
+            "load_state": plan.get("load_state"),
+            "call_budget": plan.get("call_budget"),
+            "confidence_score": plan.get("confidence_score"),
+            "escalation_reason": plan.get("escalation_reason"),
+            "fallback_from": plan.get("fallback_from"),
+            "selected_sources": [
+                item.get("backend", {}).get("id")
+                for item in plan.get("selected_sources", [])
+                if isinstance(item, dict)
+            ],
+            "trace_summary": metadata.get("trace_summary"),
+        }
+        with AUTO_ROUTER_TRACE_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("failed to append router trace path=%s error=%s", AUTO_ROUTER_TRACE_PATH, exc)
+
+
+async def run_auto_ensemble(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
+    try:
+        planned_request, plan = await plan_auto_ensemble(request, tenant)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("auto network planning failed request_id=%s", request.request_id)
+        yield sse("error", {"error": str(exc), "runner": "auto", "native_runner": "auto.network"})
+        return
+
+    if request.diagnostics.enable_trace_stream and tenant.trace_allowed:
+        yield sse("auto_plan", plan)
+
+    if planned_request.runner == "role_graph":
+        stream = run_role_graph_ensemble(planned_request, tenant)
+    elif planned_request.runner == "cascade_verify":
+        stream = run_cascade_verify_ensemble(planned_request, tenant)
+    elif planned_request.runner == "response_aggregate":
+        stream = run_response_aggregate_ensemble(planned_request, tenant)
+    else:
+        stream = run_route_ensemble(planned_request, tenant)
+
+    async for chunk in stream:
+        event, data = parse_sse_chunk(chunk)
+        if event == "error" and planned_request.runner in {"response_aggregate", "role_graph", "cascade_verify"}:
+            fallback_plan = {
+                **plan,
+                "strategy": "fallback_repair",
+                "runner": "route.once",
+                "aggregator": "load_aware",
+                "fallback_from": plan.get("strategy"),
+                "fallback_error": data,
+                "source_count": 1,
+                "selected_sources": plan.get("selected_sources", [])[:1],
+            }
+            fallback_config = dict(planned_request.runner_config)
+            fallback_config["native_runner"] = "route.once"
+            fallback_config["auto_strategy"] = "fallback_repair"
+            fallback_config["auto_plan"] = fallback_plan
+            fallback_request = planned_request.model_copy(
+                update={
+                    "sources": planned_request.sources[:1],
+                    "runner": "route",
+                    "runner_config": fallback_config,
+                    "aggregator": "load_aware",
+                }
+            )
+            if request.diagnostics.enable_trace_stream and tenant.trace_allowed:
+                yield sse("auto_plan", fallback_plan)
+            async for fallback_chunk in run_route_ensemble(fallback_request, tenant):
+                fallback_event, fallback_data = parse_sse_chunk(fallback_chunk)
+                if fallback_event == "done":
+                    metadata = dict(fallback_data.get("metadata") or {})
+                    fallback_plan = merge_auto_plan_execution(
+                        fallback_plan,
+                        {
+                            **metadata,
+                            "fallback_from": plan.get("strategy"),
+                            "escalation_reason": "runner_error_fallback",
+                        },
+                    )
+                    metadata["auto_plan"] = fallback_plan
+                    fallback_data["metadata"] = metadata
+                    append_router_trace(request, fallback_plan, metadata)
+                    yield sse(fallback_event, fallback_data)
+                else:
+                    yield fallback_chunk
+            return
+        if event == "done":
+            metadata = dict(data.get("metadata") or {})
+            plan = merge_auto_plan_execution(plan, metadata)
+            metadata["auto_plan"] = plan
+            data["metadata"] = metadata
+            append_router_trace(request, plan, metadata)
+            yield sse(event, data)
+        else:
+            yield chunk
+
+
+def is_auto_request(ir: ModelNetRunRequest) -> bool:
+    runner = canonical_runner(ir.collaboration_plan.get("runner"))
+    return ir.model == PUBLIC_AUTO_MODEL_NAME or runner == "auto.network"
+
+
+def openai_completion_payload(
+    *,
+    request_id: str,
+    model: str,
+    text: str,
+    prompt_text: str,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "id": request_id,
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": text},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": estimate_token_count(prompt_text),
+            "completion_tokens": estimate_token_count(text),
+            "total_tokens": estimate_token_count(prompt_text) + estimate_token_count(text),
+        },
+        "modelnet": {
+            "request_id": request_id,
+            "metadata": metadata,
+        },
+    }
+
+
+def openai_stream_payload(
+    *,
+    request_id: str,
+    model: str,
+    delta: dict[str, Any],
+    finish_reason: str | None = None,
+) -> bytes:
+    payload = {
+        "id": request_id,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": delta,
+                "finish_reason": finish_reason,
+            }
+        ],
+    }
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
+async def collect_openai_ensemble_response(
+    request: EnsembleRequest,
+    tenant: GatewayTenant,
+) -> tuple[str, dict[str, Any]]:
+    text = ""
+    metadata: dict[str, Any] = {}
+    async for chunk in run_ensemble_stream(request, tenant):
+        event, data = parse_sse_chunk(chunk)
+        if event == "token":
+            text = str(data.get("text") or text + str(data.get("delta") or ""))
+        elif event == "done":
+            text = str(data.get("text") or text)
+            metadata = dict(data.get("metadata") or {})
+        elif event == "error":
+            raise HTTPException(status_code=502, detail=data)
+    return text, metadata
+
+
+async def stream_openai_ensemble_response(
+    request: EnsembleRequest,
+    tenant: GatewayTenant,
+    *,
+    request_id: str,
+    model: str,
+) -> AsyncIterator[bytes]:
+    yield openai_stream_payload(request_id=request_id, model=model, delta={"role": "assistant"})
+    async for chunk in run_ensemble_stream(request, tenant):
+        event, data = parse_sse_chunk(chunk)
+        if event == "token":
+            delta = str(data.get("delta") or "")
+            if delta:
+                yield openai_stream_payload(request_id=request_id, model=model, delta={"content": delta})
+        elif event == "error":
+            payload = {"error": data}
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+            yield b"data: [DONE]\n\n"
+            return
+    yield openai_stream_payload(request_id=request_id, model=model, delta={}, finish_reason="stop")
+    yield b"data: [DONE]\n\n"
+
+
+async def openai_auto_chat_response(
+    body: dict[str, Any],
+    ir: ModelNetRunRequest,
+    tenant: GatewayTenant,
+) -> Response:
+    request_id = ir.request_id or str(uuid.uuid4())
+    ir = ir.model_copy(update={"request_id": request_id})
+    ensemble_request = ir_to_ensemble_request(ir)
+    if not ensemble_request.request_id:
+        ensemble_request = ensemble_request.model_copy(update={"request_id": request_id})
+    model_name = str(body.get("model") or PUBLIC_AUTO_MODEL_NAME)
+    if body.get("stream"):
+        return StreamingResponse(
+            stream_openai_ensemble_response(ensemble_request, tenant, request_id=request_id, model=model_name),
+            media_type="text/event-stream",
+            headers={
+                "X-ModelNet-Request-ID": request_id,
+                "X-ModelNet-Runner": "auto.network",
+            },
+        )
+    text, metadata = await collect_openai_ensemble_response(ensemble_request, tenant)
+    return JSONResponse(
+        openai_completion_payload(
+            request_id=request_id,
+            model=model_name,
+            text=text,
+            prompt_text=text_from_messages(ir.messages),
+            metadata=metadata,
+        ),
+        headers={
+            "X-ModelNet-Request-ID": request_id,
+            "X-ModelNet-Runner": "auto.network",
+        },
+    )
+
+
 def assert_authorized(authorization: str | None) -> GatewayTenant:
     return authenticate_gateway(authorization, API_KEY_TENANTS)
 
@@ -1160,6 +3006,20 @@ async def models(authorization: str | None = Header(default=None)) -> dict[str, 
             },
         }
     ]
+    data.append(
+        {
+            "created": 0,
+            "id": PUBLIC_AUTO_MODEL_NAME,
+            "object": "model",
+            "owned_by": "modelnet",
+            "metadata": {
+                "description": "ModelNet query-conditioned automatic network entrypoint",
+                "native_runner": "auto.network",
+                "optimization_target": "cost_balanced",
+                "native_schema_version": MODELNET_RUN_SCHEMA_VERSION,
+            },
+        }
+    )
     data.extend(
         {
             "created": 0,
@@ -1237,6 +3097,8 @@ async def chat_completions(
     tenant = assert_authorized(authorization)
     body = await request.json()
     ir = openai_chat_to_ir(body)
+    if is_auto_request(ir):
+        return await openai_auto_chat_response(body, ir, tenant)
     plan = ir.collaboration_plan
     candidate_aliases: set[str] = set()
     if ir.model and ir.model != PUBLIC_MODEL_NAME:
@@ -1353,6 +3215,7 @@ def sse(event: str, data: dict[str, Any]) -> bytes:
 
 
 LEGACY_NATIVE_EVENT_MAP = {
+    "auto_plan": "trace",
     "run_started": "run_started",
     "source_selected": "model_selected",
     "token": "token_delta",
@@ -2598,6 +4461,10 @@ async def run_ensemble_stream(request: EnsembleRequest, tenant: GatewayTenant) -
             return
         if effective_runner == "response_aggregate":
             async for event in run_response_aggregate_ensemble(request, tenant):
+                yield event
+            return
+        if effective_runner == "auto":
+            async for event in run_auto_ensemble(request, tenant):
                 yield event
             return
         async for event in run_route_ensemble(request, tenant):
