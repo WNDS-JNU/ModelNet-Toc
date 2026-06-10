@@ -1,0 +1,530 @@
+{
+  "schema_version": "modelnet.pressure.summary.v1",
+  "generated_at": "2026-06-10T15:03:37+08:00",
+  "dataset": {
+    "name": "MT-Bench sampled pressure set",
+    "source_url": "https://raw.githubusercontent.com/lm-sys/FastChat/main/fastchat/llm_judge/data/mt_bench/question.jsonl",
+    "question_ids": [
+      81,
+      86,
+      91,
+      96,
+      101,
+      106,
+      111,
+      116,
+      121,
+      126,
+      131,
+      136,
+      141,
+      146,
+      151,
+      156
+    ]
+  },
+  "systems": [
+    "modelnet_auto",
+    "adaptive_sparse_graph",
+    "single_best",
+    "fixed_qwen35b",
+    "parallel_consensus"
+  ],
+  "concurrency_levels": [
+    1,
+    4,
+    8,
+    16
+  ],
+  "judge": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "api_base": "https://api.deepseek.com"
+  },
+  "answer_status": {
+    "total": 320,
+    "ok": 320,
+    "failed": 0
+  },
+  "judgment_status": {
+    "total": 256,
+    "ok": 256,
+    "failed": 0
+  },
+  "performance": {
+    "1": {
+      "modelnet_auto": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 7.250974349678239,
+        "p50_ms": 81511.0,
+        "p95_ms": 132396.0,
+        "p99_ms": 132396.0,
+        "mean_ms": 82313.0625,
+        "max_ms": 132396.0
+      },
+      "adaptive_sparse_graph": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 8.813160987074031,
+        "p50_ms": 58347.0,
+        "p95_ms": 108928.0,
+        "p99_ms": 108928.0,
+        "mean_ms": 64350.375,
+        "max_ms": 108928.0
+      },
+      "single_best": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 12.022542266750158,
+        "p50_ms": 42923.0,
+        "p95_ms": 79850.0,
+        "p99_ms": 79850.0,
+        "mean_ms": 45149.6875,
+        "max_ms": 79850.0
+      },
+      "fixed_qwen35b": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 18.699962989656584,
+        "p50_ms": 51021.0,
+        "p95_ms": 51337.0,
+        "p99_ms": 51337.0,
+        "mean_ms": 50495.375,
+        "max_ms": 51337.0
+      },
+      "parallel_consensus": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 6.311595584512923,
+        "p50_ms": 89671.0,
+        "p95_ms": 152101.0,
+        "p99_ms": 152101.0,
+        "mean_ms": 90284.75,
+        "max_ms": 152101.0
+      }
+    },
+    "4": {
+      "modelnet_auto": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 2.9585798816568047,
+        "p50_ms": 80871.0,
+        "p95_ms": 324480.0,
+        "p99_ms": 324480.0,
+        "mean_ms": 107568.3125,
+        "max_ms": 324480.0
+      },
+      "adaptive_sparse_graph": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 7.068907117505853,
+        "p50_ms": 35332.0,
+        "p95_ms": 135806.0,
+        "p99_ms": 135806.0,
+        "mean_ms": 45657.5,
+        "max_ms": 135806.0
+      },
+      "single_best": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 9.98876264202772,
+        "p50_ms": 15827.0,
+        "p95_ms": 96108.0,
+        "p99_ms": 96108.0,
+        "mean_ms": 24133.375,
+        "max_ms": 96108.0
+      },
+      "fixed_qwen35b": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 13.31077895787693,
+        "p50_ms": 71752.0,
+        "p95_ms": 72122.0,
+        "p99_ms": 72122.0,
+        "mean_ms": 70919.8125,
+        "max_ms": 72122.0
+      },
+      "parallel_consensus": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 5.047318611987381,
+        "p50_ms": 79214.0,
+        "p95_ms": 190200.0,
+        "p99_ms": 190200.0,
+        "mean_ms": 96532.4375,
+        "max_ms": 190200.0
+      }
+    },
+    "8": {
+      "modelnet_auto": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 4.411257897759908,
+        "p50_ms": 93788.0,
+        "p95_ms": 217625.0,
+        "p99_ms": 217625.0,
+        "mean_ms": 105581.1875,
+        "max_ms": 217625.0
+      },
+      "adaptive_sparse_graph": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 9.651636253958678,
+        "p50_ms": 30613.0,
+        "p95_ms": 99465.0,
+        "p99_ms": 99465.0,
+        "mean_ms": 37271.25,
+        "max_ms": 99465.0
+      },
+      "single_best": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 10.443068956889707,
+        "p50_ms": 14983.0,
+        "p95_ms": 91927.0,
+        "p99_ms": 91927.0,
+        "mean_ms": 24103.375,
+        "max_ms": 91927.0
+      },
+      "fixed_qwen35b": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 10.551653641969201,
+        "p50_ms": 90074.0,
+        "p95_ms": 90981.0,
+        "p99_ms": 90981.0,
+        "mean_ms": 89299.625,
+        "max_ms": 90981.0
+      },
+      "parallel_consensus": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 3.0608731140557843,
+        "p50_ms": 96428.0,
+        "p95_ms": 313636.0,
+        "p99_ms": 313636.0,
+        "mean_ms": 110383.0,
+        "max_ms": 313636.0
+      }
+    },
+    "16": {
+      "modelnet_auto": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 3.4765603780759413,
+        "p50_ms": 87984.0,
+        "p95_ms": 276135.0,
+        "p99_ms": 276135.0,
+        "mean_ms": 128354.9375,
+        "max_ms": 276135.0
+      },
+      "adaptive_sparse_graph": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 4.324051636383291,
+        "p50_ms": 21910.0,
+        "p95_ms": 222014.0,
+        "p99_ms": 222014.0,
+        "mean_ms": 68855.875,
+        "max_ms": 222014.0
+      },
+      "single_best": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 10.544004744802136,
+        "p50_ms": 17117.0,
+        "p95_ms": 91047.0,
+        "p99_ms": 91047.0,
+        "mean_ms": 30721.8125,
+        "max_ms": 91047.0
+      },
+      "fixed_qwen35b": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 7.450408220283736,
+        "p50_ms": 128688.0,
+        "p95_ms": 128852.0,
+        "p99_ms": 128852.0,
+        "mean_ms": 127194.375,
+        "max_ms": 128852.0
+      },
+      "parallel_consensus": {
+        "total": 16,
+        "ok": 16,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 4.163269554356688,
+        "p50_ms": 113059.0,
+        "p95_ms": 230588.0,
+        "p99_ms": 230588.0,
+        "mean_ms": 121994.625,
+        "max_ms": 230588.0
+      }
+    }
+  },
+  "quality": {
+    "1": {
+      "adaptive_sparse_graph": {
+        "question_count": 8,
+        "average_score": 0.5625,
+        "bootstrap_95ci": [
+          0.5,
+          0.6875
+        ],
+        "wins": 1,
+        "ties": 7,
+        "losses": 0
+      },
+      "single_best": {
+        "question_count": 8,
+        "average_score": 0.4375,
+        "bootstrap_95ci": [
+          0.3125,
+          0.5
+        ],
+        "wins": 0,
+        "ties": 7,
+        "losses": 1
+      },
+      "fixed_qwen35b": {
+        "question_count": 8,
+        "average_score": 0.5,
+        "bootstrap_95ci": [
+          0.5,
+          0.5
+        ],
+        "wins": 0,
+        "ties": 8,
+        "losses": 0
+      },
+      "parallel_consensus": {
+        "question_count": 8,
+        "average_score": 0.46875,
+        "bootstrap_95ci": [
+          0.375,
+          0.5625
+        ],
+        "wins": 1,
+        "ties": 5,
+        "losses": 2
+      }
+    },
+    "4": {
+      "adaptive_sparse_graph": {
+        "question_count": 8,
+        "average_score": 0.46875,
+        "bootstrap_95ci": [
+          0.40625,
+          0.5
+        ],
+        "wins": 0,
+        "ties": 7,
+        "losses": 1
+      },
+      "single_best": {
+        "question_count": 8,
+        "average_score": 0.5,
+        "bootstrap_95ci": [
+          0.5,
+          0.5
+        ],
+        "wins": 0,
+        "ties": 8,
+        "losses": 0
+      },
+      "fixed_qwen35b": {
+        "question_count": 8,
+        "average_score": 0.53125,
+        "bootstrap_95ci": [
+          0.5,
+          0.59375
+        ],
+        "wins": 1,
+        "ties": 7,
+        "losses": 0
+      },
+      "parallel_consensus": {
+        "question_count": 8,
+        "average_score": 0.5625,
+        "bootstrap_95ci": [
+          0.5,
+          0.65625
+        ],
+        "wins": 2,
+        "ties": 6,
+        "losses": 0
+      }
+    },
+    "8": {
+      "adaptive_sparse_graph": {
+        "question_count": 8,
+        "average_score": 0.46875,
+        "bootstrap_95ci": [
+          0.34375,
+          0.5625
+        ],
+        "wins": 1,
+        "ties": 5,
+        "losses": 2
+      },
+      "single_best": {
+        "question_count": 8,
+        "average_score": 0.4375,
+        "bootstrap_95ci": [
+          0.34375,
+          0.5
+        ],
+        "wins": 0,
+        "ties": 6,
+        "losses": 2
+      },
+      "fixed_qwen35b": {
+        "question_count": 8,
+        "average_score": 0.4375,
+        "bootstrap_95ci": [
+          0.3125,
+          0.5
+        ],
+        "wins": 0,
+        "ties": 7,
+        "losses": 1
+      },
+      "parallel_consensus": {
+        "question_count": 8,
+        "average_score": 0.4375,
+        "bootstrap_95ci": [
+          0.34375,
+          0.5
+        ],
+        "wins": 0,
+        "ties": 6,
+        "losses": 2
+      }
+    },
+    "16": {
+      "adaptive_sparse_graph": {
+        "question_count": 8,
+        "average_score": 0.5625,
+        "bootstrap_95ci": [
+          0.5,
+          0.625
+        ],
+        "wins": 2,
+        "ties": 6,
+        "losses": 0
+      },
+      "single_best": {
+        "question_count": 8,
+        "average_score": 0.375,
+        "bootstrap_95ci": [
+          0.21875,
+          0.53125
+        ],
+        "wins": 1,
+        "ties": 4,
+        "losses": 3
+      },
+      "fixed_qwen35b": {
+        "question_count": 8,
+        "average_score": 0.53125,
+        "bootstrap_95ci": [
+          0.5,
+          0.59375
+        ],
+        "wins": 1,
+        "ties": 7,
+        "losses": 0
+      },
+      "parallel_consensus": {
+        "question_count": 8,
+        "average_score": 0.53125,
+        "bootstrap_95ci": [
+          0.5,
+          0.59375
+        ],
+        "wins": 1,
+        "ties": 7,
+        "losses": 0
+      }
+    }
+  },
+  "runner_counts": {
+    "modelnet_auto": {
+      "route.once": 44,
+      "auto.role_graph": 84
+    },
+    "adaptive_sparse_graph": {
+      "route.once": 45,
+      "auto.cascade_verify": 83
+    },
+    "single_best": {
+      "route.once": 128
+    },
+    "fixed_qwen35b": {
+      "fixed.direct": 128
+    },
+    "parallel_consensus": {
+      "response.parallel": 127,
+      "route.once": 1
+    }
+  },
+  "selected_model_counts": {
+    "inference-cyankiwi-granite-4-1-3b-awq-int4": 188,
+    "llama-cpp-deploy-pc-3090-qwen3-8b-bf16": 136,
+    "inference-cyankiwi-granite-4-0-h-micro-awq-4bit": 122,
+    "inference-gaunernst-gemma-3-4b-it-int4-awq": 96,
+    "llama-cpp-deploy-jetson-64g-1-qwen3-4b-instruct-2507-q4km": 91,
+    "inference-cyankiwi-llama-3-1-8b-instruct-awq-int4": 84,
+    "inference-qwen-qwen3-14b-awq": 60,
+    "inference-tencent-hunyuan-7b-instruct-awq-int4": 50,
+    "inference-intel-qwen3-5-4b-int4-autoround": 45,
+    "llama-cpp-deploy-jetson-16g-4-glm-4-9b-chat-q4k": 39,
+    "llama-cpp-deploy-jetson-16g-6-hunyuan-7b-instruct-q5km": 38,
+    "llama-cpp-deploy-jetson-16g-5-meta-llama-31-8b-instruct-q80": 18,
+    "inference-qwen-qwen3-4b-awq": 17,
+    "llama-cpp-deploy-jetson-16g-1-meta-llama-31-8b-instruct-q80": 13,
+    "llama-cpp-deploy-jetson-64g-3-qwen3-8b-bf16": 7,
+    "llama-cpp-deploy-jetson-64g-3-qwen25-7b-instruct-q5km": 6,
+    "inference-cyankiwi-ministral-3-14b-instruct-2512-awq-4bit": 5,
+    "inference-qwen-qwen3-5-35b-a3b-gptq-int4": 2
+  }
+}

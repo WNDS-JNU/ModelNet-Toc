@@ -1,0 +1,10 @@
+NAME                   IMAGE                                 COMMAND                  SERVICE           CREATED        STATUS                  PORTS
+lobehub-toc-lb         haproxy:2.9-alpine                    "docker-entrypoint.s…"   toc-lb            22 hours ago   Up 22 hours             0.0.0.0:3081->80/tcp, [::]:3081->80/tcp
+lobehub-toc-lobe-1     modelnet/lobehub-toc:2.2.0-modelnet   "/bin/node /app/star…"   lobe              22 hours ago   Up 22 hours (healthy)   3210/tcp
+lobehub-toc-lobe-2     modelnet/lobehub-toc:2.2.0-modelnet   "/bin/node /app/star…"   lobe              22 hours ago   Up 22 hours (healthy)   3210/tcp
+lobehub-toc-postgres   paradedb/paradedb:latest-pg17         "docker-entrypoint.s…"   postgresql        22 hours ago   Up 22 hours (healthy)   5432/tcp
+lobehub-toc-redis      redis:7-alpine                        "docker-entrypoint.s…"   redis             2 weeks ago    Up 2 weeks (healthy)    6379/tcp
+lobehub-toc-rustfs     rustfs/rustfs:latest                  "/entrypoint.sh --ac…"   rustfs            2 weeks ago    Up 2 weeks (healthy)    0.0.0.0:9100->9000/tcp, [::]:9100->9000/tcp, 127.0.0.1:9101->9001/tcp
+lobehub-toc-searxng    searxng/searxng:latest                "/usr/local/searxng/…"   searxng           2 weeks ago    Up 2 weeks              8080/tcp
+modelnet-litellm       ghcr.io/berriai/litellm:main-latest   "docker/prod_entrypo…"   litellm           22 hours ago   Up 22 hours             4000/tcp, 127.0.0.1:3090->8000/tcp
+modelnet-router        lobehub-toc-modelnet-router           "uvicorn app:app --h…"   modelnet-router   20 hours ago   Up 20 hours (healthy)   127.0.0.1:3092->8000/tcp

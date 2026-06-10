@@ -1,0 +1,197 @@
+{
+  "schema_version": "modelnet.mtbench.summary.v1",
+  "generated_at": "2026-06-10T14:31:29+08:00",
+  "dataset": {
+    "name": "MT-Bench",
+    "source_url": "https://raw.githubusercontent.com/lm-sys/FastChat/main/fastchat/llm_judge/data/mt_bench/question.jsonl",
+    "question_count": 80
+  },
+  "systems": [
+    "modelnet_auto",
+    "adaptive_sparse_graph",
+    "single_best",
+    "fixed_qwen35b",
+    "parallel_consensus"
+  ],
+  "judge_model": "inference-qwen-qwen3-5-35b-a3b-gptq-int4",
+  "generation_config": {
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "max_tokens": 768,
+    "max_auto_sources": 3,
+    "expert_max_tokens": 384,
+    "critic_max_tokens": 256,
+    "aggregation_max_tokens": 768,
+    "candidate_alias_count": 17
+  },
+  "answer_status": {
+    "total": 400,
+    "ok": 400,
+    "failed": 0
+  },
+  "judgment_status": {
+    "total": 640,
+    "ok": 640,
+    "failed": 0
+  },
+  "pairwise": {
+    "adaptive_sparse_graph": {
+      "question_count": 80,
+      "average_score": 0.603125,
+      "bootstrap_95ci": [
+        0.515625,
+        0.6875
+      ],
+      "wins": 35,
+      "ties": 27,
+      "losses": 18,
+      "category_average": {
+        "coding": 0.45,
+        "extraction": 0.675,
+        "humanities": 0.4,
+        "math": 0.6,
+        "reasoning": 0.5,
+        "roleplay": 0.7,
+        "stem": 0.65,
+        "writing": 0.85
+      },
+      "success_criterion_met": true
+    },
+    "single_best": {
+      "question_count": 80,
+      "average_score": 0.496875,
+      "bootstrap_95ci": [
+        0.425,
+        0.56875
+      ],
+      "wins": 20,
+      "ties": 40,
+      "losses": 20,
+      "category_average": {
+        "coding": 0.5,
+        "extraction": 0.7,
+        "humanities": 0.375,
+        "math": 0.35,
+        "reasoning": 0.45,
+        "roleplay": 0.5,
+        "stem": 0.4,
+        "writing": 0.7
+      },
+      "success_criterion_met": false
+    },
+    "fixed_qwen35b": {
+      "question_count": 80,
+      "average_score": 0.55,
+      "bootstrap_95ci": [
+        0.45625,
+        0.64375
+      ],
+      "wins": 33,
+      "ties": 22,
+      "losses": 25,
+      "category_average": {
+        "coding": 0.3,
+        "extraction": 0.6,
+        "humanities": 0.75,
+        "math": 0.6,
+        "reasoning": 0.15,
+        "roleplay": 0.7,
+        "stem": 0.45,
+        "writing": 0.85
+      },
+      "success_criterion_met": false
+    },
+    "parallel_consensus": {
+      "question_count": 80,
+      "average_score": 0.70625,
+      "bootstrap_95ci": [
+        0.61875,
+        0.790625
+      ],
+      "wins": 49,
+      "ties": 15,
+      "losses": 16,
+      "category_average": {
+        "coding": 0.7,
+        "extraction": 0.675,
+        "humanities": 0.55,
+        "math": 0.7,
+        "reasoning": 0.75,
+        "roleplay": 0.95,
+        "stem": 0.525,
+        "writing": 0.8
+      },
+      "success_criterion_met": true
+    }
+  },
+  "latency_ms": {
+    "adaptive_sparse_graph": {
+      "count": 80,
+      "p50": 44184.0,
+      "p95": 96223.0,
+      "mean": 47221.4875
+    },
+    "fixed_qwen35b": {
+      "count": 80,
+      "p50": 69436.0,
+      "p95": 80922.0,
+      "mean": 63932.8375
+    },
+    "modelnet_auto": {
+      "count": 80,
+      "p50": 78099.0,
+      "p95": 176109.0,
+      "mean": 86892.3125
+    },
+    "parallel_consensus": {
+      "count": 80,
+      "p50": 79397.0,
+      "p95": 171958.0,
+      "mean": 86989.0
+    },
+    "single_best": {
+      "count": 80,
+      "p50": 24077.0,
+      "p95": 72550.0,
+      "mean": 31600.0
+    }
+  },
+  "runner_counts": {
+    "single_best": {
+      "route.once": 160
+    },
+    "modelnet_auto": {
+      "route.once": 59,
+      "auto.role_graph": 101
+    },
+    "parallel_consensus": {
+      "response.parallel": 160
+    },
+    "fixed_qwen35b": {
+      "unknown": 160
+    },
+    "adaptive_sparse_graph": {
+      "auto.cascade_verify": 103,
+      "route.once": 57
+    }
+  },
+  "role_counts": {
+    "primary_solver": 103,
+    "specialist": 103,
+    "skeptic": 103
+  },
+  "selected_model_counts": {
+    "inference-cyankiwi-granite-4-1-3b-awq-int4": 306,
+    "llama-cpp-deploy-pc-3090-qwen3-8b-bf16": 224,
+    "inference-cyankiwi-granite-4-0-h-micro-awq-4bit": 173,
+    "llama-cpp-deploy-jetson-64g-1-qwen3-4b-instruct-2507-q4km": 148,
+    "inference-gaunernst-gemma-3-4b-it-int4-awq": 105,
+    "llama-cpp-deploy-jetson-16g-4-glm-4-9b-chat-q4k": 100,
+    "inference-qwen-qwen3-14b-awq": 87,
+    "llama-cpp-deploy-jetson-16g-6-hunyuan-7b-instruct-q5km": 74,
+    "inference-cyankiwi-llama-3-1-8b-instruct-awq-int4": 25,
+    "inference-tencent-hunyuan-7b-instruct-awq-int4": 18,
+    "llama-cpp-deploy-jetson-16g-5-meta-llama-31-8b-instruct-q80": 3,
+    "inference-qwen-qwen3-4b-awq": 2
+  }
+}

@@ -1,0 +1,10 @@
+ M docker-compose.yml
+ M litellm/modelnet-config.yaml
+ M modelnet_router/app.py
+ M modelnet_router/modelnet_gateway/adapters.py
+ M modelnet_router/modelnet_gateway/plugins.py
+ M scripts/sync_modelnet_litellm.py
+ M scripts/sync_modelnet_lobehub.py
+?? .codex-run/
+?? benchmarks/
+?? docs/
