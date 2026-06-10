@@ -44,6 +44,7 @@ SYSTEMS = {
     "parallel_consensus": {"model": "modelnet-auto", "runner_config": {"strategy": "parallel_consensus"}},
 }
 BASELINES = ("adaptive_sparse_graph", "single_best", "fixed_qwen35b", "parallel_consensus")
+DIRECT_PAIRWISE = (("adaptive_sparse_graph", "single_best"),)
 
 
 def now_cst() -> str:
@@ -218,11 +219,20 @@ def answer_key(record: dict[str, Any]) -> tuple[int, str, int]:
     return int(record["concurrency"]), str(record["system"]), int(record["question_id"])
 
 
-def judgment_key(record: dict[str, Any]) -> tuple[int, int, str, str]:
+def judgment_target(record: dict[str, Any]) -> str:
+    return str(record.get("target_system") or "modelnet_auto")
+
+
+def judgment_comparison(record: dict[str, Any]) -> str:
+    return str(record.get("comparison_system") or record.get("baseline") or "")
+
+
+def judgment_key(record: dict[str, Any]) -> tuple[int, int, str, str, str]:
     return (
         int(record["concurrency"]),
         int(record["question_id"]),
-        str(record["baseline"]),
+        judgment_target(record),
+        judgment_comparison(record),
         str(record["order"]),
     )
 
@@ -385,19 +395,20 @@ def call_deepseek_judge(prompt: str, args: argparse.Namespace, api_key: str) -> 
 
 def generate_judgment(
     question: dict[str, Any],
-    auto_record: dict[str, Any],
-    baseline_record: dict[str, Any],
-    baseline: str,
+    target_record: dict[str, Any],
+    comparison_record: dict[str, Any],
+    target_system: str,
+    comparison_system: str,
     order: str,
     args: argparse.Namespace,
     api_key: str,
 ) -> dict[str, Any]:
-    if order == "auto_first":
-        a_system, a_record = "modelnet_auto", auto_record
-        b_system, b_record = baseline, baseline_record
+    if order in {"auto_first", "target_first"}:
+        a_system, a_record = target_system, target_record
+        b_system, b_record = comparison_system, comparison_record
     else:
-        a_system, a_record = baseline, baseline_record
-        b_system, b_record = "modelnet_auto", auto_record
+        a_system, a_record = comparison_system, comparison_record
+        b_system, b_record = target_system, target_record
     started = time.perf_counter()
     try:
         prompt = judge_prompt(question, a_system, a_record, b_system, b_record)
@@ -420,12 +431,12 @@ def generate_judgment(
             winning_system = b_system
         else:
             winning_system = "tie"
-        if winning_system == "modelnet_auto":
-            auto_score = 1.0
+        if winning_system == target_system:
+            target_score = 1.0
         elif winning_system == "tie":
-            auto_score = 0.5
+            target_score = 0.5
         else:
-            auto_score = 0.0
+            target_score = 0.0
         status = "ok"
         error = None
     except Exception as exc:  # noqa: BLE001
@@ -433,22 +444,25 @@ def generate_judgment(
         raw_text = ""
         parsed = {}
         winning_system = ""
-        auto_score = None
+        target_score = None
         status = "error"
         error = str(exc)[:1000]
     return {
         "schema_version": "modelnet.pressure.judgment.v1",
         "created_at": now_cst(),
-        "concurrency": int(auto_record["concurrency"]),
+        "concurrency": int(target_record["concurrency"]),
         "question_id": int(question["question_id"]),
         "category": str(question.get("category") or ""),
-        "baseline": baseline,
+        "baseline": comparison_system,
+        "target_system": target_system,
+        "comparison_system": comparison_system,
         "order": order,
         "a_system": a_system,
         "b_system": b_system,
         "status": status,
         "winner": winning_system,
-        "auto_score": auto_score,
+        "auto_score": target_score,
+        "target_score": target_score,
         "judge_model": args.deepseek_model,
         "judge_api_base": args.deepseek_base,
         "latency_ms": latency_ms,
@@ -513,26 +527,47 @@ def summarize(answers: list[dict[str, Any]], judgments: list[dict[str, Any]], ar
                         if model:
                             selected_counts[str(model)] = selected_counts.get(str(model), 0) + 1
 
-    quality: dict[str, Any] = {}
-    grouped: dict[tuple[int, int, str], list[dict[str, Any]]] = {}
+    grouped: dict[tuple[int, int, str, str], list[dict[str, Any]]] = {}
     for item in judgment_ok:
-        grouped.setdefault((int(item["concurrency"]), int(item["question_id"]), str(item["baseline"])), []).append(item)
+        grouped.setdefault(
+            (
+                int(item["concurrency"]),
+                int(item["question_id"]),
+                judgment_target(item),
+                judgment_comparison(item),
+            ),
+            [],
+        ).append(item)
+
+    def summarize_quality_pair(target_system: str, comparison_system: str, concurrency: int) -> dict[str, Any]:
+        scores: list[float] = []
+        for key, rows in grouped.items():
+            conc, _qid, target, comparison = key
+            if conc == concurrency and target == target_system and comparison == comparison_system:
+                scores.append(statistics.mean(float(row["auto_score"]) for row in rows))
+        return {
+            "question_count": len(scores),
+            "average_score": statistics.mean(scores) if scores else None,
+            "bootstrap_95ci": bootstrap_ci(scores),
+            "wins": sum(score > 0.5 for score in scores),
+            "ties": sum(score == 0.5 for score in scores),
+            "losses": sum(score < 0.5 for score in scores),
+        }
+
+    quality: dict[str, Any] = {}
+    direct_quality: dict[str, Any] = {}
     for concurrency in args.concurrency_levels:
         quality[str(concurrency)] = {}
         for baseline in BASELINES:
-            scores: list[float] = []
-            for key, rows in grouped.items():
-                conc, _qid, base = key
-                if conc == concurrency and base == baseline:
-                    scores.append(statistics.mean(float(row["auto_score"]) for row in rows))
-            quality[str(concurrency)][baseline] = {
-                "question_count": len(scores),
-                "average_score": statistics.mean(scores) if scores else None,
-                "bootstrap_95ci": bootstrap_ci(scores),
-                "wins": sum(score > 0.5 for score in scores),
-                "ties": sum(score == 0.5 for score in scores),
-                "losses": sum(score < 0.5 for score in scores),
+            quality[str(concurrency)][baseline] = summarize_quality_pair("modelnet_auto", baseline, concurrency)
+        direct_quality[str(concurrency)] = {
+            f"{target}_vs_{comparison}": {
+                **summarize_quality_pair(target, comparison, concurrency),
+                "target_system": target,
+                "comparison_system": comparison,
             }
+            for target, comparison in DIRECT_PAIRWISE
+        }
 
     return {
         "schema_version": "modelnet.pressure.summary.v1",
@@ -561,6 +596,7 @@ def summarize(answers: list[dict[str, Any]], judgments: list[dict[str, Any]], ar
         },
         "performance": performance,
         "quality": quality,
+        "direct_quality": direct_quality,
         "runner_counts": runner_counts,
         "selected_model_counts": dict(sorted(selected_counts.items(), key=lambda item: (-item[1], item[0]))),
     }
@@ -604,6 +640,22 @@ def render_report(summary: dict[str, Any]) -> str:
                 f"{result['wins']}/{result['ties']}/{result['losses']} |"
             )
         lines.append("")
+    if summary.get("direct_quality"):
+        lines.extend(["## Direct Quality: Target Pairwise Score", ""])
+        for concurrency in summary["concurrency_levels"]:
+            lines.append(f"### Concurrency {concurrency}")
+            lines.append("| Target vs Comparison | Questions | Avg | 95% CI | Win/Tie/Loss |")
+            lines.append("| --- | ---: | ---: | --- | --- |")
+            for name, result in summary["direct_quality"][str(concurrency)].items():
+                avg = result["average_score"]
+                ci = result["bootstrap_95ci"]
+                avg_text = "n/a" if avg is None else f"{avg:.3f}"
+                ci_text = "n/a" if ci[0] is None else f"[{ci[0]:.3f}, {ci[1]:.3f}]"
+                lines.append(
+                    f"| `{name}` | {result['question_count']} | {avg_text} | {ci_text} | "
+                    f"{result['wins']}/{result['ties']}/{result['losses']} |"
+                )
+            lines.append("")
     lines.extend(["## Routing Mix", ""])
     for system, counts in summary.get("runner_counts", {}).items():
         lines.append(f"- `{system}`: " + ", ".join(f"{k}: {v}" for k, v in sorted(counts.items())))
@@ -704,44 +756,67 @@ def main() -> int:
     answer_by_key = {answer_key(item): item for item in answer_records}
     existing_judgments = {} if args.force else {judgment_key(item): item for item in read_jsonl(judgment_file)}
     rng = random.Random(20260609)
-    judgment_jobs: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, str]] = []
+    judgment_jobs: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, str, str]] = []
+    judgment_pairs = [("modelnet_auto", baseline) for baseline in BASELINES] + list(DIRECT_PAIRWISE)
     for concurrency in args.concurrency_levels:
         judge_questions = list(questions)
         rng.shuffle(judge_questions)
         judge_questions = judge_questions[: min(args.judge_question_count, len(judge_questions))]
         for question in judge_questions:
             qid = int(question["question_id"])
-            auto_record = answer_by_key.get((concurrency, "modelnet_auto", qid))
-            if not auto_record or auto_record.get("status") != "ok":
-                continue
-            for baseline in BASELINES:
-                baseline_record = answer_by_key.get((concurrency, baseline, qid))
-                if not baseline_record or baseline_record.get("status") != "ok":
+            for target_system, comparison_system in judgment_pairs:
+                target_record = answer_by_key.get((concurrency, target_system, qid))
+                comparison_record = answer_by_key.get((concurrency, comparison_system, qid))
+                if (
+                    not target_record
+                    or not comparison_record
+                    or target_record.get("status") != "ok"
+                    or comparison_record.get("status") != "ok"
+                ):
                     continue
-                for order in ("auto_first", "baseline_first"):
-                    key = (concurrency, qid, baseline, order)
+                orders = (
+                    ("auto_first", "baseline_first")
+                    if target_system == "modelnet_auto"
+                    else ("target_first", "comparison_first")
+                )
+                for order in orders:
+                    key = (concurrency, qid, target_system, comparison_system, order)
                     if key not in existing_judgments:
-                        judgment_jobs.append((question, auto_record, baseline_record, baseline, order))
+                        judgment_jobs.append(
+                            (question, target_record, comparison_record, target_system, comparison_system, order)
+                        )
 
     print(f"[judgments] existing={len(existing_judgments)} pending={len(judgment_jobs)}", flush=True)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.judge_workers)) as executor:
         futures = {
-            executor.submit(generate_judgment, question, auto_record, baseline_record, baseline, order, args, api_key): (
+            executor.submit(
+                generate_judgment,
                 question,
-                auto_record,
-                baseline,
+                target_record,
+                comparison_record,
+                target_system,
+                comparison_system,
+                order,
+                args,
+                api_key,
+            ): (
+                question,
+                target_record,
+                target_system,
+                comparison_system,
                 order,
             )
-            for question, auto_record, baseline_record, baseline, order in judgment_jobs
+            for question, target_record, comparison_record, target_system, comparison_system, order in judgment_jobs
         }
         for future in concurrent.futures.as_completed(futures):
-            question, auto_record, baseline, order = futures[future]
+            question, target_record, target_system, comparison_system, order = futures[future]
             record = future.result()
             append_jsonl(judgment_file, record)
             existing_judgments[judgment_key(record)] = record
             print(
-                f"[judge] c={auto_record['concurrency']} q={question['question_id']} baseline={baseline} "
-                f"order={order} status={record['status']} auto_score={record['auto_score']}",
+                f"[judge] c={target_record['concurrency']} q={question['question_id']} "
+                f"target={target_system} comparison={comparison_system} order={order} "
+                f"status={record['status']} target_score={record['target_score']}",
                 flush=True,
             )
 

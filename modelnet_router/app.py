@@ -94,6 +94,8 @@ AUTO_NETWORK_HIGH_QUALITY_MAX_SOURCES = int(
 AUTO_NETWORK_MAX_EXTRA_CALLS = int(os.environ.get("MODELNET_AUTO_NETWORK_MAX_EXTRA_CALLS", "1"))
 AUTO_NETWORK_LOAD_SHED_SCORE = float(os.environ.get("MODELNET_AUTO_NETWORK_LOAD_SHED_SCORE", "900"))
 AUTO_NETWORK_CONFIDENCE_THRESHOLD = float(os.environ.get("MODELNET_AUTO_NETWORK_CONFIDENCE_THRESHOLD", "0.68"))
+AUTO_RANK_FUSE_CONFIDENCE_THRESHOLD = float(os.environ.get("MODELNET_AUTO_RANK_FUSE_CONFIDENCE_THRESHOLD", "0.72"))
+AUTO_RANK_FUSE_RANKER_MAX_TOKENS = int(os.environ.get("MODELNET_AUTO_RANK_FUSE_RANKER_MAX_TOKENS", "192"))
 AUTO_CASCADE_VERIFIER_MAX_TOKENS = int(os.environ.get("MODELNET_AUTO_CASCADE_VERIFIER_MAX_TOKENS", "160"))
 AUTO_CONTRIBUTION_MAX_CHARS = int(os.environ.get("MODELNET_AUTO_CONTRIBUTION_MAX_CHARS", "1200"))
 AUTO_ROUTER_TRACE_PATH = Path(os.environ.get("MODELNET_ROUTER_TRACE_PATH", "/tmp/router_trace.jsonl"))
@@ -1631,26 +1633,26 @@ def choose_auto_topology(
     ):
         return {
             "strategy": strategy,
-            "runner": "role_graph",
-            "native_runner": "auto.role_graph",
-            "aggregator": "synthesize",
+            "runner": "rank_fuse",
+            "native_runner": "auto.rank_fuse",
+            "aggregator": "rank_then_fuse",
             "source_count": 3,
-            "stages": ["experts.parallel", "synthesizer.final"],
+            "stages": ["candidates.parallel", "ranker.select", "optional.synthesizer.final"],
             "confidence_score": confidence,
             "confidence_reasons": confidence_reasons,
-            "escalation_reason": "high_quality_complex_task",
+            "escalation_reason": "high_quality_rank_fuse",
         }
-    if available_count >= 2 and int(budget.get("max_extra_calls") or 0) >= 1:
+    if available_count >= 2 and source_limit >= 2:
         return {
             "strategy": strategy,
-            "runner": "cascade_verify",
-            "native_runner": "auto.cascade_verify",
-            "aggregator": "verify_then_escalate",
-            "source_count": 2,
-            "stages": ["primary.answer", "verifier.check", "optional.escalation"],
+            "runner": "rank_fuse",
+            "native_runner": "auto.rank_fuse",
+            "aggregator": "rank_then_fuse",
+            "source_count": min(2, source_limit, available_count),
+            "stages": ["candidates.parallel", "ranker.select", "optional.synthesizer.final"],
             "confidence_score": confidence,
             "confidence_reasons": confidence_reasons,
-            "escalation_reason": "verify_complex_or_low_confidence",
+            "escalation_reason": "rank_fuse_complex_or_low_confidence",
         }
     return route_topology("budget_exhausted_route_once", strategy)
 
@@ -1838,6 +1840,7 @@ async def plan_auto_ensemble(
 
     common_plan: dict[str, Any] = {
         "planner": "query-conditioned-template-v3",
+        "plan_version": "rank_fuse_v2" if runner == "rank_fuse" else "adaptive_sparse_v1",
         "optimization_target": "adaptive_sparse_latency_quality",
         "strategy": strategy,
         "runner": native_runner,
@@ -1933,6 +1936,19 @@ async def plan_auto_ensemble(
         )
 
     selected = select_auto_candidates(scored, count=source_count, features=features)
+    ranker_item: tuple[Candidate, float, str] | None = None
+    if runner == "rank_fuse":
+        ranker_scored = [item for item in scored if item[0].backend_type == "vllm_chat"] or scored
+        ranker_item = select_role_candidate(
+            ranker_scored,
+            features=features,
+            role="critic",
+            used_model_ids=set(),
+            used_families=set(),
+            prefer_new_family=False,
+        )
+        if ranker_item is None and selected:
+            ranker_item = selected[0]
 
     sources = [
         EnsembleSource(
@@ -1941,6 +1957,8 @@ async def plan_auto_ensemble(
                 if runner == "cascade_verify" and index == 0
                 else "escalation"
                 if runner == "cascade_verify" and index == 1
+                else f"candidate-{index + 1}"
+                if runner == "rank_fuse"
                 else f"auto-source-{index + 1}"
             ),
             model_alias=candidate.model_id,
@@ -1958,6 +1976,16 @@ async def plan_auto_ensemble(
     runner_config["adaptive_budget"] = budget
     if native_runner == "response.parallel":
         runner_config.setdefault("instruction", response_aggregate_instruction(request))
+    if runner == "rank_fuse":
+        runner_config.setdefault(
+            "instruction",
+            (
+                "Use the candidate answers as evidence to produce the final user-facing answer. "
+                "Preserve the strongest correct details, resolve conflicts when possible, and "
+                "output only the final answer. Do not mention upstream responses, synthesis, "
+                "rankers, or internal model names."
+            ),
+        )
     if runner == "cascade_verify":
         verifier_item = selected[1] if len(selected) > 1 else selected[0]
         verifier_candidate, verifier_score, verifier_reason = verifier_item
@@ -1979,6 +2007,26 @@ async def plan_auto_ensemble(
                 AUTO_CASCADE_VERIFIER_MAX_TOKENS,
             ),
         }
+    if runner == "rank_fuse" and ranker_item is not None:
+        ranker_candidate, ranker_score, ranker_reason = ranker_item
+        runner_config["rank_fuse"] = {
+            "ranker": {
+                "source_id": "ranker",
+                "backend": candidate_backend_info(
+                    ranker_candidate,
+                    score=ranker_score,
+                    reason=ranker_reason,
+                ),
+                "family": model_family(ranker_candidate),
+                "model_size_b": model_size_b(ranker_candidate),
+            },
+            "confidence_threshold": AUTO_RANK_FUSE_CONFIDENCE_THRESHOLD,
+            "ranker_max_tokens": positive_int(
+                request.runner_config.get("ranker_max_tokens", AUTO_RANK_FUSE_RANKER_MAX_TOKENS),
+                AUTO_RANK_FUSE_RANKER_MAX_TOKENS,
+            ),
+            "allow_synthesis": coerce_bool(request.runner_config.get("allow_synthesis"), default=True),
+        }
 
     plan = {
         **common_plan,
@@ -1996,6 +2044,8 @@ async def plan_auto_ensemble(
     }
     if runner == "cascade_verify":
         plan["verifier"] = runner_config["cascade_verify"]["verifier"]
+    if runner == "rank_fuse" and "rank_fuse" in runner_config:
+        plan["ranker"] = runner_config["rank_fuse"]["ranker"]
     runner_config["auto_plan"] = plan
     planned_request = request.model_copy(
         update={
@@ -2191,6 +2241,322 @@ async def run_role_graph_ensemble(request: EnsembleRequest, tenant: GatewayTenan
         yield sse("error", {"error": str(exc), "runner": request.runner, "stage": "role_graph"})
 
 
+RANK_FUSE_RANKER_SYSTEM_PROMPT = (
+    "You are the ranker in a sparse multi-model network. Compare candidate answers "
+    "against the original user request. Prefer the answer that is most correct, "
+    "complete, instruction-following, and concise. If candidates have complementary "
+    "strengths or unresolved conflicts, request synthesis. Return only compact JSON. "
+    "Do not include hidden reasoning, markdown, prose, or <think> tags. /no_think"
+)
+
+
+def build_rank_fuse_prompt(original_prompt: str, candidate_results: list[dict[str, Any]]) -> str:
+    sections = [
+        "Original user request:",
+        original_prompt,
+        "",
+        "Candidate answers:",
+    ]
+    for result in candidate_results:
+        sections.extend(
+            [
+                "",
+                f"Candidate source_id={result.get('source_id')}:",
+                "```text",
+                compress_contribution_text(str(result.get("text") or "")),
+                "```",
+            ]
+        )
+    sections.extend(
+        [
+            "",
+            "Return JSON with keys: winner_source_id (string), confidence (0 to 1), "
+            "should_fuse (boolean), reason (short string). Set should_fuse=true when no "
+            "single candidate is clearly sufficient or when combining candidates would improve correctness.",
+            "/no_think",
+        ]
+    )
+    return "\n".join(sections)
+
+
+def parse_rank_fuse_decision(text: str, valid_source_ids: set[str]) -> dict[str, Any]:
+    raw = str(text or "").strip()
+    match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+    if match:
+        raw = match.group(0)
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {
+            "winner_source_id": "",
+            "confidence": 0.0,
+            "should_fuse": True,
+            "reason": "ranker_non_json",
+            "raw": text[:500],
+        }
+    if not isinstance(payload, dict):
+        return {
+            "winner_source_id": "",
+            "confidence": 0.0,
+            "should_fuse": True,
+            "reason": "ranker_invalid_json",
+            "raw": text[:500],
+        }
+
+    winner = str(
+        payload.get("winner_source_id")
+        or payload.get("winner")
+        or payload.get("selected_source_id")
+        or ""
+    )
+    if winner not in valid_source_ids:
+        winner = ""
+    try:
+        confidence = clamp_float(float(payload.get("confidence", 0.0)), 0.0, 1.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    should_fuse = coerce_bool(payload.get("should_fuse"), default=not bool(winner))
+    return {
+        "winner_source_id": winner,
+        "confidence": round(confidence, 3),
+        "should_fuse": should_fuse,
+        "reason": str(payload.get("reason") or "")[:300],
+        "raw": text[:500],
+    }
+
+
+def ranker_source_from_base(
+    base_source: EnsembleSource,
+    *,
+    model_alias: str | None,
+    original_prompt: str,
+    candidate_results: list[dict[str, Any]],
+    max_tokens: int,
+) -> EnsembleSource:
+    prompt = build_rank_fuse_prompt(original_prompt, candidate_results)
+    extra = dict(base_source.extra)
+    extra.setdefault("chat_template_kwargs", {"enable_thinking": False})
+    extra.setdefault("response_format", {"type": "json_object"})
+    return EnsembleSource(
+        source_id="ranker",
+        model_alias=model_alias,
+        prompt=prompt,
+        messages=[
+            {"role": "system", "content": RANK_FUSE_RANKER_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        sampling_params={"max_tokens": max_tokens, "temperature": 0},
+        extra=extra,
+        weight=1.0,
+    )
+
+
+async def run_rank_fuse_ensemble(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
+    if len(request.sources) > ENSEMBLE_MAX_SOURCES:
+        yield sse("error", {"error": f"too many sources; max={ENSEMBLE_MAX_SOURCES}"})
+        return
+    if len(request.sources) < 2:
+        yield sse("error", {"error": "rank_fuse requires at least two candidate sources"})
+        return
+
+    started = time.perf_counter()
+    plan = request.runner_config.get("auto_plan") if isinstance(request.runner_config.get("auto_plan"), dict) else {}
+    rank_fuse = request.runner_config.get("rank_fuse")
+    rank_fuse = rank_fuse if isinstance(rank_fuse, dict) else {}
+    threshold = float(rank_fuse.get("confidence_threshold") or AUTO_RANK_FUSE_CONFIDENCE_THRESHOLD)
+    allow_synthesis = coerce_bool(rank_fuse.get("allow_synthesis"), default=True)
+    original_prompt = request.sources[0].prompt or text_from_messages(message_list(request.sources[0]))
+
+    try:
+        results = await asyncio.gather(
+            *(generate_response_source(tenant, source) for source in request.sources),
+            return_exceptions=False,
+        )
+        successful = [result for result in results if result.get("error") is None and result.get("text")]
+        failed = [result for result in results if result not in successful]
+
+        for result in results:
+            backend = result.get("backend")
+            if backend is not None:
+                yield sse(
+                    "source_selected",
+                    {
+                        "source_id": result["source_id"],
+                        "backend": backend,
+                        "role": "candidate",
+                        "stage": "candidates.parallel",
+                    },
+                )
+            if result.get("error") is None:
+                yield sse(
+                    "full_response",
+                    {
+                        "source_id": result["source_id"],
+                        "role": "candidate",
+                        "text": result.get("text", ""),
+                        "metadata": result.get("metadata", {}),
+                    },
+                )
+
+        if len(successful) < 2:
+            yield sse(
+                "error",
+                {
+                    "error": "rank_fuse needs at least two successful candidate responses",
+                    "source_errors": {item["source_id"]: item.get("error") for item in failed},
+                },
+            )
+            return
+
+        ranker_selection = rank_fuse.get("ranker") if isinstance(rank_fuse.get("ranker"), dict) else {}
+        ranker_backend = ranker_selection.get("backend") if isinstance(ranker_selection.get("backend"), dict) else {}
+        ranker_model = str(ranker_backend.get("id") or request.sources[0].model_alias or "")
+        ranker_source = ranker_source_from_base(
+            request.sources[0],
+            model_alias=ranker_model or None,
+            original_prompt=original_prompt,
+            candidate_results=successful,
+            max_tokens=positive_int(
+                rank_fuse.get("ranker_max_tokens", AUTO_RANK_FUSE_RANKER_MAX_TOKENS),
+                AUTO_RANK_FUSE_RANKER_MAX_TOKENS,
+            ),
+        )
+        ranker_result = await generate_response_source(tenant, ranker_source)
+        if ranker_result.get("backend") is not None:
+            yield sse(
+                "source_selected",
+                {
+                    "source_id": "ranker",
+                    "backend": ranker_result["backend"],
+                    "role": "ranker",
+                    "stage": "ranker.select",
+                },
+            )
+        if ranker_result.get("error"):
+            decision = {
+                "winner_source_id": "",
+                "confidence": 0.0,
+                "should_fuse": True,
+                "reason": "ranker_error: " + str(ranker_result.get("error") or "")[:200],
+                "raw": "",
+            }
+        else:
+            ranker_text = str(ranker_result.get("text") or "")
+            yield sse(
+                "full_response",
+                {
+                    "source_id": "ranker",
+                    "role": "ranker",
+                    "text": ranker_text,
+                    "metadata": ranker_result.get("metadata", {}),
+                },
+            )
+            decision = parse_rank_fuse_decision(
+                ranker_text,
+                {str(result.get("source_id")) for result in successful},
+            )
+
+        selected_source_id = str(decision.get("winner_source_id") or "")
+        selected = next(
+            (result for result in successful if str(result.get("source_id")) == selected_source_id),
+            None,
+        )
+        confidence = float(decision.get("confidence") or 0.0)
+        should_fuse = bool(decision.get("should_fuse")) or selected is None or confidence < threshold
+        source_errors = {item["source_id"]: item.get("error") for item in failed}
+
+        if selected is not None and (not should_fuse or not allow_synthesis):
+            text = str(selected.get("text") or "")
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            yield sse("token", {"delta": text, "text": text})
+            yield sse(
+                "done",
+                {
+                    "text": text,
+                    "metadata": {
+                        "runner": request.runner,
+                        "aggregator": request.aggregator,
+                        "elapsed_ms": elapsed_ms,
+                        "source_count": len(successful),
+                        "failed_source_count": len(failed),
+                        "source_errors": source_errors,
+                        "contributions": {item["source_id"]: item.get("text", "") for item in successful},
+                        "compressed_contributions": compressed_contributions(successful),
+                        "ranker_decision": decision,
+                        "confidence_score": confidence,
+                        "escalation_reason": "ranker_selected",
+                        "selected_source_id": selected_source_id,
+                        "ranker": {
+                            "backend": ranker_result.get("backend"),
+                            "error": ranker_result.get("error"),
+                        },
+                        "trace_summary": {
+                            "tokens_count": len(text),
+                            "elapsed_ms": elapsed_ms,
+                            "source_count": len(successful),
+                            "failed_source_count": len(failed),
+                            "selected_source_id": selected_source_id,
+                            "stopped_by": "rank_fuse_selected",
+                        },
+                    },
+                },
+            )
+            return
+
+        synthesis, synthesis_metadata = await generate_response_synthesis(request, tenant, successful)
+        yield sse(
+            "source_selected",
+            {
+                "source_id": synthesis["source_id"],
+                "backend": synthesis["backend"],
+                "role": "aggregator",
+                "stage": "optional.synthesizer.final",
+            },
+        )
+        text = str(synthesis.get("text") or "")
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        yield sse("token", {"delta": text, "text": text})
+        yield sse(
+            "done",
+            {
+                "text": text,
+                "metadata": {
+                    "runner": request.runner,
+                    "aggregator": request.aggregator,
+                    "elapsed_ms": elapsed_ms,
+                    "source_count": len(successful),
+                    "failed_source_count": len(failed),
+                    "source_errors": source_errors,
+                    "contributions": {item["source_id"]: item.get("text", "") for item in successful},
+                    "compressed_contributions": compressed_contributions(successful),
+                    "ranker_decision": decision,
+                    "confidence_score": confidence,
+                    "escalation_reason": "ranker_fused" if selected is not None else "ranker_invalid_fused",
+                    "selected_source_id": selected_source_id or None,
+                    "ranker": {
+                        "backend": ranker_result.get("backend"),
+                        "error": ranker_result.get("error"),
+                    },
+                    "response_aggregator": {
+                        "backend": synthesis["backend"],
+                        **synthesis_metadata,
+                    },
+                    "trace_summary": {
+                        "tokens_count": len(text),
+                        "elapsed_ms": elapsed_ms,
+                        "source_count": len(successful),
+                        "failed_source_count": len(failed),
+                        "selected_source_id": selected_source_id or None,
+                        "stopped_by": "rank_fuse_synthesized",
+                    },
+                },
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("ensemble rank fuse failed request_id=%s", request.request_id)
+        yield sse("error", {"error": str(exc), "runner": request.runner, "stage": "rank_fuse"})
+
+
 CASCADE_VERIFIER_SYSTEM_PROMPT = (
     "You are a strict verifier in a sparse multi-model network. Decide whether "
     "the primary answer satisfies the user request. Return only compact JSON."
@@ -2246,6 +2612,9 @@ def verifier_source_from_base(
     max_tokens: int,
 ) -> EnsembleSource:
     prompt = build_cascade_verifier_prompt(original_prompt, primary_text)
+    extra = dict(base_source.extra)
+    extra.setdefault("chat_template_kwargs", {"enable_thinking": False})
+    extra.setdefault("response_format", {"type": "json_object"})
     return EnsembleSource(
         source_id="verifier",
         model_alias=model_alias,
@@ -2255,7 +2624,7 @@ def verifier_source_from_base(
             {"role": "user", "content": prompt},
         ],
         sampling_params={"max_tokens": max_tokens, "temperature": 0},
-        extra=dict(base_source.extra),
+        extra=extra,
         weight=1.0,
     )
 
@@ -2484,7 +2853,15 @@ async def run_cascade_verify_ensemble(request: EnsembleRequest, tenant: GatewayT
 
 def merge_auto_plan_execution(plan: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
     merged = dict(plan)
-    for key in ("confidence_score", "escalation_reason", "fallback_from", "compressed_contributions"):
+    for key in (
+        "confidence_score",
+        "escalation_reason",
+        "fallback_from",
+        "compressed_contributions",
+        "ranker_decision",
+        "selected_source_id",
+        "response_aggregator",
+    ):
         if key in metadata:
             merged[key] = metadata[key]
     if "source_count" in metadata:
@@ -2493,6 +2870,8 @@ def merge_auto_plan_execution(plan: dict[str, Any], metadata: dict[str, Any]) ->
         merged["failed_source_count"] = metadata["failed_source_count"]
     if "verifier" in metadata:
         merged["verifier_result"] = metadata["verifier"]
+    if "ranker" in metadata:
+        merged["ranker_result"] = metadata["ranker"]
     if "critic" in metadata:
         merged["critic"] = metadata["critic"]
     return merged
@@ -2512,6 +2891,8 @@ def append_router_trace(request: EnsembleRequest, plan: dict[str, Any], metadata
             "confidence_score": plan.get("confidence_score"),
             "escalation_reason": plan.get("escalation_reason"),
             "fallback_from": plan.get("fallback_from"),
+            "ranker_decision": plan.get("ranker_decision"),
+            "selected_source_id": plan.get("selected_source_id"),
             "selected_sources": [
                 item.get("backend", {}).get("id")
                 for item in plan.get("selected_sources", [])
@@ -2538,6 +2919,8 @@ async def run_auto_ensemble(request: EnsembleRequest, tenant: GatewayTenant) -> 
 
     if planned_request.runner == "role_graph":
         stream = run_role_graph_ensemble(planned_request, tenant)
+    elif planned_request.runner == "rank_fuse":
+        stream = run_rank_fuse_ensemble(planned_request, tenant)
     elif planned_request.runner == "cascade_verify":
         stream = run_cascade_verify_ensemble(planned_request, tenant)
     elif planned_request.runner == "response_aggregate":
@@ -2547,7 +2930,7 @@ async def run_auto_ensemble(request: EnsembleRequest, tenant: GatewayTenant) -> 
 
     async for chunk in stream:
         event, data = parse_sse_chunk(chunk)
-        if event == "error" and planned_request.runner in {"response_aggregate", "role_graph", "cascade_verify"}:
+        if event == "error" and planned_request.runner in {"response_aggregate", "role_graph", "rank_fuse", "cascade_verify"}:
             fallback_plan = {
                 **plan,
                 "strategy": "fallback_repair",

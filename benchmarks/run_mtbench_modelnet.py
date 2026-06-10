@@ -39,6 +39,7 @@ SYSTEMS = {
     "parallel_consensus": {"model": "modelnet-auto", "runner_config": {"strategy": "parallel_consensus"}},
 }
 BASELINES = ("adaptive_sparse_graph", "single_best", "fixed_qwen35b", "parallel_consensus")
+DIRECT_PAIRWISE = (("adaptive_sparse_graph", "single_best"),)
 
 
 def utc8_now() -> str:
@@ -181,8 +182,21 @@ def answer_key(record: dict[str, Any]) -> tuple[int, str]:
     return int(record["question_id"]), str(record["system"])
 
 
-def judgment_key(record: dict[str, Any]) -> tuple[int, str, str]:
-    return int(record["question_id"]), str(record["baseline"]), str(record["order"])
+def judgment_target(record: dict[str, Any]) -> str:
+    return str(record.get("target_system") or "modelnet_auto")
+
+
+def judgment_comparison(record: dict[str, Any]) -> str:
+    return str(record.get("comparison_system") or record.get("baseline") or "")
+
+
+def judgment_key(record: dict[str, Any]) -> tuple[int, str, str, str]:
+    return (
+        int(record["question_id"]),
+        judgment_target(record),
+        judgment_comparison(record),
+        str(record["order"]),
+    )
 
 
 def metadata_summary(data: dict[str, Any]) -> dict[str, Any]:
@@ -368,18 +382,19 @@ def parse_judge_json(text: str) -> dict[str, Any]:
 
 def generate_judgment_record(
     question: dict[str, Any],
-    auto_record: dict[str, Any],
-    baseline_record: dict[str, Any],
-    baseline: str,
+    target_record: dict[str, Any],
+    comparison_record: dict[str, Any],
+    target_system: str,
+    comparison_system: str,
     order: str,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
-    if order == "auto_first":
-        a_system, a_record = "modelnet_auto", auto_record
-        b_system, b_record = baseline, baseline_record
+    if order in {"auto_first", "target_first"}:
+        a_system, a_record = target_system, target_record
+        b_system, b_record = comparison_system, comparison_record
     else:
-        a_system, a_record = baseline, baseline_record
-        b_system, b_record = "modelnet_auto", auto_record
+        a_system, a_record = comparison_system, comparison_record
+        b_system, b_record = target_system, target_record
 
     prompt = judge_prompt(question, a_system, a_record, b_system, b_record)
     started = time.perf_counter()
@@ -437,12 +452,12 @@ def generate_judgment_record(
             winning_system = a_system
         elif winner == "B":
             winning_system = b_system
-        if winning_system == "modelnet_auto":
-            auto_score = 1.0
+        if winning_system == target_system:
+            target_score = 1.0
         elif winning_system == "tie":
-            auto_score = 0.5
+            target_score = 0.5
         else:
-            auto_score = 0.0
+            target_score = 0.0
         status = "ok"
         error = None
     except Exception as exc:  # noqa: BLE001
@@ -450,7 +465,7 @@ def generate_judgment_record(
         raw_text = ""
         parsed = {}
         winning_system = ""
-        auto_score = None
+        target_score = None
         status = "error"
         error = str(exc)[:1000]
 
@@ -459,13 +474,16 @@ def generate_judgment_record(
         "created_at": utc8_now(),
         "question_id": int(question["question_id"]),
         "category": str(question.get("category") or ""),
-        "baseline": baseline,
+        "baseline": comparison_system,
+        "target_system": target_system,
+        "comparison_system": comparison_system,
         "order": order,
         "a_system": a_system,
         "b_system": b_system,
         "status": status,
         "winner": winning_system,
-        "auto_score": auto_score,
+        "auto_score": target_score,
+        "target_score": target_score,
         "judge_model": args.judge_model,
         "latency_ms": elapsed_ms,
         "judge_json": parsed,
@@ -520,11 +538,10 @@ def summarize(
                 if model:
                     selected_counts[str(model)] = selected_counts.get(str(model), 0) + 1
 
-    pairwise: dict[str, dict[str, Any]] = {}
-    for baseline in BASELINES:
+    def summarize_pair(target_system: str, comparison_system: str) -> dict[str, Any]:
         grouped: dict[int, list[dict[str, Any]]] = {}
         for item in judgments_ok:
-            if item.get("baseline") == baseline:
+            if judgment_target(item) == target_system and judgment_comparison(item) == comparison_system:
                 grouped.setdefault(int(item["question_id"]), []).append(item)
         question_scores = []
         category_scores: dict[str, list[float]] = {}
@@ -540,7 +557,7 @@ def summarize(
         ties = sum(1 for score in question_scores if score == 0.5)
         losses = sum(1 for score in question_scores if score < 0.5)
         ci_low, ci_high = bootstrap_ci(question_scores)
-        pairwise[baseline] = {
+        return {
             "question_count": len(question_scores),
             "average_score": statistics.mean(question_scores) if question_scores else None,
             "bootstrap_95ci": [ci_low, ci_high],
@@ -558,6 +575,19 @@ def summarize(
                 and ci_low > 0.50
             ),
         }
+
+    pairwise: dict[str, dict[str, Any]] = {}
+    for baseline in BASELINES:
+        pairwise[baseline] = summarize_pair("modelnet_auto", baseline)
+
+    direct_pairwise = {
+        f"{target}_vs_{comparison}": {
+            **summarize_pair(target, comparison),
+            "target_system": target,
+            "comparison_system": comparison,
+        }
+        for target, comparison in DIRECT_PAIRWISE
+    }
 
     return {
         "schema_version": "modelnet.mtbench.summary.v1",
@@ -590,6 +620,7 @@ def summarize(
             "failed": len(judgment_records) - len(judgments_ok),
         },
         "pairwise": pairwise,
+        "direct_pairwise": direct_pairwise,
         "latency_ms": {
             system: {
                 "count": len(values),
@@ -628,6 +659,20 @@ def render_report(summary: dict[str, Any]) -> str:
             f"| `{baseline}` | {result['question_count']} | {avg_text} | {ci_text} | "
             f"{result['wins']}/{result['ties']}/{result['losses']} | {criterion} |"
         )
+    if summary.get("direct_pairwise"):
+        lines.extend(["", "## Direct Pairwise Results", ""])
+        lines.append("| Target vs Comparison | Questions | Avg score | 95% CI | Win/Tie/Loss | Criterion |")
+        lines.append("| --- | ---: | ---: | --- | --- | --- |")
+        for name, result in summary["direct_pairwise"].items():
+            avg = result["average_score"]
+            ci = result["bootstrap_95ci"]
+            avg_text = "n/a" if avg is None else f"{avg:.3f}"
+            ci_text = "n/a" if ci[0] is None else f"[{ci[0]:.3f}, {ci[1]:.3f}]"
+            criterion = "met" if result["success_criterion_met"] else "not met"
+            lines.append(
+                f"| `{name}` | {result['question_count']} | {avg_text} | {ci_text} | "
+                f"{result['wins']}/{result['ties']}/{result['losses']} | {criterion} |"
+            )
     lines.extend(["", "## Routing Mix", ""])
     for system, counts in summary.get("runner_counts", {}).items():
         count_text = ", ".join(f"{runner}: {count}" for runner, count in sorted(counts.items()))
@@ -739,37 +784,56 @@ def main() -> int:
     answer_by_key = {answer_key(item): item for item in answer_records}
     existing_judgments = {} if args.force else {judgment_key(item): item for item in read_jsonl(judgment_file)}
     judgment_jobs = []
+    judgment_pairs = [("modelnet_auto", baseline) for baseline in BASELINES] + list(DIRECT_PAIRWISE)
     for question in questions:
         qid = int(question["question_id"])
-        auto_record = answer_by_key.get((qid, "modelnet_auto"))
-        if not auto_record or auto_record.get("status") != "ok":
-            continue
-        for baseline in BASELINES:
-            baseline_record = answer_by_key.get((qid, baseline))
-            if not baseline_record or baseline_record.get("status") != "ok":
+        for target_system, comparison_system in judgment_pairs:
+            target_record = answer_by_key.get((qid, target_system))
+            comparison_record = answer_by_key.get((qid, comparison_system))
+            if (
+                not target_record
+                or not comparison_record
+                or target_record.get("status") != "ok"
+                or comparison_record.get("status") != "ok"
+            ):
                 continue
-            for order in ("auto_first", "baseline_first"):
-                key = (qid, baseline, order)
+            orders = (
+                ("auto_first", "baseline_first")
+                if target_system == "modelnet_auto"
+                else ("target_first", "comparison_first")
+            )
+            for order in orders:
+                key = (qid, target_system, comparison_system, order)
                 if key not in existing_judgments:
-                    judgment_jobs.append((question, auto_record, baseline_record, baseline, order))
+                    judgment_jobs.append((question, target_record, comparison_record, target_system, comparison_system, order))
     print(f"[judgments] existing={len(existing_judgments)} pending={len(judgment_jobs)}", flush=True)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.judge_workers)) as executor:
         futures = {
-            executor.submit(generate_judgment_record, question, auto, baseline_record, baseline, order, args): (
+            executor.submit(
+                generate_judgment_record,
                 question,
-                baseline,
+                target_record,
+                comparison_record,
+                target_system,
+                comparison_system,
+                order,
+                args,
+            ): (
+                question,
+                target_system,
+                comparison_system,
                 order,
             )
-            for question, auto, baseline_record, baseline, order in judgment_jobs
+            for question, target_record, comparison_record, target_system, comparison_system, order in judgment_jobs
         }
         for future in concurrent.futures.as_completed(futures):
-            question, baseline, order = futures[future]
+            question, target_system, comparison_system, order = futures[future]
             record = future.result()
             append_jsonl(judgment_file, record)
             existing_judgments[judgment_key(record)] = record
             print(
-                f"[judge] q={question['question_id']} baseline={baseline} order={order} "
-                f"status={record['status']} auto_score={record['auto_score']}",
+                f"[judge] q={question['question_id']} target={target_system} comparison={comparison_system} "
+                f"order={order} status={record['status']} target_score={record['target_score']}",
                 flush=True,
             )
 
@@ -781,7 +845,7 @@ def main() -> int:
     archive_router_trace(output_dir)
     write_manifest(output_dir)
     print(f"[done] output_dir={output_dir}", flush=True)
-    print(json.dumps(summary["pairwise"], ensure_ascii=False, indent=2), flush=True)
+    print(json.dumps({"pairwise": summary["pairwise"], "direct_pairwise": summary["direct_pairwise"]}, ensure_ascii=False, indent=2), flush=True)
     return 0
 
 
