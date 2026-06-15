@@ -30,6 +30,9 @@ RUNNER_ALIASES = {
     "auto": "auto.network",
     "auto_network": "auto.network",
     "auto.network": "auto.network",
+    "role_graph": "auto.role_graph",
+    "auto_role_graph": "auto.role_graph",
+    "auto.role_graph": "auto.role_graph",
     "claim_graph": "auto.claim_graph",
     "auto_claim_graph": "auto.claim_graph",
     "auto.claim_graph": "auto.claim_graph",
@@ -58,6 +61,13 @@ RUNNER_PLUGINS = {
         scope="graph",
         description="Plan a query-conditioned model network, then execute it through an implemented runner.",
         supported_aggregators=("auto",),
+    ),
+    "auto.role_graph": RunnerPlugin(
+        name="auto.role_graph",
+        legacy_name="role_graph",
+        scope="graph",
+        description="Run role-specialized expert responses with optional critic review and synthesis.",
+        supported_aggregators=("synthesize",),
     ),
     "auto.claim_graph": RunnerPlugin(
         name="auto.claim_graph",

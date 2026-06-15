@@ -76,6 +76,12 @@ PROMETHEUS_SERVICE = os.environ.get("MODELNET_PROMETHEUS_SERVICE", "prometheus-k
 PROMETHEUS_PORT = os.environ.get("MODELNET_PROMETHEUS_PORT", "9090")
 PUBLIC_MODEL_NAME = os.environ.get("MODELNET_ROUTER_MODEL_NAME", "modelnet")
 PUBLIC_AUTO_MODEL_NAME = os.environ.get("MODELNET_AUTO_MODEL_NAME", "modelnet-auto")
+RETIRED_PUBLIC_MODEL_MESSAGE = (
+    f"Model '{PUBLIC_MODEL_NAME}' is retired; use '{PUBLIC_AUTO_MODEL_NAME}' for ModelNet automatic networking."
+)
+AUTO_NETWORK_DEFAULT_STRATEGY = (
+    os.environ.get("MODELNET_AUTO_NETWORK_DEFAULT_STRATEGY", "role_graph").strip() or "role_graph"
+)
 BACKEND_API_KEY = os.environ.get("MODELNET_BACKEND_API_KEY", "")
 ROUTER_API_KEY = os.environ.get("MODELNET_ROUTER_API_KEY", "")
 API_KEY_TENANTS = load_gateway_tenants(
@@ -1780,7 +1786,7 @@ def target_auto_source_count(
         AUTO_NETWORK_MAX_SOURCES,
     )
     requested_max = max(1, min(requested_max, ENSEMBLE_MAX_SOURCES, AUTO_NETWORK_MAX_SOURCES))
-    strategy = str(request.runner_config.get("strategy") or "").strip()
+    strategy = str(request.runner_config.get("strategy") or AUTO_NETWORK_DEFAULT_STRATEGY).strip()
     if strategy == "single_best":
         return 1
     if strategy == "role_graph":
@@ -1895,7 +1901,7 @@ def choose_auto_topology(
     budget: dict[str, Any],
 ) -> dict[str, Any]:
     requested_strategy = str(request.runner_config.get("strategy") or "").strip()
-    strategy = requested_strategy or "adaptive_sparse_graph"
+    strategy = requested_strategy or AUTO_NETWORK_DEFAULT_STRATEGY
     available_count = len(scored)
     source_limit = max(1, int(budget.get("max_sources") or 1))
     confidence, confidence_reasons = estimate_auto_confidence(scored, features)
@@ -2232,14 +2238,18 @@ async def plan_auto_ensemble(
     runner = str(topology["runner"])
     aggregator = str(topology["aggregator"])
     strategy = str(topology["strategy"])
+    entry_runner = canonical_runner(str(request.runner_config.get("native_runner") or request.runner))
 
     common_plan: dict[str, Any] = {
         "planner": "query-conditioned-template-v3",
         "plan_version": "claim_graph_v1"
         if runner == "claim_graph"
+        else "role_graph_v1"
+        if runner == "role_graph"
         else "rank_fuse_v2"
         if runner == "rank_fuse"
         else "adaptive_sparse_v1",
+        "entry_runner": entry_runner,
         "optimization_target": "adaptive_sparse_latency_quality",
         "strategy": strategy,
         "runner": native_runner,
@@ -2333,6 +2343,7 @@ async def plan_auto_ensemble(
                 "strategy": strategy,
                 "runner": native_runner,
                 "aggregator": aggregator,
+                "plan_version": "adaptive_sparse_v1",
                 "escalation_reason": "role_graph_planning_fallback",
                 "stages": topology.get("stages", []),
             }
@@ -3669,6 +3680,7 @@ def append_router_trace(request: EnsembleRequest, plan: dict[str, Any], metadata
         record = {
             "created_at": time.time(),
             "request_id": request.request_id,
+            "entry_runner": plan.get("entry_runner"),
             "strategy": plan.get("strategy"),
             "runner": plan.get("runner"),
             "aggregator": plan.get("aggregator"),
@@ -4183,29 +4195,19 @@ async def models(authorization: str | None = Header(default=None)) -> dict[str, 
     data = [
         {
             "created": 0,
-            "id": PUBLIC_MODEL_NAME,
-            "object": "model",
-            "owned_by": "modelnet",
-            "metadata": {
-                "description": "ModelNet automatic route entrypoint",
-                "native_schema_version": MODELNET_RUN_SCHEMA_VERSION,
-            },
-        }
-    ]
-    data.append(
-        {
-            "created": 0,
             "id": PUBLIC_AUTO_MODEL_NAME,
             "object": "model",
             "owned_by": "modelnet",
             "metadata": {
                 "description": "ModelNet query-conditioned automatic network entrypoint",
+                "entry_runner": "auto.network",
                 "native_runner": "auto.network",
+                "default_strategy": AUTO_NETWORK_DEFAULT_STRATEGY,
                 "optimization_target": "cost_balanced",
                 "native_schema_version": MODELNET_RUN_SCHEMA_VERSION,
             },
         }
-    )
+    ]
     data.extend(
         {
             "created": 0,
@@ -4254,7 +4256,10 @@ async def capabilities(authorization: str | None = Header(default=None)) -> dict
             {
                 "name": "openai-compatible",
                 "endpoints": ["/v1/chat/completions", "/v1/models"],
-                "advanced_collaboration": False,
+                "advanced_collaboration": True,
+                "automatic_network_entrypoint": PUBLIC_AUTO_MODEL_NAME,
+                "model_entrypoints": [PUBLIC_AUTO_MODEL_NAME],
+                "retired_model_entrypoints": [PUBLIC_MODEL_NAME],
             },
             {
                 "name": "anthropic-compatible",
@@ -4282,6 +4287,16 @@ async def chat_completions(
 ) -> Response:
     tenant = assert_authorized(authorization)
     body = await request.json()
+    if str(body.get("model") or "") == PUBLIC_MODEL_NAME:
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "error": "model_retired",
+                "message": RETIRED_PUBLIC_MODEL_MESSAGE,
+                "replacement": PUBLIC_AUTO_MODEL_NAME,
+            },
+        )
+
     ir = openai_chat_to_ir(body)
     if is_openai_ensemble_request(ir):
         return await openai_ensemble_chat_response(body, ir, tenant)

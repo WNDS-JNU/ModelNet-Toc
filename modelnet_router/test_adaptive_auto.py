@@ -154,6 +154,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.original_pick_source_candidate = router.pick_source_candidate
         self.original_scored_candidate_pool = router.scored_candidate_pool
+        self.original_visible_candidates = router.visible_candidates
         self.original_generate_text = router.generate_text
         self.original_generate_response_source = router.generate_response_source
         self.original_generate_response_synthesis = router.generate_response_synthesis
@@ -167,6 +168,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         router.pick_source_candidate = self.original_pick_source_candidate
         router.scored_candidate_pool = self.original_scored_candidate_pool
+        router.visible_candidates = self.original_visible_candidates
         router.generate_text = self.original_generate_text
         router.generate_response_source = self.original_generate_response_source
         router.generate_response_synthesis = self.original_generate_response_synthesis
@@ -186,6 +188,46 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("stage_latencies_ms", metadata)
         self.assertIn("call_ledger_summary", metadata)
         self.assertTrue(stages.issubset({str(item.get("stage")) for item in ledger}))
+
+    def test_modelnet_auto_openai_payload_normalizes_to_auto_network(self) -> None:
+        ir = router.openai_chat_to_ir(
+            {
+                'model': router.PUBLIC_AUTO_MODEL_NAME,
+                'messages': [{'role': 'user', 'content': 'hello'}],
+                'modelnet': {'collaboration_plan': {'runner_config': {'strategy': 'adaptive_sparse_graph'}}},
+            }
+        )
+        ensemble = router.ir_to_ensemble_request(ir)
+
+        self.assertEqual(ir.collaboration_plan['runner'], 'auto.network')
+        self.assertEqual(ir.collaboration_plan['aggregator'], 'auto')
+        self.assertEqual(ensemble.runner, 'auto')
+        self.assertEqual(ensemble.runner_config['native_runner'], 'auto.network')
+
+    async def test_modelnet_public_entrypoint_is_retired(self) -> None:
+        class RetiredRequest:
+            async def json(self):
+                return {'model': router.PUBLIC_MODEL_NAME, 'messages': [{'role': 'user', 'content': 'hello'}]}
+
+        with self.assertRaises(router.HTTPException) as context:
+            await router.chat_completions(RetiredRequest())
+
+        self.assertEqual(context.exception.status_code, 410)
+        self.assertEqual(context.exception.detail['error'], 'model_retired')
+        self.assertEqual(context.exception.detail['replacement'], router.PUBLIC_AUTO_MODEL_NAME)
+
+    async def test_models_exposes_only_modelnet_auto_public_entrypoint(self) -> None:
+        router.visible_candidates = lambda _tenant: [candidate('qwen-7b')]
+
+        payload = await router.models()
+        ids = [item['id'] for item in payload['data']]
+
+        self.assertIn(router.PUBLIC_AUTO_MODEL_NAME, ids)
+        self.assertNotIn(router.PUBLIC_MODEL_NAME, ids)
+        auto_model = next(item for item in payload['data'] if item['id'] == router.PUBLIC_AUTO_MODEL_NAME)
+        self.assertEqual(auto_model['metadata']['entry_runner'], 'auto.network')
+        self.assertEqual(auto_model['metadata']['native_runner'], 'auto.network')
+        self.assertEqual(auto_model['metadata']['default_strategy'], 'role_graph')
 
     async def stub_scored(self, *args, **kwargs):
         return list(self.scored)
@@ -244,7 +286,10 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             router.scored_candidate_pool = self.stub_scored
 
             planned, plan = await router.plan_auto_ensemble(
-                request_for("What endpoint should I call for the ModelNet router?"),
+                request_for(
+                    "What endpoint should I call for the ModelNet router?",
+                    {"strategy": "single_best"},
+                ),
                 self.tenant,
             )
 
@@ -272,7 +317,10 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             router.scored_candidate_pool = self.stub_scored
 
             planned, plan = await router.plan_auto_ensemble(
-                request_for("Where is the ModelNet router exposed?"),
+                request_for(
+                    "Where is the ModelNet router exposed?",
+                    {"strategy": "single_best"},
+                ),
                 self.tenant,
             )
 
@@ -291,7 +339,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             router.scored_candidate_pool = self.stub_scored
 
             planned, plan = await router.plan_auto_ensemble(
-                request_for("Say hello."),
+                request_for("Say hello.", {"strategy": "single_best"}),
                 self.tenant,
             )
 
@@ -304,6 +352,11 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(router.canonical_runner("claim_graph"), "auto.claim_graph")
         self.assertIn("auto.claim_graph", router.RUNNER_PLUGINS)
         self.assertEqual(router.RUNNER_PLUGINS["auto.claim_graph"].legacy_name, "claim_graph")
+
+    def test_role_graph_runner_is_registered(self) -> None:
+        self.assertEqual(router.canonical_runner("role_graph"), "auto.role_graph")
+        self.assertIn("auto.role_graph", router.RUNNER_PLUGINS)
+        self.assertEqual(router.RUNNER_PLUGINS["auto.role_graph"].legacy_name, "role_graph")
 
     async def test_claim_graph_strategy_selects_claim_graph_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -442,14 +495,18 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(done["metadata"]["shortcut"], "extraction_failed")
         self.assert_call_ledger(done["metadata"], {"claim.proposer", "claim.extract"})
 
-    async def test_low_complexity_selects_route_once(self) -> None:
+    async def test_default_selects_role_graph(self) -> None:
         router.scored_candidate_pool = self.stub_scored
         planned, plan = await router.plan_auto_ensemble(request_for("Say hello."), self.tenant)
 
-        self.assertEqual(planned.runner, "route")
-        self.assertEqual(plan["runner"], "route.once")
-        self.assertEqual(plan["strategy"], "adaptive_sparse_graph")
+        self.assertEqual(planned.runner, "role_graph")
+        self.assertEqual(plan["runner"], "auto.role_graph")
+        self.assertEqual(plan["plan_version"], "role_graph_v1")
+        self.assertEqual(plan["strategy"], "role_graph")
+        self.assertEqual(plan["source_count"], 2)
         self.assertEqual(plan["call_budget"]["max_sources"], 2)
+        self.assertEqual(planned.runner_config["auto_strategy"], "role_graph")
+        self.assertEqual(len(plan["selected_roles"]["experts"]), 2)
 
     async def test_route_once_outputs_call_ledger(self) -> None:
         async def fake_pick(_tenant, _source, required_capabilities=None):
@@ -476,10 +533,13 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assert_call_ledger(done["metadata"], {"route.once"})
         self.assertEqual(done["metadata"]["internal_total_tokens"], 7)
 
-    async def test_complex_default_selects_rank_fuse(self) -> None:
+    async def test_explicit_adaptive_sparse_selects_rank_fuse(self) -> None:
         router.scored_candidate_pool = self.stub_scored
         planned, plan = await router.plan_auto_ensemble(
-            request_for("Analyze and compare the design tradeoffs, risks, and implementation plan."),
+            request_for(
+                "Analyze and compare the design tradeoffs, risks, and implementation plan.",
+                {"strategy": "adaptive_sparse_graph"},
+            ),
             self.tenant,
         )
 
@@ -728,6 +788,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         auto_plan = done["metadata"]["auto_plan"]
 
         self.assertEqual(auto_plan["strategy"], "adaptive_sparse_graph")
+        self.assertEqual(auto_plan['entry_runner'], 'auto.network')
         self.assertEqual(auto_plan["runner"], "auto.rank_fuse")
         self.assertEqual(auto_plan["plan_version"], "rank_fuse_v2")
         self.assertIn("call_budget", auto_plan)
