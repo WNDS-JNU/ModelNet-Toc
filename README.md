@@ -16,6 +16,7 @@ Self-hosted LobeHub ToC deployment for ModelNet, with:
 - LobeHub replicas: `lobe`, scaled by `LOBE_REPLICAS`
 - Leaderboard API: `GET /api/modelnet/leaderboard`, served by the custom LobeHub image
 - Model gateway services: `modelnet-litellm` and `modelnet-router`, owned by this compose project
+- The public automatic networking model is `modelnet-auto`; the old `modelnet` entrypoint is retired.
 
 The stack builds the custom LobeHub image from the vendored source tree at `./lobehub` by default.
 Override it with `LOBEHUB_TOC_SRC=/path/to/lobehub-source` only when testing another checkout.
