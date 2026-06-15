@@ -82,6 +82,10 @@ export interface LLMParams {
    */
   max_tokens?: number;
   /**
+   * Internal UI-only ModelNet parallel member model IDs.
+   */
+  modelnetParallelModelIds?: string[];
+  /**
    * Controls the penalty coefficient in generated text to reduce topic variation
    * @default 0
    */

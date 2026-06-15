@@ -1,5 +1,5 @@
 import { type DropdownMenuPlacement } from '@lobehub/ui';
-import { type AiModelForSelect } from 'model-bank';
+import { type AiModelForSelect, type LLMParams } from 'model-bank';
 import { type ComponentType } from 'react';
 
 import { type EnabledProviderWithModels } from '@/types/aiProvider';
@@ -7,6 +7,12 @@ import { type EnabledProviderWithModels } from '@/types/aiProvider';
 import { type PricingMode } from './components/ModelDetailPanel';
 
 export type GroupMode = 'byModel' | 'byProvider';
+
+export interface ModelChangeParams {
+  model: string;
+  params?: Partial<LLMParams>;
+  provider: string;
+}
 
 export interface ModelWithProviders {
   displayName: string;
@@ -64,7 +70,7 @@ export interface ModelSwitchPanelProps {
   /**
    * Callback when model changes. If not provided, uses updateAgentConfig from store.
    */
-  onModelChange?: (params: { model: string; provider: string }) => Promise<void>;
+  onModelChange?: (params: ModelChangeParams) => Promise<void>;
   onOpenChange?: (open: boolean) => void;
   open?: boolean;
   /**

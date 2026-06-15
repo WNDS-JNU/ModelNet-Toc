@@ -12,7 +12,7 @@ import { useBuildListItems } from '../../hooks/useBuildListItems';
 import { useModelAndProvider } from '../../hooks/useModelAndProvider';
 import { usePanelHandlers } from '../../hooks/usePanelHandlers';
 import { styles } from '../../styles';
-import { type GroupMode } from '../../types';
+import { type GroupMode, type ModelChangeParams } from '../../types';
 import { menuKey } from '../../utils';
 import type { PricingMode } from '../ModelDetailPanel';
 import GenerationListItemRenderer from './GenerationListItemRenderer';
@@ -23,7 +23,7 @@ interface ListProps {
   groupMode: GroupMode;
   model?: string;
   ModelItemComponent?: ComponentType<any>;
-  onModelChange?: (params: { model: string; provider: string }) => Promise<void>;
+  onModelChange?: (params: ModelChangeParams) => Promise<void>;
   onOpenChange?: (open: boolean) => void;
   pricingMode?: PricingMode;
   provider?: string;
@@ -50,6 +50,7 @@ export const List: FC<ListProps> = ({
   const enabledList = enabledListProp ?? chatEnabledList;
   const { model, provider } = useModelAndProvider(modelProp, providerProp);
   const { handleModelChange, handleClose } = usePanelHandlers({
+    enabledList,
     onModelChange: onModelChangeProp,
     onOpenChange,
   });

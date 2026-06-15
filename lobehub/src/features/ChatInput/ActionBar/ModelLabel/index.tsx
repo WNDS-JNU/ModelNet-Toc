@@ -4,6 +4,11 @@ import { ChevronDownIcon } from 'lucide-react';
 import { memo, useCallback } from 'react';
 
 import ModelSwitchPanel from '@/features/ModelSwitchPanel';
+import { type ModelChangeParams } from '@/features/ModelSwitchPanel/types';
+import {
+  isModelNetParallelModel,
+  MODELNET_PARALLEL_DISPLAY_NAME,
+} from '@/features/ModelNetParallel';
 import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors } from '@/store/agent/selectors';
 import { aiModelSelectors, useAiInfraStore } from '@/store/aiInfra';
@@ -46,10 +51,12 @@ const ModelLabel = memo(() => {
   ]);
 
   const enabledModel = useAiInfraStore(aiModelSelectors.getEnabledModelById(model, provider));
-  const displayName = enabledModel?.displayName || model;
+  const displayName = isModelNetParallelModel(provider, model)
+    ? MODELNET_PARALLEL_DISPLAY_NAME
+    : enabledModel?.displayName || model;
 
   const handleModelChange = useCallback(
-    async (params: { model: string; provider: string }) => {
+    async (params: ModelChangeParams) => {
       await updateAgentConfigById(agentId, params);
     },
     [agentId, updateAgentConfigById],

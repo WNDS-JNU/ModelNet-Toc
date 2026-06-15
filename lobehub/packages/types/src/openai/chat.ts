@@ -93,6 +93,16 @@ export interface ChatStreamPayload {
    * @title Model name
    */
   model: string;
+  modelnet?: {
+    collaboration_plan: {
+      aggregator: 'synthesize';
+      models: string[];
+      runner: 'response.parallel';
+      runner_config: {
+        allow_degraded: boolean;
+      };
+    };
+  };
   /**
    * @title Number of texts to return
    */

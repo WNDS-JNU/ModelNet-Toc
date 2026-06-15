@@ -22,6 +22,11 @@ import { merge } from 'es-toolkit/compat';
 import { ModelProvider } from 'model-bank';
 
 import { DEFAULT_AGENT_CONFIG } from '@/const/settings';
+import {
+  isModelNetParallelModel,
+  MAX_MODELNET_PARALLEL_MODELS,
+  MIN_MODELNET_PARALLEL_MODELS,
+} from '@/features/ModelNetParallel';
 import { getSearchConfig } from '@/helpers/getSearchConfig';
 import { getAgentStoreState } from '@/store/agent';
 import {
@@ -360,10 +365,20 @@ class ChatService {
     const requestTrigger = metadata?.trigger;
 
     const { provider = ModelProvider.OpenAI, ...res } = params;
+    const modelnetParallelModelIds = Array.isArray((res as any).modelnetParallelModelIds)
+      ? [
+          ...new Set(
+            (res as any).modelnetParallelModelIds.filter((id: unknown) => typeof id === 'string'),
+          ),
+        ]
+      : [];
+    delete (res as any).modelnetParallelModelIds;
+    delete (res as any).modelnet;
 
     // =================== process model =================== //
     // ===================================================== //
     let model = res.model || DEFAULT_AGENT_CONFIG.model;
+    const isModelNetParallel = isModelNetParallelModel(provider, model);
     const deploymentName = providersWithDeploymentName.has(provider)
       ? findDeploymentName(model, provider)
       : undefined;
@@ -378,11 +393,19 @@ class ChatService {
     // When user explicitly disables Responses API, set apiMode to 'chatCompletion'
     // This ensures the user's preference takes priority over provider's useResponseModels config
     // When user enables Responses API, set to 'responses' to force use Responses API
-    const apiMode: 'responses' | 'chatCompletion' = aiProviderSelectors.isProviderEnableResponseApi(
-      provider,
-    )(getAiInfraStoreState())
-      ? 'responses'
-      : 'chatCompletion';
+    const normalizedModel = model.toLowerCase();
+    const forceChatCompletions =
+      isModelNetParallel ||
+      (provider === ModelProvider.OpenAI &&
+        (normalizedModel === 'modelnet' || normalizedModel === 'modelnet/modelnet'));
+    if (forceChatCompletions) {
+      model = 'modelnet';
+    }
+    const apiMode: 'responses' | 'chatCompletion' =
+      !forceChatCompletions &&
+      aiProviderSelectors.isProviderEnableResponseApi(provider)(getAiInfraStoreState())
+        ? 'responses'
+        : 'chatCompletion';
 
     // Get the chat config to check streaming preference
     const chatConfig = agentChatConfigSelectors.currentChatConfig(getAgentStoreState());
@@ -412,6 +435,30 @@ class ChatService {
     if (payload.top_p === null) payload.top_p = undefined;
     if (payload.presence_penalty === null) payload.presence_penalty = undefined;
     if (payload.frequency_penalty === null) payload.frequency_penalty = undefined;
+    delete (payload as any).modelnetParallelModelIds;
+
+    if (isModelNetParallel) {
+      if (
+        modelnetParallelModelIds.length < MIN_MODELNET_PARALLEL_MODELS ||
+        modelnetParallelModelIds.length > MAX_MODELNET_PARALLEL_MODELS
+      ) {
+        throw new Error(
+          `ModelNet \u5e76\u8054\u9700\u8981\u9009\u62e9 ${MIN_MODELNET_PARALLEL_MODELS}-${MAX_MODELNET_PARALLEL_MODELS} \u4e2a\u6a21\u578b`,
+        );
+      }
+
+      payload.model = 'modelnet';
+      payload.modelnet = {
+        collaboration_plan: {
+          aggregator: 'synthesize',
+          models: modelnetParallelModelIds,
+          runner: 'response.parallel',
+          runner_config: {
+            allow_degraded: false,
+          },
+        },
+      };
+    }
 
     const sdkType = resolveRuntimeProvider(provider);
 

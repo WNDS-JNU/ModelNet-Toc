@@ -5,6 +5,7 @@ import Memory from './Memory';
 import Mention from './Mention';
 import Model from './Model';
 import ModelLabel from './ModelLabel';
+import ModelNetParallel from './ModelNetParallel';
 import Params from './Params';
 import Plus from './Plus';
 import PromptTransform from './PromptTransform';
@@ -27,6 +28,7 @@ export const actionMap = {
   mention: Mention,
   model: Model,
   modelLabel: ModelLabel,
+  modelnetParallel: ModelNetParallel,
   params: Params,
   promptTransform: PromptTransform,
   saveTopic: SaveTopic,
