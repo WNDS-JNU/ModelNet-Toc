@@ -37,11 +37,18 @@ def openai_chat_to_ir(body: dict[str, Any]) -> ModelNetRunRequest:
         required_capabilities.append("structured_output")
 
     collaboration_plan = dict(modelnet_options.get("collaboration_plan") or {})
-    if str(body.get("model") or "") == "modelnet-auto":
+    requested_model = str(body.get("model") or "")
+    requested_runner = collaboration_plan.get("runner")
+    if requested_model == "modelnet-auto" and not requested_runner:
         collaboration_plan["runner"] = "auto.network"
         collaboration_plan.setdefault("aggregator", "auto")
     else:
-        collaboration_plan.setdefault("runner", "route.once")
+        if requested_runner:
+            runner = canonical_runner(str(requested_runner))
+            collaboration_plan["runner"] = runner
+            collaboration_plan.setdefault("aggregator", default_aggregator_for(runner))
+        else:
+            collaboration_plan.setdefault("runner", "route.once")
     if "candidate_aliases" in modelnet_options:
         collaboration_plan["candidate_aliases"] = modelnet_options["candidate_aliases"]
 

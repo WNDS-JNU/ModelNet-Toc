@@ -165,9 +165,12 @@ async def generate_text(
         response.raise_for_status()
         payload = response.json()
         message = payload.get("message") if isinstance(payload, dict) else {}
+        metadata = {"usage": ollama_usage(payload)} if isinstance(payload, dict) else {}
+        if isinstance(payload, dict) and payload.get("done_reason"):
+            metadata["finish_reason"] = str(payload.get("done_reason") or "")
         return {
             "text": str(message.get("content") or "") if isinstance(message, dict) else "",
-            "metadata": {"usage": ollama_usage(payload)} if isinstance(payload, dict) else {},
+            "metadata": metadata,
         }
 
     if candidate.backend_type in OPENAI_CHAT_BACKENDS:
@@ -185,6 +188,9 @@ async def generate_text(
         metadata = {"usage": payload.get("usage")} if isinstance(payload, dict) else {}
         if isinstance(message, dict):
             reasoning = message.get("reasoning_content") or message.get("reasoning")
+            finish_reason = choice.get("finish_reason") if isinstance(choice, dict) else None
+            if finish_reason:
+                metadata["finish_reason"] = str(finish_reason)
             if reasoning:
                 metadata["reasoning_content"] = str(reasoning)
             content = message.get("content", "")
@@ -210,7 +216,15 @@ async def generate_text(
     text = ""
     if isinstance(payload, dict):
         text = str(payload.get("content") or payload.get("text") or "")
-    return {"text": text, "metadata": {}}
+    metadata: dict[str, Any] = {}
+    if isinstance(payload, dict):
+        if payload.get("stopped_limit"):
+            metadata["finish_reason"] = "length"
+        elif payload.get("stopped_eos") or payload.get("stopped_word") or payload.get("stop"):
+            metadata["finish_reason"] = "stop"
+        if payload.get("tokens_predicted") is not None:
+            metadata["tokens_predicted"] = payload.get("tokens_predicted")
+    return {"text": text, "metadata": metadata}
 
 
 def openai_chat_to_ollama(candidate: Any, body: dict[str, Any]) -> dict[str, Any]:

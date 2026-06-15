@@ -111,8 +111,8 @@ AUTO_NETWORK_HIGH_COMPLEXITY_THRESHOLD = int(
     os.environ.get("MODELNET_AUTO_NETWORK_HIGH_COMPLEXITY_THRESHOLD", "4")
 )
 AUTO_ROLE_GRAPH_EXPERT_MAX_TOKENS = int(os.environ.get("MODELNET_AUTO_ROLE_GRAPH_EXPERT_MAX_TOKENS", "160"))
-AUTO_ROLE_GRAPH_CRITIC_MAX_TOKENS = int(os.environ.get("MODELNET_AUTO_ROLE_GRAPH_CRITIC_MAX_TOKENS", "180"))
-AUTO_ROLE_GRAPH_SYNTHESIS_MAX_TOKENS = int(os.environ.get("MODELNET_AUTO_ROLE_GRAPH_SYNTHESIS_MAX_TOKENS", "256"))
+AUTO_ROLE_GRAPH_CRITIC_MAX_TOKENS = int(os.environ.get("MODELNET_AUTO_ROLE_GRAPH_CRITIC_MAX_TOKENS", "384"))
+AUTO_ROLE_GRAPH_SYNTHESIS_MAX_TOKENS = int(os.environ.get("MODELNET_AUTO_ROLE_GRAPH_SYNTHESIS_MAX_TOKENS", "1536"))
 AUTO_NETWORK_HIGH_QUALITY_MAX_SOURCES = int(
     os.environ.get("MODELNET_AUTO_NETWORK_HIGH_QUALITY_MAX_SOURCES", "3")
 )
@@ -2230,6 +2230,55 @@ def build_role_graph_synthesis_prompt(
     return "\n".join(sections)
 
 
+def answer_finished_by_length(metadata: dict[str, Any]) -> bool:
+    finish_reason = str(metadata.get("finish_reason") or "").strip().lower()
+    return finish_reason in {"length", "max_tokens", "stopped_limit"}
+
+
+def answer_looks_cut_off(text: str) -> bool:
+    stripped = (text or "").rstrip()
+    if len(stripped) < 200:
+        return False
+    if re.search(r"(\*\*?|`+|[_#>\-]|[:;,\u3001\uff1a\uff0c\uff1b])$", stripped):
+        return True
+    return not bool(re.search(r"[.!?\u3002\uff01\uff1f]([\"'\)\]\}])*$", stripped[-16:]))
+
+
+def answer_needs_continuation(text: str, metadata: dict[str, Any]) -> bool:
+    return answer_finished_by_length(metadata) or answer_looks_cut_off(text)
+
+
+def merge_continuation_text(prefix: str, continuation: str) -> str:
+    left = (prefix or "").rstrip()
+    right = (continuation or "").lstrip()
+    if not left:
+        return right
+    if not right:
+        return left
+    if right.startswith(left[:120]):
+        return right
+    if left[-80:] and right.startswith(left[-80:]):
+        return left + right[len(left[-80:]):]
+    return left + right
+
+
+def build_role_graph_continuation_prompt(
+    original_prompt: str,
+    expert_results: list[dict[str, Any]],
+    critic_text: str,
+    partial_answer: str,
+) -> str:
+    return "\n\n".join(
+        [
+            build_role_graph_synthesis_prompt(original_prompt, expert_results, critic_text),
+            "Partial answer already sent by the synthesizer:",
+            "```text\n" + partial_answer.rstrip() + "\n```",
+            "Continue from the exact next character after the partial answer. "
+            "Do not repeat text already written. Finish the user-facing answer cleanly.",
+        ]
+    )
+
+
 def internal_thinking_extra(request: EnsembleRequest) -> dict[str, Any]:
     if coerce_bool(
         request.runner_config.get("disable_internal_thinking"),
@@ -2612,6 +2661,7 @@ async def run_role_graph_ensemble(request: EnsembleRequest, tenant: GatewayTenan
                     AUTO_ROLE_GRAPH_CRITIC_MAX_TOKENS,
                 )},
                 weight=1.0,
+                extra=internal_thinking_extra(request),
             )
             critic_result = await generate_response_source(tenant, critic_source)
             call_ledger.extend(call_ledger_from_result(critic_result, "critic.review"))
@@ -2656,6 +2706,7 @@ async def run_role_graph_ensemble(request: EnsembleRequest, tenant: GatewayTenan
                 AUTO_ROLE_GRAPH_SYNTHESIS_MAX_TOKENS,
             )},
             weight=1.0,
+            extra=internal_thinking_extra(request),
         )
         synthesis = await generate_response_source(tenant, synthesis_source)
         call_ledger.extend(call_ledger_from_result(synthesis, "synthesizer.final"))
@@ -2673,6 +2724,47 @@ async def run_role_graph_ensemble(request: EnsembleRequest, tenant: GatewayTenan
                 },
             )
         text = str(synthesis.get("text") or "")
+        synthesis_metadata = dict(synthesis.get("metadata") or {})
+        continuation_applied = False
+        if answer_needs_continuation(text, synthesis_metadata):
+            continuation_prompt = build_role_graph_continuation_prompt(
+                original_prompt,
+                successful,
+                critic_text,
+                text,
+            )
+            selected_backend = synthesis.get("backend") if isinstance(synthesis.get("backend"), dict) else {}
+            continuation_source = EnsembleSource(
+                source_id="synthesizer-continuation",
+                model_alias=synthesis_model or str(selected_backend.get("id") or "") or None,
+                prompt=continuation_prompt,
+                messages=[
+                    {"role": "system", "content": ROLE_GRAPH_SYNTHESIS_PROMPT},
+                    {"role": "user", "content": continuation_prompt},
+                ],
+                sampling_params={"max_tokens": positive_int(
+                    request.runner_config.get("continuation_max_tokens", AUTO_ROLE_GRAPH_SYNTHESIS_MAX_TOKENS),
+                    AUTO_ROLE_GRAPH_SYNTHESIS_MAX_TOKENS,
+                )},
+                weight=1.0,
+                extra=internal_thinking_extra(request),
+            )
+            continuation = await generate_response_source(tenant, continuation_source)
+            call_ledger.extend(call_ledger_from_result(continuation, "synthesizer.continue"))
+            continuation_text = str(continuation.get("text") or "")
+            if continuation.get("error") is None and continuation_text:
+                if continuation.get("backend") is not None:
+                    yield sse(
+                        "source_selected",
+                        {
+                            "source_id": "synthesizer-continuation",
+                            "backend": continuation["backend"],
+                            "role": "synthesizer",
+                            "stage": "synthesizer.continue",
+                        },
+                    )
+                text = merge_continuation_text(text, continuation_text)
+                continuation_applied = True
         yield sse("token", {"delta": text, "text": text})
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         yield sse(
@@ -2700,6 +2792,7 @@ async def run_role_graph_ensemble(request: EnsembleRequest, tenant: GatewayTenan
                         "backend": synthesis.get("backend"),
                         "stage": "synthesizer.final",
                     },
+                    "continuation_applied": continuation_applied,
                     "trace_summary": {
                         "tokens_count": len(text),
                         "elapsed_ms": elapsed_ms,

@@ -118,11 +118,15 @@ def build_config(models: list[dict[str, Any]]) -> tuple[str, list[str]]:
         f"      model: {yaml_quote('openai/' + AGGREGATE_MODEL_NAME)}",
         f"      api_base: {yaml_quote(AGGREGATE_API_BASE)}",
         "      api_key: 'os.environ/MODELNET_BACKEND_API_KEY'",
+        "      allowed_openai_params:",
+        f"        - {yaml_quote('modelnet')}",
         f"  - model_name: {yaml_quote(AUTO_MODEL_NAME)}",
         "    litellm_params:",
         f"      model: {yaml_quote('openai/' + AUTO_MODEL_NAME)}",
         f"      api_base: {yaml_quote(AGGREGATE_API_BASE)}",
         "      api_key: 'os.environ/MODELNET_BACKEND_API_KEY'",
+        "      allowed_openai_params:",
+        f"        - {yaml_quote('modelnet')}",
     ]
     for model in chat_models:
         lines.extend(

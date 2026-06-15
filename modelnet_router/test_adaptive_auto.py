@@ -262,6 +262,30 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ensemble.runner, 'auto')
         self.assertEqual(ensemble.runner_config['native_runner'], 'auto.network')
 
+    def test_modelnet_auto_preserves_explicit_collaboration_runner(self) -> None:
+        ir = router.openai_chat_to_ir(
+            {
+                "model": router.PUBLIC_AUTO_MODEL_NAME,
+                "messages": [{"role": "user", "content": "hello"}],
+                "modelnet": {
+                    "collaboration_plan": {
+                        "runner": "response.parallel",
+                        "models": ["qwen-7b", "llama-8b"],
+                        "runner_config": {"allow_degraded": False},
+                    }
+                },
+            }
+        )
+        ensemble = router.ir_to_ensemble_request(ir)
+
+        self.assertEqual(ir.collaboration_plan["runner"], "response.parallel")
+        self.assertEqual(ir.collaboration_plan["aggregator"], "synthesize")
+        self.assertEqual(ensemble.runner, "response_aggregate")
+        self.assertEqual(ensemble.runner_config["native_runner"], "response.parallel")
+        self.assertEqual(ensemble.runner_config["allow_degraded"], False)
+        self.assertEqual([source.model_alias for source in ensemble.sources], ["qwen-7b", "llama-8b"])
+
+
     def test_openai_responses_payload_normalizes_to_auto_network(self) -> None:
         chat_body = router.openai_responses_to_chat_body(
             {
