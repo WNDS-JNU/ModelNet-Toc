@@ -215,6 +215,22 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("call_ledger_summary", metadata)
         self.assertTrue(stages.issubset({str(item.get("stage")) for item in ledger}))
 
+    def assert_no_response_prompt_control_leakage(self, text: str) -> None:
+        lowered = text.lower()
+        forbidden = [
+            "/no_think",
+            "now provide only the final answer",
+            "return only the final answer",
+            "final answer only",
+            "hidden reasoning",
+            "scratchpad",
+            "direct answer",
+            "\u7bc7\u5e45\u9650\u5236",
+            "\u76f4\u63a5\u56de\u7b54",
+        ]
+        for phrase in forbidden:
+            self.assertNotIn(phrase.lower(), lowered)
+
     def test_modelnet_auto_openai_payload_normalizes_to_auto_network(self) -> None:
         ir = router.openai_chat_to_ir(
             {
@@ -792,6 +808,143 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(token_deltas, ["combined ", "answer"])
         self.assertEqual(done["text"], "combined answer")
         self.assert_call_ledger(done["metadata"], {"response.parallel", "optional.synthesizer.final"})
+
+    def test_response_aggregate_default_prompts_avoid_control_leakage(self) -> None:
+        req = router.EnsembleRequest(
+            request_id="response-aggregate-prompts",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            sources=[
+                router.EnsembleSource(source_id="source-1", model_alias="qwen-7b", prompt="Question?"),
+                router.EnsembleSource(source_id="source-2", model_alias="llama-8b", prompt="Question?"),
+            ],
+        )
+        responses = [
+            {"source_id": "source-1", "text": "first complete response", "weight": 1.0},
+            {"source_id": "source-2", "text": "second complete response", "weight": 1.0},
+        ]
+        source, instruction, user_prompt = router.build_response_synthesis_source(
+            req,
+            candidate("aggregator"),
+            responses,
+        )
+        retry_source, retry_instruction, retry_user_prompt = router.build_response_synthesis_source(
+            req,
+            candidate("aggregator"),
+            responses,
+            retry_final_only=True,
+        )
+        prompt_surfaces = [
+            router.DEFAULT_RESPONSE_AGGREGATE_INSTRUCTION,
+            router.RESPONSE_AGGREGATE_SYSTEM_PROMPT,
+            instruction,
+            user_prompt,
+            retry_instruction,
+            retry_user_prompt,
+        ]
+        prompt_surfaces.extend(str(message.get("content") or "") for message in source.messages)
+        prompt_surfaces.extend(str(message.get("content") or "") for message in retry_source.messages)
+        self.assert_no_response_prompt_control_leakage("\n".join(prompt_surfaces))
+
+    async def test_response_aggregate_sources_receive_original_payloads(self) -> None:
+        seen: dict[str, dict[str, Any]] = {}
+
+        async def fake_generate(_tenant, source):
+            seen[source.source_id] = {
+                "prompt": source.prompt,
+                "messages": list(source.messages or []),
+                "sampling_params": dict(source.sampling_params),
+                "extra": dict(source.extra),
+            }
+            return {
+                "source_id": source.source_id,
+                "backend": {"id": source.model_alias or source.source_id},
+                "text": f"answer from {source.source_id}",
+                "metadata": {},
+                "weight": source.weight,
+                "error": None,
+                "latency_ms": 1,
+            }
+
+        async def fake_synthesis(_request, _tenant, responses):
+            self.assertEqual(
+                {item["source_id"]: item["text"] for item in responses},
+                {
+                    "source-1": "answer from source-1",
+                    "source-2": "answer from source-2",
+                },
+            )
+            yield {
+                "event": "selected",
+                "synthesis": {"source_id": "__response_aggregator__", "backend": {"id": "aggregator"}},
+            }
+            yield {"event": "token", "delta": "combined answer"}
+            yield {
+                "event": "done",
+                "synthesis": {
+                    "source_id": "__response_aggregator__",
+                    "backend": {"id": "aggregator"},
+                    "text": "combined answer",
+                    "metadata": {},
+                },
+                "metadata": {"instruction": "test", "prompt_chars": 8},
+            }
+
+        router.generate_response_source = fake_generate
+        router.stream_response_synthesis = fake_synthesis
+        source_messages = [{"role": "user", "content": "Question?"}]
+        req = router.EnsembleRequest(
+            request_id="response-aggregate-original-payloads",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            sources=[
+                router.EnsembleSource(
+                    source_id="source-1",
+                    model_alias="qwen-7b",
+                    prompt="Question?",
+                    messages=source_messages,
+                    sampling_params={"max_tokens": 64},
+                    extra={"chat_template_kwargs": {"enable_thinking": True}},
+                ),
+                router.EnsembleSource(source_id="source-2", model_alias="llama-8b", prompt="Question?"),
+            ],
+        )
+        events = await collect_events(router.run_response_aggregate_ensemble(req, self.tenant))
+
+        self.assertEqual(done_payload(events)["text"], "combined answer")
+        self.assertEqual(seen["source-1"]["prompt"], "Question?")
+        self.assertEqual(seen["source-1"]["messages"], source_messages)
+        self.assertEqual(seen["source-1"]["sampling_params"], {"max_tokens": 64})
+        self.assertEqual(seen["source-1"]["extra"], {"chat_template_kwargs": {"enable_thinking": True}})
+        self.assertEqual(seen["source-2"]["prompt"], "Question?")
+        self.assert_no_response_prompt_control_leakage(json.dumps(seen, ensure_ascii=False))
+
+    def test_response_hidden_reasoning_filter_removes_think_blocks(self) -> None:
+        text, removed = router.strip_response_hidden_reasoning("<think>secret</think>\nfinal")
+
+        self.assertEqual(text, "final")
+        self.assertTrue(removed)
+
+    async def test_response_source_filters_hidden_reasoning_without_prompt_controls(self) -> None:
+        async def fake_pick(_tenant, source, required_capabilities=None):
+            self.assertEqual(source.prompt, "Question?")
+            self.assertIsNone(required_capabilities)
+            return candidate("qwen-7b"), 10.0, "ready"
+
+        async def fake_generate_text(_candidate, source, prompt_override=None):
+            self.assertEqual(source.prompt, "Question?")
+            self.assertIsNone(prompt_override)
+            return {"text": "<think>secret</think>visible", "metadata": {}}
+
+        router.pick_source_candidate = fake_pick
+        router.generate_text = fake_generate_text
+        result = await router.generate_response_source(
+            self.tenant,
+            router.EnsembleSource(source_id="source-1", model_alias="qwen-7b", prompt="Question?"),
+        )
+
+        self.assertEqual(result["text"], "visible")
+        self.assertTrue(result["metadata"]["source_hidden_reasoning_removed"])
 
     async def test_response_aggregate_emits_parallel_flow_when_enabled(self) -> None:
         async def fake_generate(_tenant, source):
