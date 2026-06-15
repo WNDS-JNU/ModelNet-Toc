@@ -246,6 +246,45 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ensemble.runner, 'auto')
         self.assertEqual(ensemble.runner_config['native_runner'], 'auto.network')
 
+
+    def test_openai_responses_payload_normalizes_to_auto_network(self) -> None:
+        chat_body = router.openai_responses_to_chat_body(
+            {
+                "model": router.PUBLIC_AUTO_MODEL_NAME,
+                "instructions": "Be concise.",
+                "input": [
+                    {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+                ],
+                "max_output_tokens": 42,
+                "stream": True,
+                "tools": [{"type": "web_search"}],
+            }
+        )
+        ir = router.openai_chat_to_ir(chat_body)
+        ensemble = router.ir_to_ensemble_request(ir)
+
+        self.assertEqual(chat_body["messages"][0], {"role": "system", "content": "Be concise."})
+        self.assertEqual(chat_body["messages"][1], {"role": "user", "content": "hello"})
+        self.assertEqual(chat_body["max_tokens"], 42)
+        self.assertNotIn("tools", chat_body)
+        self.assertEqual(ir.collaboration_plan["runner"], "auto.network")
+        self.assertEqual(ensemble.runner, "auto")
+
+    def test_openai_response_payload_contains_responses_api_output_text(self) -> None:
+        payload = router.openai_response_payload(
+            request_id="test-request",
+            model=router.PUBLIC_AUTO_MODEL_NAME,
+            text="hello back",
+            prompt_text="hello",
+            metadata={"runner": "auto.network"},
+        )
+
+        self.assertEqual(payload["object"], "response")
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["output_text"], "hello back")
+        self.assertEqual(payload["output"][0]["content"][0]["type"], "output_text")
+        self.assertEqual(payload["usage"]["total_tokens"], payload["usage"]["input_tokens"] + payload["usage"]["output_tokens"])
+
     async def test_modelnet_public_entrypoint_is_retired(self) -> None:
         class RetiredRequest:
             async def json(self):

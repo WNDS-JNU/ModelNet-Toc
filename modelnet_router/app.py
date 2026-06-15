@@ -3858,6 +3858,337 @@ def openai_stream_payload(
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
+
+
+
+def response_content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            text = response_content_to_text(item)
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+    if isinstance(content, dict):
+        part_type = str(content.get("type") or "")
+        if part_type in {"input_text", "output_text", "text"} or "text" in content:
+            return str(content.get("text") or "")
+        if "content" in content:
+            return response_content_to_text(content.get("content"))
+        if "output" in content:
+            return response_content_to_text(content.get("output"))
+        if part_type in {"input_image", "image_url"}:
+            return "[image omitted]"
+        return ""
+    if content is None:
+        return ""
+    return str(content)
+
+
+def normalize_responses_role(role: Any) -> str:
+    value = str(role or "user").strip().lower()
+    if value == "developer":
+        return "system"
+    if value in {"system", "user", "assistant", "tool"}:
+        return value
+    return "user"
+
+
+def responses_input_item_to_message(item: Any) -> dict[str, Any] | None:
+    if isinstance(item, str):
+        return {"role": "user", "content": item}
+    if not isinstance(item, dict):
+        text = response_content_to_text(item)
+        return {"role": "user", "content": text} if text else None
+
+    item_type = str(item.get("type") or "")
+    if item_type == "function_call_output":
+        text = response_content_to_text(item.get("output") or item.get("content"))
+        return {"role": "user", "content": f"Tool result:\n{text}"} if text else None
+    if item_type in {"function_call", "reasoning"}:
+        return None
+
+    content = item.get("content")
+    if content is None:
+        content = item.get("text") or item.get("input_text") or item.get("output_text")
+    text = response_content_to_text(content)
+    if not text:
+        return None
+    return {"role": normalize_responses_role(item.get("role")), "content": text}
+
+
+def responses_input_to_messages(input_value: Any) -> list[dict[str, Any]]:
+    if input_value is None:
+        return []
+    if isinstance(input_value, str):
+        return [{"role": "user", "content": input_value}]
+    if isinstance(input_value, list):
+        messages = []
+        for item in input_value:
+            message = responses_input_item_to_message(item)
+            if message and message.get("content"):
+                messages.append(message)
+        return messages
+    message = responses_input_item_to_message(input_value)
+    return [message] if message and message.get("content") else []
+
+
+def openai_responses_to_chat_body(body: dict[str, Any]) -> dict[str, Any]:
+    input_value = body.get("input", body.get("messages"))
+    messages = responses_input_to_messages(input_value)
+    instructions = response_content_to_text(body.get("instructions"))
+    if instructions:
+        messages.insert(0, {"role": "system", "content": instructions})
+    if not messages:
+        raise HTTPException(status_code=400, detail="Responses API request requires non-empty input")
+
+    chat_body: dict[str, Any] = {
+        "model": str(body.get("model") or PUBLIC_AUTO_MODEL_NAME),
+        "messages": messages,
+        "stream": bool(body.get("stream")),
+    }
+    if isinstance(body.get("modelnet"), dict):
+        chat_body["modelnet"] = dict(body["modelnet"])
+    for key in ("temperature", "top_p", "seed", "stop"):
+        if key in body and body[key] is not None:
+            chat_body[key] = body[key]
+    if body.get("max_output_tokens") is not None:
+        chat_body["max_tokens"] = body["max_output_tokens"]
+    elif body.get("max_tokens") is not None:
+        chat_body["max_tokens"] = body["max_tokens"]
+    return chat_body
+
+
+def openai_response_id(request_id: str) -> str:
+    if request_id.startswith("resp_"):
+        return request_id
+    cleaned = re.sub(r"[^A-Za-z0-9_]", "", request_id) or uuid.uuid4().hex
+    return "resp_" + cleaned
+
+
+def openai_response_message_id(request_id: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_]", "", request_id) or uuid.uuid4().hex
+    return "msg_" + cleaned[:48]
+
+
+def openai_response_usage(prompt_text: str, completion_text: str) -> dict[str, int]:
+    input_tokens = estimate_token_count(prompt_text)
+    output_tokens = estimate_token_count(completion_text)
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+    }
+
+
+def openai_response_base_payload(
+    *,
+    request_id: str,
+    model: str,
+    status: str,
+    output: list[dict[str, Any]] | None = None,
+    usage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": openai_response_id(request_id),
+        "object": "response",
+        "created_at": int(time.time()),
+        "status": status,
+        "error": None,
+        "incomplete_details": None,
+        "instructions": None,
+        "max_output_tokens": None,
+        "model": model,
+        "output": output or [],
+        "parallel_tool_calls": False,
+        "previous_response_id": None,
+        "store": False,
+        "temperature": None,
+        "text": {"format": {"type": "text"}},
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": None,
+        "truncation": "disabled",
+        "usage": usage,
+        "metadata": {"modelnet_request_id": request_id},
+    }
+
+
+def openai_response_payload(
+    *,
+    request_id: str,
+    model: str,
+    text: str,
+    prompt_text: str,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    message = {
+        "id": openai_response_message_id(request_id),
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [
+            {
+                "type": "output_text",
+                "text": text,
+                "annotations": [],
+            }
+        ],
+    }
+    payload = openai_response_base_payload(
+        request_id=request_id,
+        model=model,
+        status="completed",
+        output=[message],
+        usage=openai_response_usage(prompt_text, text),
+    )
+    payload["output_text"] = text
+    payload["modelnet"] = {"request_id": request_id, "metadata": metadata}
+    return payload
+
+
+def openai_responses_stream_payload(*, event: str, data: dict[str, Any]) -> bytes:
+    return (
+        f"event: {event}\n"
+        f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+    ).encode("utf-8")
+
+
+async def stream_openai_responses_response(
+    request: EnsembleRequest,
+    tenant: GatewayTenant,
+    *,
+    request_id: str,
+    model: str,
+    prompt_text: str,
+) -> AsyncIterator[bytes]:
+    message_id = openai_response_message_id(request_id)
+    text = ""
+    metadata: dict[str, Any] = {}
+    yield openai_responses_stream_payload(
+        event="response.created",
+        data={
+            "type": "response.created",
+            "response": openai_response_base_payload(
+                request_id=request_id,
+                model=model,
+                status="in_progress",
+            ),
+        },
+    )
+    show_parallel_flow = openai_parallel_flow_enabled(request)
+    async for chunk in run_ensemble_stream(request, tenant):
+        event, data = parse_sse_chunk(chunk)
+        if show_parallel_flow:
+            flow_delta = openai_parallel_flow_delta(event, data)
+            if flow_delta:
+                text += flow_delta
+                yield openai_responses_stream_payload(
+                    event="response.output_text.delta",
+                    data={
+                        "type": "response.output_text.delta",
+                        "item_id": message_id,
+                        "output_index": 0,
+                        "content_index": 0,
+                        "delta": flow_delta,
+                    },
+                )
+        if event == "token":
+            delta = str(data.get("delta") or "")
+            if delta:
+                text += delta
+                yield openai_responses_stream_payload(
+                    event="response.output_text.delta",
+                    data={
+                        "type": "response.output_text.delta",
+                        "item_id": message_id,
+                        "output_index": 0,
+                        "content_index": 0,
+                        "delta": delta,
+                    },
+                )
+        elif event == "done":
+            text = str(data.get("text") or text)
+            metadata = dict(data.get("metadata") or {})
+        elif event == "error":
+            failed = openai_response_base_payload(
+                request_id=request_id,
+                model=model,
+                status="failed",
+            )
+            failed["error"] = data
+            yield openai_responses_stream_payload(
+                event="response.failed",
+                data={"type": "response.failed", "response": failed},
+            )
+            return
+
+    completed = openai_response_payload(
+        request_id=request_id,
+        model=model,
+        text=text,
+        prompt_text=prompt_text,
+        metadata=metadata,
+    )
+    yield openai_responses_stream_payload(
+        event="response.output_item.done",
+        data={
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": completed["output"][0],
+        },
+    )
+    yield openai_responses_stream_payload(
+        event="response.completed",
+        data={"type": "response.completed", "response": completed},
+    )
+
+
+async def openai_ensemble_responses_response(
+    chat_body: dict[str, Any],
+    ir: ModelNetRunRequest,
+    tenant: GatewayTenant,
+) -> Response:
+    request_id = ir.request_id or str(uuid.uuid4())
+    ir = ir.model_copy(update={"request_id": request_id})
+    ensemble_request = ir_to_ensemble_request(ir)
+    if not ensemble_request.request_id:
+        ensemble_request = ensemble_request.model_copy(update={"request_id": request_id})
+    native_runner = canonical_runner(ir.collaboration_plan.get("runner"))
+    model_name = str(chat_body.get("model") or PUBLIC_AUTO_MODEL_NAME)
+    prompt_text = text_from_messages(ir.messages)
+    if chat_body.get("stream"):
+        return StreamingResponse(
+            stream_openai_responses_response(
+                ensemble_request,
+                tenant,
+                request_id=request_id,
+                model=model_name,
+                prompt_text=prompt_text,
+            ),
+            media_type="text/event-stream",
+            headers={
+                "X-ModelNet-Request-ID": request_id,
+                "X-ModelNet-Runner": native_runner,
+            },
+        )
+    text, metadata = await collect_openai_ensemble_response(ensemble_request, tenant)
+    return JSONResponse(
+        openai_response_payload(
+            request_id=request_id,
+            model=model_name,
+            text=text,
+            prompt_text=prompt_text,
+            metadata=metadata,
+        ),
+        headers={
+            "X-ModelNet-Request-ID": request_id,
+            "X-ModelNet-Runner": native_runner,
+        },
+    )
+
 def openai_parallel_flow_enabled(request: EnsembleRequest) -> bool:
     return (
         coerce_bool(request.runner_config.get("show_parallel_flow"), default=False)
@@ -4376,6 +4707,24 @@ async def capabilities(authorization: str | None = Header(default=None)) -> dict
         "backend_adapters": BACKEND_ADAPTERS,
         "models": model_capabilities,
     }
+
+
+
+@app.post("/v1/responses")
+async def responses(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> Response:
+    tenant = assert_authorized(authorization)
+    body = await request.json()
+    chat_body = openai_responses_to_chat_body(body)
+    ir = openai_chat_to_ir(chat_body)
+    if not is_openai_ensemble_request(ir):
+        plan = dict(ir.collaboration_plan)
+        plan["runner"] = "auto.network"
+        plan.setdefault("aggregator", "auto")
+        ir = ir.model_copy(update={"collaboration_plan": plan})
+    return await openai_ensemble_responses_response(chat_body, ir, tenant)
 
 
 @app.post("/v1/chat/completions")
