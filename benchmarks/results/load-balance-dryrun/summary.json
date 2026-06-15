@@ -1,0 +1,195 @@
+{
+  "schema_version": "modelnet.load_balance.summary.v1",
+  "generated_at": "2026-06-10T19:27:24+08:00",
+  "dataset": {
+    "name": "synthetic",
+    "source": "benchmarks/data/mt_bench_question.jsonl",
+    "request_count": 5,
+    "scheduled_duration_s": 0.5455317940746874
+  },
+  "systems": [
+    "modelnet_auto",
+    "single_best"
+  ],
+  "load_config": {
+    "arrival_mode": "poisson",
+    "request_rate": 10.0,
+    "max_client_concurrency": 16,
+    "trace_time_scale": 0.001,
+    "slo_ms": 120000
+  },
+  "answer_status": {
+    "total": 0,
+    "ok": 0,
+    "failed": 0
+  },
+  "performance": {
+    "modelnet_auto": {
+      "total": 0,
+      "ok": 0,
+      "failed": 0,
+      "success_rate": null,
+      "elapsed_s": 0.0,
+      "request_throughput_per_min": null,
+      "output_token_throughput_per_s": null,
+      "slo_ms": 120000,
+      "slo_violation_rate": null,
+      "peak_in_flight": 0,
+      "latency_ms": {
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "mean": null,
+        "max": null
+      },
+      "e2e_ms": {
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "mean": null,
+        "max": null
+      },
+      "queue_delay_ms": {
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "max": null
+      }
+    },
+    "single_best": {
+      "total": 0,
+      "ok": 0,
+      "failed": 0,
+      "success_rate": null,
+      "elapsed_s": 0.0,
+      "request_throughput_per_min": null,
+      "output_token_throughput_per_s": null,
+      "slo_ms": 120000,
+      "slo_violation_rate": null,
+      "peak_in_flight": 0,
+      "latency_ms": {
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "mean": null,
+        "max": null
+      },
+      "e2e_ms": {
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "mean": null,
+        "max": null
+      },
+      "queue_delay_ms": {
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "max": null
+      }
+    }
+  },
+  "backend_load": {
+    "modelnet_auto": {
+      "request_counts": {
+        "inference-cyankiwi-granite-4-0-h-micro-awq-4bit": 0.0,
+        "inference-cyankiwi-granite-4-1-3b-awq-int4": 0.0,
+        "inference-cyankiwi-llama-3-1-8b-instruct-awq-int4": 0.0,
+        "inference-cyankiwi-ministral-3-14b-instruct-2512-awq-4bit": 0.0,
+        "inference-gaunernst-gemma-3-4b-it-int4-awq": 0.0,
+        "inference-intel-qwen3-5-4b-int4-autoround": 0.0,
+        "inference-qwen-qwen3-14b-awq": 0.0,
+        "inference-qwen-qwen3-4b-awq": 0.0,
+        "inference-qwen-qwen3-5-35b-a3b-gptq-int4": 0.0,
+        "inference-tencent-hunyuan-7b-instruct-awq-int4": 0.0,
+        "llama-cpp-deploy-jetson-16g-1-meta-llama-31-8b-instruct-q80": 0.0,
+        "llama-cpp-deploy-jetson-16g-4-glm-4-9b-chat-q4k": 0.0,
+        "llama-cpp-deploy-jetson-16g-5-meta-llama-31-8b-instruct-q80": 0.0,
+        "llama-cpp-deploy-jetson-16g-6-hunyuan-7b-instruct-q5km": 0.0,
+        "llama-cpp-deploy-jetson-64g-1-qwen3-4b-instruct-2507-q4km": 0.0,
+        "llama-cpp-deploy-jetson-64g-3-qwen25-7b-instruct-q5km": 0.0,
+        "llama-cpp-deploy-jetson-64g-3-qwen3-8b-bf16": 0.0,
+        "llama-cpp-deploy-pc-3090-qwen3-8b-bf16": 0.0
+      },
+      "token_counts": {
+        "inference-cyankiwi-granite-4-0-h-micro-awq-4bit": 0.0,
+        "inference-cyankiwi-granite-4-1-3b-awq-int4": 0.0,
+        "inference-cyankiwi-llama-3-1-8b-instruct-awq-int4": 0.0,
+        "inference-cyankiwi-ministral-3-14b-instruct-2512-awq-4bit": 0.0,
+        "inference-gaunernst-gemma-3-4b-it-int4-awq": 0.0,
+        "inference-intel-qwen3-5-4b-int4-autoround": 0.0,
+        "inference-qwen-qwen3-14b-awq": 0.0,
+        "inference-qwen-qwen3-4b-awq": 0.0,
+        "inference-qwen-qwen3-5-35b-a3b-gptq-int4": 0.0,
+        "inference-tencent-hunyuan-7b-instruct-awq-int4": 0.0,
+        "llama-cpp-deploy-jetson-16g-1-meta-llama-31-8b-instruct-q80": 0.0,
+        "llama-cpp-deploy-jetson-16g-4-glm-4-9b-chat-q4k": 0.0,
+        "llama-cpp-deploy-jetson-16g-5-meta-llama-31-8b-instruct-q80": 0.0,
+        "llama-cpp-deploy-jetson-16g-6-hunyuan-7b-instruct-q5km": 0.0,
+        "llama-cpp-deploy-jetson-64g-1-qwen3-4b-instruct-2507-q4km": 0.0,
+        "llama-cpp-deploy-jetson-64g-3-qwen25-7b-instruct-q5km": 0.0,
+        "llama-cpp-deploy-jetson-64g-3-qwen3-8b-bf16": 0.0,
+        "llama-cpp-deploy-pc-3090-qwen3-8b-bf16": 0.0
+      },
+      "used_backend_count": 0,
+      "total_backend_selections": 0,
+      "max_backend_share": null,
+      "gini": null,
+      "cv": null,
+      "jain_fairness": null
+    },
+    "single_best": {
+      "request_counts": {
+        "inference-cyankiwi-granite-4-0-h-micro-awq-4bit": 0.0,
+        "inference-cyankiwi-granite-4-1-3b-awq-int4": 0.0,
+        "inference-cyankiwi-llama-3-1-8b-instruct-awq-int4": 0.0,
+        "inference-cyankiwi-ministral-3-14b-instruct-2512-awq-4bit": 0.0,
+        "inference-gaunernst-gemma-3-4b-it-int4-awq": 0.0,
+        "inference-intel-qwen3-5-4b-int4-autoround": 0.0,
+        "inference-qwen-qwen3-14b-awq": 0.0,
+        "inference-qwen-qwen3-4b-awq": 0.0,
+        "inference-qwen-qwen3-5-35b-a3b-gptq-int4": 0.0,
+        "inference-tencent-hunyuan-7b-instruct-awq-int4": 0.0,
+        "llama-cpp-deploy-jetson-16g-1-meta-llama-31-8b-instruct-q80": 0.0,
+        "llama-cpp-deploy-jetson-16g-4-glm-4-9b-chat-q4k": 0.0,
+        "llama-cpp-deploy-jetson-16g-5-meta-llama-31-8b-instruct-q80": 0.0,
+        "llama-cpp-deploy-jetson-16g-6-hunyuan-7b-instruct-q5km": 0.0,
+        "llama-cpp-deploy-jetson-64g-1-qwen3-4b-instruct-2507-q4km": 0.0,
+        "llama-cpp-deploy-jetson-64g-3-qwen25-7b-instruct-q5km": 0.0,
+        "llama-cpp-deploy-jetson-64g-3-qwen3-8b-bf16": 0.0,
+        "llama-cpp-deploy-pc-3090-qwen3-8b-bf16": 0.0
+      },
+      "token_counts": {
+        "inference-cyankiwi-granite-4-0-h-micro-awq-4bit": 0.0,
+        "inference-cyankiwi-granite-4-1-3b-awq-int4": 0.0,
+        "inference-cyankiwi-llama-3-1-8b-instruct-awq-int4": 0.0,
+        "inference-cyankiwi-ministral-3-14b-instruct-2512-awq-4bit": 0.0,
+        "inference-gaunernst-gemma-3-4b-it-int4-awq": 0.0,
+        "inference-intel-qwen3-5-4b-int4-autoround": 0.0,
+        "inference-qwen-qwen3-14b-awq": 0.0,
+        "inference-qwen-qwen3-4b-awq": 0.0,
+        "inference-qwen-qwen3-5-35b-a3b-gptq-int4": 0.0,
+        "inference-tencent-hunyuan-7b-instruct-awq-int4": 0.0,
+        "llama-cpp-deploy-jetson-16g-1-meta-llama-31-8b-instruct-q80": 0.0,
+        "llama-cpp-deploy-jetson-16g-4-glm-4-9b-chat-q4k": 0.0,
+        "llama-cpp-deploy-jetson-16g-5-meta-llama-31-8b-instruct-q80": 0.0,
+        "llama-cpp-deploy-jetson-16g-6-hunyuan-7b-instruct-q5km": 0.0,
+        "llama-cpp-deploy-jetson-64g-1-qwen3-4b-instruct-2507-q4km": 0.0,
+        "llama-cpp-deploy-jetson-64g-3-qwen25-7b-instruct-q5km": 0.0,
+        "llama-cpp-deploy-jetson-64g-3-qwen3-8b-bf16": 0.0,
+        "llama-cpp-deploy-pc-3090-qwen3-8b-bf16": 0.0
+      },
+      "used_backend_count": 0,
+      "total_backend_selections": 0,
+      "max_backend_share": null,
+      "gini": null,
+      "cv": null,
+      "jain_fairness": null
+    }
+  },
+  "runner_counts": {},
+  "windows": {
+    "modelnet_auto": [],
+    "single_best": []
+  }
+}

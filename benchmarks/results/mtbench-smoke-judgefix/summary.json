@@ -1,0 +1,113 @@
+{
+  "schema_version": "modelnet.mtbench.summary.v1",
+  "generated_at": "2026-06-09T14:13:39+08:00",
+  "dataset": {
+    "name": "MT-Bench",
+    "source_url": "https://raw.githubusercontent.com/lm-sys/FastChat/main/fastchat/llm_judge/data/mt_bench/question.jsonl",
+    "question_count": 1
+  },
+  "systems": [
+    "modelnet_auto",
+    "single_best",
+    "parallel_consensus"
+  ],
+  "judge_model": "inference-qwen-qwen3-5-35b-a3b-gptq-int4",
+  "generation_config": {
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "max_tokens": 192,
+    "max_auto_sources": 3,
+    "expert_max_tokens": 96,
+    "critic_max_tokens": 96,
+    "aggregation_max_tokens": 192,
+    "candidate_alias_count": 16
+  },
+  "answer_status": {
+    "total": 3,
+    "ok": 3,
+    "failed": 0
+  },
+  "judgment_status": {
+    "total": 4,
+    "ok": 4,
+    "failed": 0
+  },
+  "pairwise": {
+    "single_best": {
+      "question_count": 1,
+      "average_score": 0.5,
+      "bootstrap_95ci": [
+        0.5,
+        0.5
+      ],
+      "wins": 0,
+      "ties": 1,
+      "losses": 0,
+      "category_average": {
+        "writing": 0.5
+      },
+      "success_criterion_met": false
+    },
+    "parallel_consensus": {
+      "question_count": 1,
+      "average_score": 0.5,
+      "bootstrap_95ci": [
+        0.5,
+        0.5
+      ],
+      "wins": 0,
+      "ties": 1,
+      "losses": 0,
+      "category_average": {
+        "writing": 0.5
+      },
+      "success_criterion_met": false
+    }
+  },
+  "latency_ms": {
+    "modelnet_auto": {
+      "count": 1,
+      "p50": 39624.0,
+      "p95": 39624.0,
+      "mean": 39624.0
+    },
+    "parallel_consensus": {
+      "count": 1,
+      "p50": 52235.0,
+      "p95": 52235.0,
+      "mean": 52235.0
+    },
+    "single_best": {
+      "count": 1,
+      "p50": 12096.0,
+      "p95": 12096.0,
+      "mean": 12096.0
+    }
+  },
+  "runner_counts": {
+    "modelnet_auto": {
+      "route.once": 1,
+      "auto.role_graph": 1
+    },
+    "single_best": {
+      "route.once": 2
+    },
+    "parallel_consensus": {
+      "response.parallel": 2
+    }
+  },
+  "role_counts": {
+    "primary_solver": 1,
+    "specialist": 1,
+    "skeptic": 1
+  },
+  "selected_model_counts": {
+    "inference-cyankiwi-granite-4-0-h-micro-awq-4bit": 3,
+    "inference-cyankiwi-granite-4-1-3b-awq-int4": 2,
+    "inference-gaunernst-gemma-3-4b-it-int4-awq": 2,
+    "inference-qwen-qwen3-14b-awq": 2,
+    "llama-cpp-deploy-jetson-16g-6-hunyuan-7b-instruct-q5km": 1,
+    "llama-cpp-deploy-jetson-64g-1-qwen3-4b-instruct-2507-q4km": 1,
+    "llama-cpp-deploy-pc-3090-qwen3-8b-bf16": 1
+  }
+}

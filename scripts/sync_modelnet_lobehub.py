@@ -10,9 +10,12 @@ from typing import Any
 
 
 DEFAULT_SOURCE = Path("/home/duxianghe/dify/api/configs/model_net.yaml")
-DEFAULT_LIBRECHAT_ENV = Path("/home/duxianghe/librechat-toc/.env")
-DEFAULT_OUTPUT = Path("/home/duxianghe/lobehub-toc/.env.modelnet")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_ENV = REPO_ROOT / ".env"
+DEFAULT_OUTPUT = REPO_ROOT / ".env.modelnet"
 CHAT_BACKENDS = {"vllm_chat", "llama_cpp"}
+AGGREGATE_MODEL_NAME = "modelnet"
+AUTO_MODEL_NAME = "modelnet-auto"
 
 
 def parse_scalar(value: str) -> Any:
@@ -71,19 +74,23 @@ def read_env_value(path: Path, key: str) -> str | None:
     return None
 
 
-def is_embedding_model(model: dict[str, Any]) -> bool:
+def is_non_chat_model(model: dict[str, Any]) -> bool:
     haystack = " ".join(
         str(model.get(key, "")) for key in ("id", "model_name", "model_url", "type")
     ).lower()
-    return "embedding" in haystack or "embed" in haystack
+    non_chat_terms = ("embedding", "embed", "reranker", "rerank", "cross-encoder", "cross_encoder")
+    return any(term in haystack for term in non_chat_terms)
 
 
 def build_model_list(models: list[dict[str, Any]]) -> list[str]:
-    entries: list[str] = []
+    entries = [
+        f"+{AGGREGATE_MODEL_NAME}=ModelNet/ModelNet",
+        f"+{AUTO_MODEL_NAME}=ModelNet/Auto Network",
+    ]
     for model in models:
         if str(model.get("backend", "")) not in CHAT_BACKENDS:
             continue
-        if is_embedding_model(model):
+        if is_non_chat_model(model):
             continue
         model_id = str(model.get("id", "")).strip()
         if not model_id:
@@ -95,18 +102,21 @@ def build_model_list(models: list[dict[str, Any]]) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
-    parser.add_argument("--librechat-env", type=Path, default=DEFAULT_LIBRECHAT_ENV)
+    parser.add_argument("--env-file", dest="env_file", type=Path, default=DEFAULT_ENV)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
 
-    api_key = os.environ.get("MODELNET_LIBRECHAT_API_KEY") or read_env_value(
-        args.librechat_env, "MODELNET_LIBRECHAT_API_KEY"
+    api_key = (
+        os.environ.get("MODELNET_LITELLM_API_KEY")
+        or os.environ.get("MODELNET_LIBRECHAT_API_KEY")
+        or read_env_value(args.env_file, "MODELNET_LITELLM_API_KEY")
+        or read_env_value(args.env_file, "MODELNET_LIBRECHAT_API_KEY")
     )
     if not api_key:
-        raise SystemExit("MODELNET_LIBRECHAT_API_KEY not found")
+        raise SystemExit("MODELNET_LITELLM_API_KEY not found")
 
     entries = build_model_list(load_registry(args.source))
-    if not entries:
+    if len(entries) <= 1:
         raise SystemExit(f"No chat models generated from {args.source}")
 
     content = "\n".join(
@@ -119,11 +129,11 @@ def main() -> int:
         ]
     )
     args.output.write_text(content, encoding="utf-8")
-    print(f"Wrote {args.output} with {len(entries)} chat models")
-    for entry in entries[:5]:
+    print(f"Wrote {args.output} with aggregate/auto models plus {len(entries) - 2} backend models")
+    for entry in entries[:6]:
         print("- " + entry.split("=", 1)[0][1:])
-    if len(entries) > 5:
-        print(f"- ... {len(entries) - 5} more")
+    if len(entries) > 6:
+        print(f"- ... {len(entries) - 6} more")
     return 0
 
 

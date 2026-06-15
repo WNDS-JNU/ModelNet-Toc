@@ -5,3 +5,16 @@
 data/
 *.bak*
 *.log
+__pycache__/
+*.pyc
+lobehub/.next/
+lobehub/.turbo/
+lobehub/node_modules/
+lobehub/.env
+lobehub/.env.local
+lobehub/.env.*.local
+!leaderboard/
+!leaderboard/data/
+leaderboard/data/opencompass-leaderboard.json
+!leaderboard/data/.gitkeep
+!leaderboard/data/local-benchmarks.json
