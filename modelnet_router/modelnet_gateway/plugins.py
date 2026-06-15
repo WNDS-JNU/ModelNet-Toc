@@ -112,10 +112,8 @@ RUNNER_PLUGINS = {
         name="response.serial",
         legacy_name="dynamic_collab_route",
         scope="response",
-        description="Run complete responses in sequence, with later models judging or refining earlier output.",
-        supported_aggregators=("judge_refine", "synthesize"),
-        status="degraded",
-        status_reason="Implemented through the legacy serial-refinement fallback, not a full native v1 runner.",
+        description="Run complete responses in sequence through a generated Dify workflow.",
+        supported_aggregators=("dify.dsl", "judge_refine", "synthesize"),
     ),
     "hybrid.graph": RunnerPlugin(
         name="hybrid.graph",
@@ -166,6 +164,11 @@ AGGREGATOR_PLUGINS = {
         name="synthesize",
         scope="response",
         description="Use a selected model to synthesize complete upstream responses.",
+    ),
+    "dify.dsl": AggregatorPlugin(
+        name="dify.dsl",
+        scope="response",
+        description="Compile a ModelNet serial topology to Dify Workflow DSL and run it through Dify Runtime.",
     ),
     "select_best": AggregatorPlugin(
         name="select_best",

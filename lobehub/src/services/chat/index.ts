@@ -24,8 +24,11 @@ import { ModelProvider } from 'model-bank';
 import { DEFAULT_AGENT_CONFIG } from '@/const/settings';
 import {
   isModelNetParallelModel,
+  isModelNetSerialModel,
   MAX_MODELNET_PARALLEL_MODELS,
+  MAX_MODELNET_SERIAL_MODELS,
   MIN_MODELNET_PARALLEL_MODELS,
+  MIN_MODELNET_SERIAL_MODELS,
 } from '@/features/ModelNetParallel';
 import { getSearchConfig } from '@/helpers/getSearchConfig';
 import { getAgentStoreState } from '@/store/agent';
@@ -373,12 +376,15 @@ class ChatService {
         ]
       : [];
     delete (res as any).modelnetParallelModelIds;
+    const modelnetSerialTopology = (res as any).modelnetSerialTopology;
+    delete (res as any).modelnetSerialTopology;
     delete (res as any).modelnet;
 
     // =================== process model =================== //
     // ===================================================== //
     let model = res.model || DEFAULT_AGENT_CONFIG.model;
     const isModelNetParallel = isModelNetParallelModel(provider, model);
+    const isModelNetSerial = isModelNetSerialModel(provider, model);
     const deploymentName = providersWithDeploymentName.has(provider)
       ? findDeploymentName(model, provider)
       : undefined;
@@ -396,6 +402,7 @@ class ChatService {
     const normalizedModel = model.toLowerCase();
     const forceChatCompletions =
       isModelNetParallel ||
+      isModelNetSerial ||
       (provider === ModelProvider.OpenAI &&
         (normalizedModel === 'modelnet' || normalizedModel === 'modelnet/modelnet'));
     if (forceChatCompletions) {
@@ -436,6 +443,7 @@ class ChatService {
     if (payload.presence_penalty === null) payload.presence_penalty = undefined;
     if (payload.frequency_penalty === null) payload.frequency_penalty = undefined;
     delete (payload as any).modelnetParallelModelIds;
+    delete (payload as any).modelnetSerialTopology;
 
     if (isModelNetParallel) {
       if (
@@ -459,6 +467,39 @@ class ChatService {
           runner_config: {
             allow_degraded: false,
             show_parallel_flow: true,
+          },
+        },
+      };
+    }
+
+    if (isModelNetSerial) {
+      const serialTopology = modelnetSerialTopology as
+        | { edges?: unknown[]; nodes?: { id?: unknown; modelId?: unknown }[]; version?: unknown }
+        | undefined;
+      const nodeCount = Array.isArray(serialTopology?.nodes) ? serialTopology.nodes.length : 0;
+
+      if (nodeCount < MIN_MODELNET_SERIAL_MODELS || nodeCount > MAX_MODELNET_SERIAL_MODELS) {
+        throw new Error(
+          `ModelNet \u4e32\u8054\u9700\u8981\u9009\u62e9 ${MIN_MODELNET_SERIAL_MODELS}-${MAX_MODELNET_SERIAL_MODELS} \u4e2a\u6a21\u578b`,
+        );
+      }
+
+      payload.model = 'modelnet';
+      payload.modelnet = {
+        stream_options: {
+          include_trace: true,
+        },
+        collaboration_plan: {
+          aggregator: 'dify.dsl',
+          runner: 'response.serial',
+          runner_config: {
+            allow_degraded: false,
+            serial_topology: {
+              version: 'modelnet.serial.v1',
+              nodes: serialTopology?.nodes,
+              edges: serialTopology?.edges,
+            },
+            show_serial_flow: true,
           },
         },
       };

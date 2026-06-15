@@ -8,7 +8,7 @@ import { type EnabledAiModel, ModelProvider } from 'model-bank';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_AGENT_CONFIG } from '@/const/settings';
-import { MODELNET_PARALLEL_MODEL_ID } from '@/features/ModelNetParallel';
+import { MODELNET_PARALLEL_MODEL_ID, MODELNET_SERIAL_MODEL_ID } from '@/features/ModelNetParallel';
 import * as toolEngineeringModule from '@/helpers/toolEngineering';
 import { agentDocumentService } from '@/services/agentDocument';
 import { useAgentStore } from '@/store/agent';
@@ -1810,6 +1810,47 @@ describe('ChatService', () => {
           runner_config: {
             allow_degraded: false,
             show_parallel_flow: true,
+          },
+        },
+      });
+    });
+
+    it('should request Dify DSL runtime for ModelNet serial responses', async () => {
+      const topology = {
+        version: 'modelnet.serial.v1',
+        nodes: [
+          { id: 'step-1', modelId: 'inference-qwen3' },
+          { id: 'step-2', modelId: 'inference-deepseek' },
+        ],
+        edges: [{ source: 'step-1', target: 'step-2' }],
+      };
+
+      await chatService.getChatCompletion(
+        {
+          messages: [],
+          model: MODELNET_SERIAL_MODEL_ID,
+          modelnetSerialTopology: topology,
+          provider: ModelProvider.OpenAI,
+        } as any,
+        {},
+      );
+
+      const payload = JSON.parse(mockFetchSSE.mock.calls[0][1].body);
+
+      expect(payload.model).toBe('modelnet');
+      expect(payload.apiMode).toBe('chatCompletion');
+      expect(payload).not.toHaveProperty('modelnetSerialTopology');
+      expect(payload.modelnet).toEqual({
+        stream_options: {
+          include_trace: true,
+        },
+        collaboration_plan: {
+          aggregator: 'dify.dsl',
+          runner: 'response.serial',
+          runner_config: {
+            allow_degraded: false,
+            serial_topology: topology,
+            show_serial_flow: true,
           },
         },
       });

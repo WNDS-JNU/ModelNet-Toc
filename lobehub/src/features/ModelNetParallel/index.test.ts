@@ -7,7 +7,9 @@ import {
   getModelNetParallelCandidates,
   getModelNetParallelProvider,
   isModelNetParallelModel,
+  isModelNetSerialModel,
   MODELNET_PARALLEL_MODEL_ID,
+  MODELNET_SERIAL_MODEL_ID,
   withModelNetParallelModel,
 } from './index';
 
@@ -44,6 +46,7 @@ describe('ModelNetParallel helpers', () => {
 
     expect(openai?.children.map((item) => item.id)).toEqual([
       MODELNET_PARALLEL_MODEL_ID,
+      MODELNET_SERIAL_MODEL_ID,
       'gpt-4o',
       'modelnet',
       'modelnet-auto',
@@ -88,5 +91,8 @@ describe('ModelNetParallel helpers', () => {
     expect(isModelNetParallelModel('openai', MODELNET_PARALLEL_MODEL_ID)).toBe(true);
     expect(isModelNetParallelModel('lobehub', MODELNET_PARALLEL_MODEL_ID)).toBe(true);
     expect(isModelNetParallelModel('anthropic', MODELNET_PARALLEL_MODEL_ID)).toBe(false);
+    expect(isModelNetSerialModel('openai', MODELNET_SERIAL_MODEL_ID)).toBe(true);
+    expect(isModelNetSerialModel('lobehub', MODELNET_SERIAL_MODEL_ID)).toBe(true);
+    expect(isModelNetSerialModel('anthropic', MODELNET_SERIAL_MODEL_ID)).toBe(false);
   });
 });

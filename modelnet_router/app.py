@@ -50,6 +50,14 @@ from modelnet_gateway.plugins import (
     legacy_runner_name,
     runner_payload,
 )
+from modelnet_gateway.serial_dify import (
+    DEFAULT_DIFY_LLM_PROVIDER,
+    DEFAULT_SERIAL_MAX_NODES,
+    SerialTopology,
+    SerialTopologyError,
+    build_serial_dify_dsl,
+    parse_serial_topology,
+)
 from modelnet_gateway.schemas import (
     BackendCapability,
     EnsembleRequest,
@@ -132,6 +140,17 @@ ENSEMBLE_THINK_FINAL_ANSWER_INSTRUCTION = os.environ.get(
     "MODELNET_ENSEMBLE_THINK_FINAL_ANSWER_INSTRUCTION",
     "Now provide only the final answer. Do not include reasoning, analysis, hidden thinking, or headings. /no_think",
 )
+MODELNET_DIFY_INNER_API_BASE = os.environ.get("MODELNET_DIFY_INNER_API_BASE", "http://api:5001/inner/api").rstrip("/")
+MODELNET_DIFY_SERVICE_API_BASE = os.environ.get("MODELNET_DIFY_SERVICE_API_BASE", "http://api:5001/v1").rstrip("/")
+MODELNET_DIFY_INNER_API_KEY = os.environ.get("MODELNET_DIFY_INNER_API_KEY", "")
+MODELNET_DIFY_WORKSPACE_ID = os.environ.get("MODELNET_DIFY_WORKSPACE_ID", "")
+MODELNET_DIFY_CREATOR_EMAIL = os.environ.get("MODELNET_DIFY_CREATOR_EMAIL", "")
+MODELNET_DIFY_LLM_PROVIDER = os.environ.get("MODELNET_DIFY_LLM_PROVIDER", DEFAULT_DIFY_LLM_PROVIDER)
+MODELNET_DIFY_SERIAL_MAX_NODES = int(
+    os.environ.get("MODELNET_DIFY_SERIAL_MAX_NODES", str(DEFAULT_SERIAL_MAX_NODES))
+)
+MODELNET_DIFY_SERIAL_MAX_TOKENS = int(os.environ.get("MODELNET_DIFY_SERIAL_MAX_TOKENS", "1024"))
+MODELNET_DIFY_SERIAL_TIMEOUT_SECONDS = float(os.environ.get("MODELNET_DIFY_SERIAL_TIMEOUT_SECONDS", "120"))
 DEFAULT_RESPONSE_AGGREGATE_INSTRUCTION = (
     "Merge the upstream responses into one coherent answer for the user. "
     "Preserve the most useful details, remove duplication, resolve conflicts "
@@ -226,6 +245,7 @@ k8s_cache: K8sSnapshot = K8sSnapshot()
 prometheus_cache: PrometheusSnapshot = PrometheusSnapshot()
 endpoint_health_cache: dict[str, EndpointHealth] = {}
 states: dict[str, CandidateState] = {}
+dify_serial_workflow_cache: dict[str, dict[str, Any]] = {}
 state_lock = asyncio.Lock()
 
 
@@ -6444,6 +6464,217 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
         yield sse("error", {"error": str(exc)})
 
 
+def dify_serial_config_error() -> str | None:
+    missing = [
+        name
+        for name, value in {
+            "MODELNET_DIFY_INNER_API_BASE": MODELNET_DIFY_INNER_API_BASE,
+            "MODELNET_DIFY_SERVICE_API_BASE": MODELNET_DIFY_SERVICE_API_BASE,
+            "MODELNET_DIFY_INNER_API_KEY": MODELNET_DIFY_INNER_API_KEY,
+            "MODELNET_DIFY_WORKSPACE_ID": MODELNET_DIFY_WORKSPACE_ID,
+            "MODELNET_DIFY_CREATOR_EMAIL": MODELNET_DIFY_CREATOR_EMAIL,
+            "MODELNET_DIFY_LLM_PROVIDER": MODELNET_DIFY_LLM_PROVIDER,
+        }.items()
+        if not value
+    ]
+    if missing:
+        return "missing Dify serial configuration: " + ", ".join(missing)
+    return None
+
+
+def serial_prompt_text(request: EnsembleRequest) -> str:
+    if not request.sources:
+        return ""
+    source = request.sources[0]
+    if source.prompt:
+        return source.prompt
+    return text_from_messages(message_list(source))
+
+
+def extract_dify_workflow_outputs(payload: dict[str, Any]) -> str:
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    outputs = data.get("outputs") if isinstance(data.get("outputs"), dict) else payload.get("outputs")
+    if not isinstance(outputs, dict):
+        outputs = {}
+    for key in ("answer", "text", "result", "output"):
+        value = outputs.get(key)
+        if value is not None:
+            return str(value)
+    if outputs:
+        return json.dumps(outputs, ensure_ascii=False)
+    for key in ("answer", "text"):
+        value = payload.get(key) or data.get(key)
+        if value is not None:
+            return str(value)
+    return ""
+
+
+def dify_workflow_metadata(
+    payload: dict[str, Any],
+    provision: dict[str, Any],
+    elapsed_ms: int,
+    topology: SerialTopology,
+) -> dict[str, Any]:
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    usage = metadata.get("usage") if isinstance(metadata.get("usage"), dict) else {}
+    total_tokens = usage.get("total_tokens") or metadata.get("total_tokens")
+    return {
+        "runner": "dynamic_collab_route",
+        "native_runner": "response.serial",
+        "aggregator": "dify.dsl",
+        "topology_hash": topology.hash,
+        "total_steps": len(topology.nodes),
+        "model_ids": topology.ordered_model_ids,
+        "dify_app_id": provision.get("app_id"),
+        "dify_workflow_id": provision.get("workflow_id") or data.get("workflow_id"),
+        "dify_workflow_run_id": data.get("id") or payload.get("workflow_run_id"),
+        "elapsed_ms": elapsed_ms,
+        "tokens": total_tokens,
+        "trace_summary": {
+            "elapsed_ms": elapsed_ms,
+            "source_count": len(topology.nodes),
+            "tokens_count": total_tokens,
+            "stopped_by": "dify.workflow.completed",
+        },
+    }
+
+
+async def provision_dify_serial_workflow(topology: SerialTopology, yaml_content: str) -> dict[str, Any]:
+    cached = dify_serial_workflow_cache.get(topology.hash)
+    if cached:
+        return {**cached, "cache_hit": True}
+    assert http_client is not None
+    url = (
+        f"{MODELNET_DIFY_INNER_API_BASE}/enterprise/workspaces/"
+        f"{MODELNET_DIFY_WORKSPACE_ID}/modelnet/dsl/provision"
+    )
+    response = await http_client.post(
+        url,
+        json={
+            "creator_email": MODELNET_DIFY_CREATOR_EMAIL,
+            "description": f"Managed by ModelNet serial topology {topology.hash}.",
+            "external_key": topology.hash,
+            "name": f"ModelNet Serial {topology.hash}",
+            "topology_hash": topology.hash,
+            "yaml_content": yaml_content,
+        },
+        headers={
+            "Content-Type": "application/json",
+            "X-Inner-Api-Key": MODELNET_DIFY_INNER_API_KEY,
+        },
+        timeout=MODELNET_DIFY_SERIAL_TIMEOUT_SECONDS,
+    )
+    if response.is_error:
+        detail = response.text[:1000]
+        raise httpx.HTTPStatusError(
+            f"{response.status_code} {response.reason_phrase} for {url}: {detail}",
+            request=response.request,
+            response=response,
+        )
+    payload = response.json()
+    if not payload.get("api_key") or not payload.get("app_id"):
+        raise ValueError("Dify provision response did not include app_id/api_key")
+    dify_serial_workflow_cache[topology.hash] = dict(payload)
+    return dict(payload)
+
+
+async def run_dify_serial_ensemble(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
+    started = time.perf_counter()
+    emit_flow = (
+        coerce_bool(request.runner_config.get("show_serial_flow"), default=False)
+        or coerce_bool(request.runner_config.get("display_serial_flow"), default=False)
+        or bool(request.diagnostics.get("enable_trace_stream"))
+    )
+    config_error = dify_serial_config_error()
+    if config_error:
+        yield sse("error", {"error": config_error, "stage": "serial.dify.config"})
+        return
+
+    try:
+        topology = parse_serial_topology(
+            request.runner_config.get("serial_topology"),
+            max_nodes=MODELNET_DIFY_SERIAL_MAX_NODES,
+        )
+    except SerialTopologyError as exc:
+        yield sse("error", {"error": str(exc), "stage": "serial.topology"})
+        return
+
+    try:
+        temperature = float(request.runner_config.get("dify_temperature", 0.0))
+    except (TypeError, ValueError):
+        temperature = 0.0
+    yaml_content = build_serial_dify_dsl(
+        topology,
+        provider=str(request.runner_config.get("dify_llm_provider") or MODELNET_DIFY_LLM_PROVIDER),
+        max_tokens=positive_int(
+            request.runner_config.get("dify_max_tokens"),
+            MODELNET_DIFY_SERIAL_MAX_TOKENS,
+        ),
+        temperature=temperature,
+    )
+    if emit_flow:
+        yield sse(
+            "trace_step",
+            {
+                "stage": "serial.dsl.compiled",
+                "topology_hash": topology.hash,
+                "total_steps": len(topology.nodes),
+                "model_ids": topology.ordered_model_ids,
+            },
+        )
+
+    try:
+        provision = await provision_dify_serial_workflow(topology, yaml_content)
+        if emit_flow:
+            yield sse(
+                "trace_step",
+                {
+                    "stage": "serial.dify.provisioned",
+                    "topology_hash": topology.hash,
+                    "dify_app_id": provision.get("app_id"),
+                    "dify_workflow_id": provision.get("workflow_id"),
+                    "cache_hit": bool(provision.get("cache_hit")),
+                },
+            )
+        assert http_client is not None
+        response = await http_client.post(
+            f"{MODELNET_DIFY_SERVICE_API_BASE}/workflows/run",
+            json={
+                "inputs": {"question": serial_prompt_text(request)},
+                "response_mode": "blocking",
+                "user": f"modelnet:{tenant.tenant_id}:{request.request_id or uuid.uuid4()}",
+            },
+            headers={
+                "Authorization": f"Bearer {provision['api_key']}",
+                "Content-Type": "application/json",
+            },
+            timeout=MODELNET_DIFY_SERIAL_TIMEOUT_SECONDS,
+        )
+        if response.is_error:
+            detail = response.text[:1000]
+            raise httpx.HTTPStatusError(
+                f"{response.status_code} {response.reason_phrase} for Dify workflow run: {detail}",
+                request=response.request,
+                response=response,
+            )
+        payload = response.json()
+        text = extract_dify_workflow_outputs(payload)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        if text:
+            yield sse("token", {"delta": text, "text": text})
+        yield sse(
+            "done",
+            {
+                "text": text,
+                "metadata": dify_workflow_metadata(payload, provision, elapsed_ms, topology),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("Dify serial workflow failed request_id=%s", request.request_id)
+        yield sse("error", {"error": str(exc), "stage": "serial.dify", "topology_hash": topology.hash})
+
+
 def allow_degraded_execution(request: EnsembleRequest) -> bool:
     return coerce_bool(request.runner_config.get("allow_degraded"), default=False)
 
@@ -6536,6 +6767,10 @@ async def run_ensemble_stream(request: EnsembleRequest, tenant: GatewayTenant) -
     try:
         if effective_runner == "token_step":
             async for event in run_token_step_ensemble(request, tenant):
+                yield event
+            return
+        if native_runner == "response.serial" and request.aggregator == "dify.dsl":
+            async for event in run_dify_serial_ensemble(request, tenant):
                 yield event
             return
         if effective_runner == "dynamic_collab_route":
