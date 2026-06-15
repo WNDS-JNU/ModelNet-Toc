@@ -18,7 +18,7 @@ import { useCommandMenu } from './useCommandMenu';
 const AskAIMenu = memo(() => {
   const { t } = useTranslation(['common', 'chat', 'home']);
   const navigate = useNavigate();
-  const { handleAskLobeAI, handleAIPainting, closeCommandMenu } = useCommandMenu();
+  const { handleAskModelNet, handleAIPainting, closeCommandMenu } = useCommandMenu();
   const { search } = useCommandMenuContext();
 
   // Get agent list (limit to first 20 items for simplicity)
@@ -59,10 +59,10 @@ const AskAIMenu = memo(() => {
 
   return (
     <Command.Group heading={heading}>
-      <Command.Item value="lobe-ai" onSelect={handleAskLobeAI}>
+      <Command.Item value="modelnet" onSelect={handleAskModelNet}>
         <Avatar emojiScaleWithBackground avatar={DEFAULT_INBOX_AVATAR} shape="square" size={18} />
         <div className={styles.itemContent}>
-          <div className={styles.itemLabel}>Lobe AI</div>
+          <div className={styles.itemLabel}>ModelNet</div>
         </div>
       </Command.Item>
       <Command.Item value="agent-builder" onSelect={handleAgentBuilder}>

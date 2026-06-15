@@ -36,7 +36,7 @@ export const useAskCopilotItem = (editor: IEditor | undefined): ChatInputActions
   return useMemo(() => {
     if (!editor) return [];
 
-    const label = t('cmdk.askLobeAI');
+    const label = t('cmdk.askModelNet');
 
     return [
       {

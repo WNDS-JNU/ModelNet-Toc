@@ -21,7 +21,7 @@ interface AgentSelectProps extends Omit<
  * pick which agent receives messages. Single source of truth for the option
  * shape (avatar + title, locale-aware fallback) so verify-im and the Settings
  * panel render identically. Fetches `messenger.listAgentsForBinding` (which
- * already pins LobeAI to the top and matches the bot's `/agents` ordering).
+ * already pins ModelNet to the top and matches the bot's `/agents` ordering).
  */
 const AgentSelect = memo<AgentSelectProps>(({ value, onChange, ...rest }) => {
   const { t: tCommon } = useTranslation('common');

@@ -1054,7 +1054,7 @@ export class MessengerRouter {
         entries: this.toPickerEntries(userAgents, link.activeAgentId),
         // Channel invocation → render ephemeral so only the invoker sees
         // their personal agent list (otherwise `/agents` from a public
-        // channel would broadcast everyone's `LobeAI / Claude Code / …`
+        // channel would broadcast everyone's `ModelNet / Claude Code / …`
         // grid). DMs stay non-ephemeral so the picker persists in history.
         ephemeralTo: ctx.isDM ? undefined : ctx.authorUserId,
         // Discord-only: forward the slash interaction so the binder can
@@ -1250,10 +1250,10 @@ export class MessengerRouter {
   /**
    * Fetch a user's agents for `/agents`. Mirrors the web
    * verify-im picker (and the home sidebar):
-   *  - excludes virtual agents but explicitly keeps the inbox/LobeAI agent
+   *  - excludes virtual agents but explicitly keeps the inbox/ModelNet agent
    *  - orders by `updatedAt DESC`
-   *  - pins inbox/LobeAI to the top regardless of updatedAt
-   *  - applies the LobeAI title fallback (slug='inbox') and a generic
+   *  - pins inbox/ModelNet to the top regardless of updatedAt
+   *  - applies the ModelNet title fallback (slug='inbox') and a generic
    *    "Custom Agent" fallback for agents without a title
    */
   private async fetchUserAgents(
@@ -1278,7 +1278,7 @@ export class MessengerRouter {
         slug: row.slug,
         title:
           (row.title && row.title.trim()) ||
-          (row.slug === INBOX_SESSION_ID ? 'LobeAI' : 'Custom Agent'),
+          (row.slug === INBOX_SESSION_ID ? 'ModelNet' : 'Custom Agent'),
       }));
 
     const inboxIdx = mapped.findIndex((row) => row.slug === INBOX_SESSION_ID);

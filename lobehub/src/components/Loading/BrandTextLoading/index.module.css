@@ -36,6 +36,28 @@
   color: inherit;
 }
 
+.customBrand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+
+  color: var(--brand-text-color);
+}
+
+.customLogo {
+  display: block;
+
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+}
+
+.customText {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1;
+}
+
 .debug {
   display: flex;
   flex-direction: column;

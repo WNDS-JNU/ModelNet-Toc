@@ -1,10 +1,9 @@
-import { BRANDING_NAME, ORG_NAME } from '@lobechat/business-const';
+import { BRANDING_NAME } from '@lobechat/business-const';
 import { type Metadata } from 'next';
 import qs from 'query-string';
 
 import { DEFAULT_LANG } from '@/const/locale';
 import { OG_URL } from '@/const/url';
-import { isCustomORG } from '@/const/version';
 import { type Locales } from '@/locales/resources';
 import { locales } from '@/locales/resources';
 import { getCanonicalUrl } from '@/server/utils/url';
@@ -12,7 +11,7 @@ import { formatDescLength, formatTitleLength } from '@/utils/genOG';
 
 export class Meta {
   public generate({
-    description = 'LobeChat offers you the best ChatGPT, OLLaMA, Gemini, Claude WebUI user experience',
+    description = 'ModelNet - 暨南大学 WNDS 实验室智能工作平台',
     title,
     image = OG_URL,
     url,
@@ -91,7 +90,6 @@ export class Meta {
       card: 'summary_large_image',
       description,
       images: [image],
-      site: isCustomORG ? `@${ORG_NAME}` : '@lobehub',
       title,
       url,
     };

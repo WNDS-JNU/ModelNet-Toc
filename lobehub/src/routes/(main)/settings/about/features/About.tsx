@@ -1,14 +1,13 @@
 'use client';
 
-import { SiDiscord, SiGithub, SiRss, SiX, SiYoutube } from '@icons-pack/react-simple-icons';
-import { BRANDING_EMAIL, BRANDING_NAME, SOCIAL_URL } from '@lobechat/business-const';
+import { BRANDING_NAME } from '@lobechat/business-const';
 import { Flexbox, Form } from '@lobehub/ui';
 import { Divider } from 'antd';
 import { createStaticStyles } from 'antd-style';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { BLOG, mailTo,OFFICIAL_SITE, PRIVACY_URL, TERMS_URL } from '@/const/url';
+import { OFFICIAL_SITE, PRIVACY_URL, TERMS_URL } from '@/const/url';
 
 import AboutList from './AboutList';
 import ItemCard from './ItemCard';
@@ -48,14 +47,14 @@ const About = memo<{ mobile?: boolean }>(({ mobile }) => {
               value: 'officialSite',
             },
             {
-              href: mailTo(BRANDING_EMAIL.support),
-              label: t('mail.support'),
-              value: 'support',
+              href: 'https://english.jnu.edu.cn',
+              label: 'Jinan University',
+              value: 'jnuEnglish',
             },
             {
-              href: mailTo(BRANDING_EMAIL.business),
-              label: t('mail.business'),
-              value: 'business',
+              href: 'https://info.jnu.edu.cn',
+              label: 'JNU Portal',
+              value: 'jnuPortal',
             },
           ]}
         />
@@ -66,35 +65,19 @@ const About = memo<{ mobile?: boolean }>(({ mobile }) => {
           ItemRender={ItemCard}
           items={[
             {
-              href: BLOG,
-              icon: SiRss,
-              label: t('blog'),
-              value: 'blog',
+              href: 'https://www.jnu.edu.cn/2567/list.htm',
+              label: '暨南文化',
+              value: 'culture',
             },
             {
-              href: SOCIAL_URL.github,
-              icon: SiGithub,
-              label: 'GitHub',
-              value: 'feedback',
+              href: 'https://www.jnu.edu.cn/36429/list.htm',
+              label: '校园风光',
+              value: 'campus',
             },
             {
-              href: SOCIAL_URL.discord,
-              icon: SiDiscord,
-              label: 'Discord',
-              value: 'discord',
-            },
-            {
-              href: SOCIAL_URL.x,
-              icon: SiX as any,
-              label: 'X / Twitter',
-              value: 'x',
-            },
-
-            {
-              href: SOCIAL_URL.youtube,
-              icon: SiYoutube,
-              label: 'YouTube',
-              value: 'youtube',
+              href: 'https://news.jnu.edu.cn',
+              label: '暨南大学新闻网',
+              value: 'news',
             },
           ]}
         />
