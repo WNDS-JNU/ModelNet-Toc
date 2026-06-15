@@ -90,6 +90,28 @@ ModelNet self-test results can be written to `leaderboard/data/local-benchmarks.
 }
 ```
 
+Benchmark drivers live under `benchmarks/`:
+
+- `run_mtbench_modelnet.py`: full MT-Bench quality comparison.
+- `run_pressure_modelnet.py`: sampled MT-Bench pressure test with fixed concurrency levels.
+- `run_load_balancing_modelnet.py`: request-rate, bursty, or trace replay workload for routing and load-balance analysis.
+
+Example load-balancing run:
+
+```bash
+python3 benchmarks/run_load_balancing_modelnet.py \
+  --workload-source mtbench \
+  --num-requests 40 \
+  --request-rate 0.5 \
+  --arrival-mode poisson \
+  --max-client-concurrency 16 \
+  --output-dir benchmarks/results/load-balance-mtbench-$(date +%Y%m%d-%H%M%S)
+```
+
+The load-balancing report includes p50/p95/p99 latency, queue delay, throughput, SLO violation rate,
+selected backend counts, Gini/CV/Jain fairness, and ModelNet runner mix. See `benchmarks/README.md`
+for synthetic and BurstGPT-style trace replay examples.
+
 ## Reload ModelNet Models
 
 After Dify refreshes `api/configs/model_net.yaml`, run:

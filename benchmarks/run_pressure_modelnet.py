@@ -197,6 +197,11 @@ def metadata_summary(data: dict[str, Any]) -> dict[str, Any]:
     return {
         "model": data.get("model"),
         "usage": data.get("usage"),
+        "internal_usage": metadata.get("internal_usage"),
+        "internal_total_tokens": metadata.get("internal_total_tokens"),
+        "internal_call_count": metadata.get("internal_call_count"),
+        "stage_latencies_ms": metadata.get("stage_latencies_ms"),
+        "call_ledger_summary": metadata.get("call_ledger_summary"),
         "runner": plan.get("runner") if isinstance(plan, dict) else None,
         "strategy": plan.get("strategy") if isinstance(plan, dict) else None,
         "source_count": plan.get("source_count") if isinstance(plan, dict) else None,
