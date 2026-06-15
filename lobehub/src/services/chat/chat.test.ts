@@ -1809,6 +1809,7 @@ describe('ChatService', () => {
           runner: 'response.parallel',
           runner_config: {
             allow_degraded: false,
+            response_synthesizer_model: 'inference-qwen3',
             show_parallel_flow: true,
           },
         },

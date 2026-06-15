@@ -134,12 +134,27 @@ CLAIM_EXTRACT_MAX_TOKENS = int(os.environ.get("MODELNET_CLAIM_EXTRACT_MAX_TOKENS
 CLAIM_COVERAGE_SHORTCUT = float(os.environ.get("MODELNET_CLAIM_COVERAGE_SHORTCUT", "0.8"))
 ENSEMBLE_THINK_MAX_TOKENS = int(os.environ.get("MODELNET_ENSEMBLE_THINK_MAX_TOKENS", "1024"))
 RESPONSE_AGGREGATE_MAX_TOKENS = int(
-    os.environ.get("MODELNET_RESPONSE_AGGREGATE_MAX_TOKENS", "768")
+    os.environ.get("MODELNET_RESPONSE_AGGREGATE_MAX_TOKENS", "1536")
+)
+RESPONSE_PARALLEL_MAX_TOKEN_SAFETY_MARGIN = int(
+    os.environ.get("MODELNET_RESPONSE_PARALLEL_MAX_TOKEN_SAFETY_MARGIN", "512")
+)
+RESPONSE_PARALLEL_FALLBACK_MAX_TOKENS = int(
+    os.environ.get("MODELNET_RESPONSE_PARALLEL_FALLBACK_MAX_TOKENS", "4096")
+)
+RESPONSE_SYNTHESIS_MIN_OUTPUT_TOKENS = int(
+    os.environ.get("MODELNET_RESPONSE_SYNTHESIS_MIN_OUTPUT_TOKENS", "1024")
+)
+CONTEXT_LENGTH_CACHE_TTL_SECONDS = float(
+    os.environ.get("MODELNET_CONTEXT_LENGTH_CACHE_TTL_SECONDS", "300")
 )
 ENSEMBLE_THINK_FINAL_ANSWER_INSTRUCTION = os.environ.get(
     "MODELNET_ENSEMBLE_THINK_FINAL_ANSWER_INSTRUCTION",
     "Now provide only the final answer. Do not include reasoning, analysis, hidden thinking, or headings. /no_think",
 )
+DISABLE_INTERNAL_THINKING_DEFAULT = os.environ.get(
+    "MODELNET_DISABLE_INTERNAL_THINKING", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
 MODELNET_DIFY_INNER_API_BASE = os.environ.get("MODELNET_DIFY_INNER_API_BASE", "http://api:5001/inner/api").rstrip("/")
 MODELNET_DIFY_SERVICE_API_BASE = os.environ.get("MODELNET_DIFY_SERVICE_API_BASE", "http://api:5001/v1").rstrip("/")
 MODELNET_DIFY_INNER_API_KEY = os.environ.get("MODELNET_DIFY_INNER_API_KEY", "")
@@ -244,6 +259,7 @@ registry_cache: tuple[float, list[Candidate]] = (0, [])
 k8s_cache: K8sSnapshot = K8sSnapshot()
 prometheus_cache: PrometheusSnapshot = PrometheusSnapshot()
 endpoint_health_cache: dict[str, EndpointHealth] = {}
+context_length_cache: dict[str, tuple[float, int | None]] = {}
 states: dict[str, CandidateState] = {}
 dify_serial_workflow_cache: dict[str, dict[str, Any]] = {}
 state_lock = asyncio.Lock()
@@ -2212,6 +2228,15 @@ def build_role_graph_synthesis_prompt(
         sections.extend(["", "Critic review:", "```text", critic_text, "```"])
     sections.extend(["", "Now produce the final user-facing answer."])
     return "\n".join(sections)
+
+
+def internal_thinking_extra(request: EnsembleRequest) -> dict[str, Any]:
+    if coerce_bool(
+        request.runner_config.get("disable_internal_thinking"),
+        default=DISABLE_INTERNAL_THINKING_DEFAULT,
+    ):
+        return {"chat_template_kwargs": {"enable_thinking": False}}
+    return {}
 
 
 async def plan_auto_ensemble(
@@ -4479,15 +4504,83 @@ def candidate_backend_info(
     }
 
 
+CONTEXT_LENGTH_METADATA_KEYS = ("context_length", "max_context_length", "max_model_len", "n_ctx", "max_tokens")
+
+
+def positive_context_length(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        parsed = int(value)
+        return parsed if parsed > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def candidate_context_length(candidate: Candidate) -> int | None:
-    for key in ("context_length", "max_context_length", "max_model_len", "max_tokens"):
-        raw = candidate.metadata.get(key)
-        try:
-            if raw is not None:
-                return int(raw)
-        except (TypeError, ValueError):
-            continue
+    for key in CONTEXT_LENGTH_METADATA_KEYS:
+        parsed = positive_context_length(candidate.metadata.get(key))
+        if parsed is not None:
+            return parsed
     return None
+
+
+def models_response_context_length(payload: Any, candidate: Candidate) -> int | None:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        return None
+
+    targets = {candidate.model_id, candidate.backend_model}
+    matched_entries: list[dict[str, Any]] = []
+    fallback_entries: list[dict[str, Any]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        fallback_entries.append(item)
+        names = {
+            str(item.get("id") or ""),
+            str(item.get("root") or ""),
+            str(item.get("parent") or ""),
+        }
+        if any(name in targets for name in names if name):
+            matched_entries.append(item)
+
+    for item in [*matched_entries, *fallback_entries]:
+        for key in CONTEXT_LENGTH_METADATA_KEYS:
+            parsed = positive_context_length(item.get(key))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+async def discover_candidate_context_length(candidate: Candidate) -> int | None:
+    metadata_length = candidate_context_length(candidate)
+    if metadata_length is not None:
+        return metadata_length
+
+    now = time.monotonic()
+    cached = context_length_cache.get(candidate.model_id)
+    if cached and now - cached[0] < CONTEXT_LENGTH_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    discovered: int | None = None
+    if candidate.backend_type in {"vllm_chat", "openai_compatible"} and http_client is not None:
+        try:
+            response = await http_client.get(
+                candidate.api_base.rstrip("/") + "/models",
+                headers=backend_headers(candidate),
+            )
+            response.raise_for_status()
+            discovered = models_response_context_length(response.json(), candidate)
+        except Exception as exc:  # noqa: BLE001 - context discovery is an optimization
+            LOGGER.debug(
+                "failed to discover context length for %s via /models: %s",
+                candidate.model_id,
+                exc,
+            )
+
+    context_length_cache[candidate.model_id] = (now, discovered)
+    return discovered
 
 
 def candidate_model_spec(
@@ -4989,6 +5082,74 @@ def generation_max_tokens(source: EnsembleSource, default: int = ENSEMBLE_DEFAUL
     return positive_int(raw, default)
 
 
+def explicit_generation_max_tokens(source: EnsembleSource) -> int | None:
+    for key in ("max_tokens", "max_completion_tokens"):
+        if key in source.sampling_params and source.sampling_params.get(key) is not None:
+            return positive_int(source.sampling_params.get(key), 1)
+    return None
+
+
+def usable_completion_token_budget(context_length: int | None, prompt_tokens: int) -> int | None:
+    if context_length is None:
+        return None
+    safety_margin = max(0, RESPONSE_PARALLEL_MAX_TOKEN_SAFETY_MARGIN)
+    return max(1, context_length - max(0, prompt_tokens) - safety_margin)
+
+
+def estimate_context_prompt_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return max(estimate_token_count(text), max(1, len(text) // 3))
+
+
+def generation_prompt_text(candidate: Candidate, messages: list[dict[str, Any]], prompt: str) -> str:
+    if candidate.backend_type == "llama_cpp":
+        return prompt
+    return text_from_messages(messages) or prompt
+
+
+async def resolve_generation_max_tokens(
+    candidate: Candidate,
+    source: EnsembleSource,
+    *,
+    prompt_tokens: int,
+    default: int = ENSEMBLE_DEFAULT_MAX_TOKENS,
+    prefer_model_max: bool = False,
+) -> int:
+    explicit = explicit_generation_max_tokens(source)
+    if explicit is None and not prefer_model_max:
+        return generation_max_tokens(source, default)
+
+    context_length = await discover_candidate_context_length(candidate)
+    budget = usable_completion_token_budget(context_length, prompt_tokens)
+    if explicit is not None:
+        return min(explicit, budget) if budget is not None else explicit
+    if budget is not None:
+        return budget
+    return RESPONSE_PARALLEL_FALLBACK_MAX_TOKENS
+
+
+async def source_with_resolved_generation_max_tokens(
+    candidate: Candidate,
+    source: EnsembleSource,
+    *,
+    prefer_model_max: bool = False,
+    default: int = ENSEMBLE_DEFAULT_MAX_TOKENS,
+) -> EnsembleSource:
+    messages = message_list(source)
+    prompt_text = generation_prompt_text(candidate, messages, source.prompt)
+    max_tokens = await resolve_generation_max_tokens(
+        candidate,
+        source,
+        prompt_tokens=estimate_context_prompt_tokens(prompt_text),
+        default=default,
+        prefer_model_max=prefer_model_max,
+    )
+    sampling_params = dict(source.sampling_params)
+    sampling_params["max_tokens"] = max_tokens
+    return source.model_copy(update={"sampling_params": sampling_params})
+
+
 def generation_params(source: EnsembleSource, *, max_tokens: int | None = None) -> dict[str, Any]:
     keys = ("temperature", "top_p", "stop", "seed")
     out = {key: source.sampling_params[key] for key in keys if source.sampling_params.get(key) is not None}
@@ -5063,11 +5224,125 @@ def response_aggregate_instruction(request: EnsembleRequest) -> str:
     return text or DEFAULT_RESPONSE_AGGREGATE_INSTRUCTION
 
 
+def response_aggregate_explicit_max_tokens(request: EnsembleRequest) -> int | None:
+    if "aggregation_max_tokens" not in request.runner_config:
+        return None
+    return positive_int(request.runner_config.get("aggregation_max_tokens"), RESPONSE_AGGREGATE_MAX_TOKENS)
+
+
 def response_aggregate_max_tokens(request: EnsembleRequest) -> int:
-    return positive_int(
-        request.runner_config.get("aggregation_max_tokens", RESPONSE_AGGREGATE_MAX_TOKENS),
-        RESPONSE_AGGREGATE_MAX_TOKENS,
+    explicit = response_aggregate_explicit_max_tokens(request)
+    return explicit if explicit is not None else RESPONSE_AGGREGATE_MAX_TOKENS
+
+
+def response_synthesis_prompt_budget_tokens(
+    context_length: int | None,
+    request: EnsembleRequest,
+) -> int | None:
+    if context_length is None:
+        return None
+    reserved_output = response_aggregate_explicit_max_tokens(request) or RESPONSE_SYNTHESIS_MIN_OUTPUT_TOKENS
+    return max(256, context_length - max(0, RESPONSE_PARALLEL_MAX_TOKEN_SAFETY_MARGIN) - reserved_output)
+
+
+def largest_model_size_billion(text: str) -> float:
+    sizes: list[float] = []
+    for match in re.finditer(r"(?<!\d)(\d+(?:\.\d+)?)\s*b\b", text.lower()):
+        try:
+            sizes.append(float(match.group(1)))
+        except ValueError:
+            continue
+    return max(sizes) if sizes else 0.0
+
+
+def response_synthesizer_strength_key(candidate: Candidate) -> tuple[int, int, float, str]:
+    text = " ".join(
+        [
+            candidate.model_id,
+            candidate.backend_model,
+            str(candidate.metadata.get("family") or ""),
+            str(candidate.metadata.get("type") or ""),
+        ]
+    ).lower()
+    preferred_family = int(
+        any(name in text for name in ("qwen", "deepseek", "hunyuan", "glm", "yi", "internlm", "baichuan"))
     )
+    reasoning_or_chinese = int(
+        any(name in text for name in ("qwen", "deepseek", "reason", "think", "r1", "glm", "hunyuan"))
+    )
+    return (preferred_family, reasoning_or_chinese, largest_model_size_billion(text), candidate.model_id)
+
+
+def response_backend_id(response: dict[str, Any]) -> str:
+    backend = response.get("backend") if isinstance(response, dict) else None
+    if isinstance(backend, dict):
+        return str(backend.get("id") or "")
+    return ""
+
+
+def response_synthesizer_model_alias(request: EnsembleRequest, responses: list[dict[str, Any]]) -> str | None:
+    for key in ("response_synthesizer_model", "synthesizer_model"):
+        raw = request.runner_config.get(key)
+        if raw:
+            return str(raw).strip() or None
+
+    response_ids = {response_backend_id(response) for response in responses}
+    response_ids.discard("")
+    if not response_ids:
+        return None
+    candidates = [candidate for candidate in load_candidates() if candidate.model_id in response_ids]
+    if not candidates:
+        return None
+    return max(candidates, key=response_synthesizer_strength_key).model_id
+
+
+async def pick_response_synthesizer_candidate(
+    request: EnsembleRequest,
+    tenant: GatewayTenant,
+    responses: list[dict[str, Any]],
+) -> tuple[Candidate, float, str]:
+    alias = response_synthesizer_model_alias(request, responses)
+    if alias:
+        try:
+            return await pick_candidate(tenant=tenant, candidate_aliases={alias})
+        except HTTPException as exc:
+            LOGGER.warning("response synthesizer %s unavailable; falling back: %s", alias, exc.detail)
+    return await pick_candidate(tenant=tenant)
+
+
+def strip_visible_reasoning_preamble(text: str) -> tuple[str, bool]:
+    stripped = (text or "").strip()
+    if not stripped:
+        return "", False
+    lowered = stripped.lower()
+    reasoning_prefixes = (
+        "thinking process",
+        "reasoning process",
+        "here's a thinking process",
+        "here is a thinking process",
+        "here's a reasoning process",
+        "here is a reasoning process",
+    )
+    if not any(lowered.startswith(prefix) for prefix in reasoning_prefixes):
+        return stripped, False
+    markers = (
+        "final answer:",
+        "answer:",
+        "conclusion:",
+        "final conclusion:",
+        "最终答案：",
+        "最终答案:",
+        "结论：",
+        "结论:",
+    )
+    for marker in markers:
+        index = lowered.find(marker.lower())
+        if index <= 0:
+            continue
+        answer = stripped[index + len(marker) :].strip()
+        if answer:
+            return answer, True
+    return "", True
 
 
 def strip_response_hidden_reasoning(text: str) -> tuple[str, bool]:
@@ -5075,8 +5350,13 @@ def strip_response_hidden_reasoning(text: str) -> tuple[str, bool]:
     if not raw:
         return "", False
     without_closed_think = re.sub(r"<think\b[^>]*>.*?</think>", "", raw, flags=re.IGNORECASE | re.DOTALL)
+    stray_close_matches = list(re.finditer(r"</think\s*>", without_closed_think, flags=re.IGNORECASE))
+    if stray_close_matches:
+        without_closed_think = without_closed_think[stray_close_matches[-1].end() :]
     stripped = without_closed_think.strip()
     removed = stripped != raw.strip()
+    stripped, removed_preamble = strip_visible_reasoning_preamble(stripped)
+    removed = removed or removed_preamble
     if stripped:
         return stripped, removed
     if re.search(r"<think\b", raw, flags=re.IGNORECASE):
@@ -5084,7 +5364,7 @@ def strip_response_hidden_reasoning(text: str) -> tuple[str, bool]:
     return stripped, removed
 
 
-def build_response_synthesis_user_prompt(
+def render_response_synthesis_user_prompt(
     *,
     instruction: str,
     responses: list[dict[str, Any]],
@@ -5109,6 +5389,56 @@ def build_response_synthesis_user_prompt(
             ]
         )
     return "\n".join(sections)
+
+
+def trim_responses_for_synthesis_prompt(
+    *,
+    instruction: str,
+    responses: list[dict[str, Any]],
+    max_prompt_tokens: int | None,
+) -> list[dict[str, Any]]:
+    if max_prompt_tokens is None:
+        return responses
+    rendered = render_response_synthesis_user_prompt(instruction=instruction, responses=responses)
+    if estimate_context_prompt_tokens(rendered) <= max_prompt_tokens:
+        return responses
+
+    empty_responses = [{**response, "text": ""} for response in responses]
+    overhead_tokens = estimate_context_prompt_tokens(
+        render_response_synthesis_user_prompt(instruction=instruction, responses=empty_responses)
+    )
+    available_tokens = max(1, max_prompt_tokens - overhead_tokens)
+    per_response_tokens = max(64, available_tokens // max(1, len(responses)))
+    char_limit = max(200, per_response_tokens * 3)
+
+    trimmed: list[dict[str, Any]] = []
+    for response in responses:
+        item = dict(response)
+        item["text"] = compress_contribution_text(str(response.get("text") or ""), max_chars=char_limit)
+        trimmed.append(item)
+
+    while char_limit > 200:
+        rendered = render_response_synthesis_user_prompt(instruction=instruction, responses=trimmed)
+        if estimate_context_prompt_tokens(rendered) <= max_prompt_tokens:
+            break
+        char_limit = max(200, int(char_limit * 0.75))
+        for item, response in zip(trimmed, responses, strict=False):
+            item["text"] = compress_contribution_text(str(response.get("text") or ""), max_chars=char_limit)
+    return trimmed
+
+
+def build_response_synthesis_user_prompt(
+    *,
+    instruction: str,
+    responses: list[dict[str, Any]],
+    max_prompt_tokens: int | None = None,
+) -> str:
+    prompt_responses = trim_responses_for_synthesis_prompt(
+        instruction=instruction,
+        responses=responses,
+        max_prompt_tokens=max_prompt_tokens,
+    )
+    return render_response_synthesis_user_prompt(instruction=instruction, responses=prompt_responses)
 
 
 def prepare_answer_state_after_think(
@@ -5637,15 +5967,30 @@ def aggregate_token(
     return max(scores.items(), key=lambda item: (item[1], item[0]))[0], scores
 
 
-async def generate_text(candidate: Candidate, source: EnsembleSource, *, prompt_override: str | None = None) -> dict[str, Any]:
-    max_tokens = generation_max_tokens(source)
-    params = generation_params(source, max_tokens=max_tokens)
+async def generate_text(
+    candidate: Candidate,
+    source: EnsembleSource,
+    *,
+    prompt_override: str | None = None,
+    prefer_model_max_tokens: bool = False,
+) -> dict[str, Any]:
     messages = message_list(source)
     if prompt_override is not None:
         messages = [*messages, {"role": "user", "content": prompt_override}]
     prompt = prompt_override if prompt_override is not None else source.prompt
     if candidate.backend_type == "llama_cpp" and source.messages and prompt_override is None:
         prompt = await llama_apply_template(candidate, source.messages)
+    if prefer_model_max_tokens:
+        prompt_text = generation_prompt_text(candidate, messages, prompt)
+        max_tokens = await resolve_generation_max_tokens(
+            candidate,
+            source,
+            prompt_tokens=estimate_context_prompt_tokens(prompt_text),
+            prefer_model_max=True,
+        )
+    else:
+        max_tokens = generation_max_tokens(source)
+    params = generation_params(source, max_tokens=max_tokens)
     assert http_client is not None
     return await backend_generate_text(
         candidate,
@@ -5671,7 +6016,12 @@ async def pick_source_candidate(
     )
 
 
-async def generate_response_source(tenant: GatewayTenant, source: EnsembleSource) -> dict[str, Any]:
+async def generate_response_source(
+    tenant: GatewayTenant,
+    source: EnsembleSource,
+    *,
+    prefer_model_max_tokens: bool = False,
+) -> dict[str, Any]:
     candidate: Candidate | None = None
     backend: dict[str, Any] | None = None
     started = time.perf_counter()
@@ -5679,7 +6029,7 @@ async def generate_response_source(tenant: GatewayTenant, source: EnsembleSource
     try:
         candidate, score, reason = await pick_source_candidate(tenant, source)
         backend = candidate_backend_info(candidate, score=score, reason=reason)
-        result = await generate_text(candidate, source)
+        result = await generate_text(candidate, source, prefer_model_max_tokens=prefer_model_max_tokens)
         await release_candidate(candidate)
         text = str(result.get("text") or "")
         metadata = dict(result.get("metadata") or {})
@@ -5749,20 +6099,24 @@ def build_response_synthesis_source(
     responses: list[dict[str, Any]],
     *,
     retry_final_only: bool = False,
+    max_prompt_tokens: int | None = None,
 ) -> tuple[EnsembleSource, str, str]:
     instruction = response_aggregate_instruction(request)
     user_prompt = build_response_synthesis_user_prompt(
         instruction=instruction,
         responses=responses,
+        max_prompt_tokens=max_prompt_tokens,
     )
     user_content = user_prompt
-    max_tokens = response_aggregate_max_tokens(request)
+    sampling_params: dict[str, Any] = {}
+    explicit_max_tokens = response_aggregate_explicit_max_tokens(request)
+    if explicit_max_tokens is not None:
+        sampling_params["max_tokens"] = explicit_max_tokens
     if retry_final_only:
         user_content = (
             f"{user_prompt}\n\nThe previous synthesis produced no visible answer text. "
             "Please write a coherent user-facing answer using the upstream responses."
         )
-        max_tokens = max(max_tokens, 768)
     return EnsembleSource(
         source_id="__response_aggregator__",
         model_alias=candidate.model_id,
@@ -5771,8 +6125,9 @@ def build_response_synthesis_source(
             {"role": "system", "content": RESPONSE_AGGREGATE_SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
         ],
-        sampling_params={"max_tokens": max_tokens},
+        sampling_params=sampling_params,
         weight=1.0,
+        extra=internal_thinking_extra(request),
     ), instruction, user_prompt
 
 
@@ -5874,10 +6229,11 @@ async def stream_response_synthesis_attempt(
     body = {
         "messages": message_list(source),
         "stream": True,
+        **source.extra,
         **source.sampling_params,
     }
     buffer = b""
-    visible_filter = ResponseVisibleTextStreamFilter()
+    visible_filter = ResponseVisibleTextStreamFilter(in_think_block=think_stop_marker(candidate) is not None)
     text_parts: list[str] = []
     reasoning_parts: list[str] = []
     metadata: dict[str, Any] = {}
@@ -5937,9 +6293,22 @@ async def stream_response_synthesis(
     released = False
     started = time.perf_counter()
     try:
-        candidate, score, reason = await pick_candidate(tenant=tenant)
+        candidate, score, reason = await pick_response_synthesizer_candidate(request, tenant, responses)
         backend = candidate_backend_info(candidate, score=score, reason=reason)
-        source, instruction, user_prompt = build_response_synthesis_source(request, candidate, responses)
+        context_length = await discover_candidate_context_length(candidate)
+        max_prompt_tokens = response_synthesis_prompt_budget_tokens(context_length, request)
+        source, instruction, user_prompt = build_response_synthesis_source(
+            request,
+            candidate,
+            responses,
+            max_prompt_tokens=max_prompt_tokens,
+        )
+        source = await source_with_resolved_generation_max_tokens(
+            candidate,
+            source,
+            prefer_model_max=True,
+            default=RESPONSE_AGGREGATE_MAX_TOKENS,
+        )
         yield {
             "event": "selected",
             "synthesis": {
@@ -5968,6 +6337,13 @@ async def stream_response_synthesis(
                 candidate,
                 responses,
                 retry_final_only=True,
+                max_prompt_tokens=max_prompt_tokens,
+            )
+            retry_source = await source_with_resolved_generation_max_tokens(
+                candidate,
+                retry_source,
+                prefer_model_max=True,
+                default=RESPONSE_AGGREGATE_MAX_TOKENS,
             )
             retry_result: dict[str, Any] = {}
             async for item in stream_response_synthesis_attempt(candidate, retry_source):
@@ -6314,7 +6690,7 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
             )
         source_order = {source.source_id: index for index, source in enumerate(request.sources)}
         tasks = [
-            asyncio.create_task(generate_response_source(tenant, source))
+            asyncio.create_task(generate_response_source(tenant, source, prefer_model_max_tokens=True))
             for source in request.sources
         ]
         results: list[dict[str, Any]] = []

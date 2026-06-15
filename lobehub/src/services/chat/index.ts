@@ -68,6 +68,30 @@ import {
 import { type FetchOptions } from './types';
 
 const defaultProvider = ModelProvider.OpenAI;
+const modelNetResponseSynthesizerScore = (modelId: string) => {
+  const id = modelId.toLowerCase();
+  const sizes = [...id.matchAll(/(\d+(?:\.\d+)?)b/g)].map((match) => Number(match[1]));
+  const largestSize = sizes.length > 0 ? Math.max(...sizes) : 0;
+  const familyScore = id.includes('qwen')
+    ? 300
+    : id.includes('deepseek') || id.includes('glm') || id.includes('hunyuan')
+      ? 240
+      : id.includes('yi') || id.includes('internlm') || id.includes('baichuan')
+        ? 180
+        : 0;
+  const reasoningScore = id.includes('think') || id.includes('reason') || id.includes('r1') ? 40 : 0;
+
+  return familyScore + reasoningScore + largestSize;
+};
+
+const pickModelNetResponseSynthesizerModel = (modelIds: string[]) => {
+  return [...modelIds].sort((left, right) => {
+    const scoreDiff = modelNetResponseSynthesizerScore(right) - modelNetResponseSynthesizerScore(left);
+
+    return scoreDiff || left.localeCompare(right);
+  })[0];
+};
+
 const providersWithDeploymentName = new Set<string>([
   ModelProvider.Azure,
   ModelProvider.AzureAI,
@@ -455,6 +479,8 @@ class ChatService {
         );
       }
 
+      const responseSynthesizerModel = pickModelNetResponseSynthesizerModel(modelnetParallelModelIds);
+
       payload.model = 'modelnet';
       payload.modelnet = {
         stream_options: {
@@ -466,6 +492,7 @@ class ChatService {
           runner: 'response.parallel',
           runner_config: {
             allow_degraded: false,
+            response_synthesizer_model: responseSynthesizerModel,
             show_parallel_flow: true,
           },
         },

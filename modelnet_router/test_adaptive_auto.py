@@ -106,15 +106,21 @@ class FakeTenant:
         return True
 
 
-def candidate(model_id: str) -> router.Candidate:
+def candidate(
+    model_id: str,
+    *,
+    backend_type: str = "custom_http",
+    metadata: dict[str, Any] | None = None,
+) -> router.Candidate:
     return router.Candidate(
         model_id=model_id,
-        backend_type="custom_http",
+        backend_type=backend_type,
         k8s_namespace="inference",
         backend_model=model_id,
         root_url="http://127.0.0.1",
         api_base="http://127.0.0.1/v1",
         service_names=(model_id,),
+        metadata=metadata or {},
     )
 
 
@@ -177,6 +183,11 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             (candidate("granite-3b"), 240.0, "ready"),
         ]
         self.original_pick_source_candidate = router.pick_source_candidate
+        self.original_pick_candidate = router.pick_candidate
+        self.original_load_candidates = router.load_candidates
+        self.original_backend_generate_text = router.backend_generate_text
+        self.original_http_client = router.http_client
+        self.original_context_length_cache = dict(router.context_length_cache)
         self.original_scored_candidate_pool = router.scored_candidate_pool
         self.original_visible_candidates = router.visible_candidates
         self.original_generate_text = router.generate_text
@@ -192,6 +203,11 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self) -> None:
         router.pick_source_candidate = self.original_pick_source_candidate
+        router.pick_candidate = self.original_pick_candidate
+        router.load_candidates = self.original_load_candidates
+        router.backend_generate_text = self.original_backend_generate_text
+        router.http_client = self.original_http_client
+        router.context_length_cache = dict(self.original_context_length_cache)
         router.scored_candidate_pool = self.original_scored_candidate_pool
         router.visible_candidates = self.original_visible_candidates
         router.generate_text = self.original_generate_text
@@ -245,7 +261,6 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ir.collaboration_plan['aggregator'], 'auto')
         self.assertEqual(ensemble.runner, 'auto')
         self.assertEqual(ensemble.runner_config['native_runner'], 'auto.network')
-
 
     def test_openai_responses_payload_normalizes_to_auto_network(self) -> None:
         chat_body = router.openai_responses_to_chat_body(
@@ -461,7 +476,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("claim_graph", planned.runner_config)
 
     async def test_claim_graph_runner_extracts_verifies_and_records_metadata(self) -> None:
-        async def fake_generate(_tenant, source):
+        async def fake_generate(_tenant, source, **_kwargs):
             if source.source_id == "proposer":
                 return {
                     "source_id": source.source_id,
@@ -532,7 +547,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assert_call_ledger(metadata, {"claim.proposer", "claim.extract", "claim.verify"})
 
     async def test_claim_graph_extraction_failure_returns_draft(self) -> None:
-        async def fake_generate(_tenant, source):
+        async def fake_generate(_tenant, source, **_kwargs):
             if source.source_id == "claim-extractor":
                 return {
                     "source_id": source.source_id,
@@ -593,7 +608,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         async def fake_pick(_tenant, _source, required_capabilities=None):
             return candidate("qwen-7b"), 10.0, "ready"
 
-        async def fake_generate_text(_candidate, _source, *, prompt_override=None):
+        async def fake_generate_text(_candidate, _source, *, prompt_override=None, **_kwargs):
             return {
                 "text": "route answer",
                 "metadata": {"usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}},
@@ -650,7 +665,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan["load_state"], "shed")
 
     async def test_verifier_passes_without_escalation(self) -> None:
-        async def fake_generate(_tenant, source):
+        async def fake_generate(_tenant, source, **_kwargs):
             if source.source_id == "verifier":
                 text = '{"pass": true, "confidence": 0.91, "reason": "complete"}'
             else:
@@ -684,7 +699,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assert_call_ledger(done["metadata"], {"primary.answer", "verifier.check"})
 
     async def test_verifier_failure_escalates_with_budget(self) -> None:
-        async def fake_generate(_tenant, source):
+        async def fake_generate(_tenant, source, **_kwargs):
             if source.source_id == "verifier":
                 text = '{"pass": false, "confidence": 0.22, "reason": "missing details"}'
             elif source.source_id == "escalation":
@@ -720,7 +735,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assert_call_ledger(done["metadata"], {"primary.answer", "verifier.check", "optional.escalation"})
 
     async def test_rank_fuse_high_confidence_selects_candidate(self) -> None:
-        async def fake_generate(_tenant, source):
+        async def fake_generate(_tenant, source, **_kwargs):
             texts = {
                 "candidate-1": "weaker answer",
                 "candidate-2": "better answer",
@@ -755,7 +770,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assert_call_ledger(done["metadata"], {"candidate.answer", "ranker.select"})
 
     async def test_rank_fuse_low_confidence_synthesizes(self) -> None:
-        async def fake_generate(_tenant, source):
+        async def fake_generate(_tenant, source, **_kwargs):
             texts = {
                 "candidate-1": "partial answer A",
                 "candidate-2": "partial answer B",
@@ -800,7 +815,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assert_call_ledger(done["metadata"], {"candidate.answer", "ranker.select", "optional.synthesizer.final"})
 
     async def test_response_aggregate_outputs_call_ledger(self) -> None:
-        async def fake_generate(_tenant, source):
+        async def fake_generate(_tenant, source, **_kwargs):
             return {
                 "source_id": source.source_id,
                 "backend": {"id": source.model_alias or source.source_id},
@@ -874,6 +889,8 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             retry_final_only=True,
         )
         prompt_surfaces = [
+            json.dumps(source.extra, ensure_ascii=False),
+            json.dumps(retry_source.extra, ensure_ascii=False),
             router.DEFAULT_RESPONSE_AGGREGATE_INSTRUCTION,
             router.RESPONSE_AGGREGATE_SYSTEM_PROMPT,
             instruction,
@@ -884,11 +901,182 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         prompt_surfaces.extend(str(message.get("content") or "") for message in source.messages)
         prompt_surfaces.extend(str(message.get("content") or "") for message in retry_source.messages)
         self.assert_no_response_prompt_control_leakage("\n".join(prompt_surfaces))
+        self.assertEqual(source.extra, {})
+        self.assertEqual(retry_source.extra, {})
+
+        disabled_req = router.EnsembleRequest(
+            request_id="response-aggregate-prompts-disable-thinking",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            runner_config={"disable_internal_thinking": True},
+            sources=[
+                router.EnsembleSource(source_id="source-1", model_alias="qwen-7b", prompt="Question?"),
+                router.EnsembleSource(source_id="source-2", model_alias="llama-8b", prompt="Question?"),
+            ],
+        )
+        disabled_source, _disabled_instruction, _disabled_user_prompt = router.build_response_synthesis_source(
+            disabled_req, candidate("aggregator"), responses
+        )
+        self.assertEqual(disabled_source.extra, {"chat_template_kwargs": {"enable_thinking": False}})
+
+    async def test_response_source_uses_model_budget_without_explicit_max_tokens(self) -> None:
+        seen: dict[str, Any] = {}
+
+        async def fake_backend_generate_text(_candidate, _source, *, params, messages, prompt, http_client, headers):
+            seen["params"] = dict(params)
+            seen["messages"] = list(messages)
+            seen["prompt"] = prompt
+            return {"text": "complete source answer", "metadata": {}}
+
+        router.backend_generate_text = fake_backend_generate_text
+        router.http_client = object()
+        source = router.EnsembleSource(
+            source_id="source-1",
+            model_alias="qwen-35b",
+            prompt="Question?",
+            messages=[{"role": "user", "content": "Question?"}],
+            sampling_params={},
+        )
+        source_candidate = candidate("qwen-35b", metadata={"max_model_len": 8192})
+
+        await router.generate_text(source_candidate, source, prefer_model_max_tokens=True)
+
+        expected_budget = router.usable_completion_token_budget(
+            8192,
+            router.estimate_context_prompt_tokens(router.text_from_messages(source.messages or [])),
+        )
+        self.assertEqual(seen["params"]["max_tokens"], expected_budget)
+        self.assertGreater(seen["params"]["max_tokens"], 1024)
+
+    async def test_response_source_explicit_max_tokens_is_respected_and_clamped(self) -> None:
+        source_candidate = candidate("qwen-35b", metadata={"max_model_len": 8192})
+        prompt_tokens = router.estimate_token_count("Question?")
+        small = router.EnsembleSource(
+            source_id="source-1",
+            prompt="Question?",
+            sampling_params={"max_tokens": 512},
+        )
+        huge = router.EnsembleSource(
+            source_id="source-1",
+            prompt="Question?",
+            sampling_params={"max_tokens": 999999},
+        )
+
+        small_max = await router.resolve_generation_max_tokens(
+            source_candidate,
+            small,
+            prompt_tokens=prompt_tokens,
+            prefer_model_max=True,
+        )
+        huge_max = await router.resolve_generation_max_tokens(
+            source_candidate,
+            huge,
+            prompt_tokens=prompt_tokens,
+            prefer_model_max=True,
+        )
+
+        self.assertEqual(small_max, 512)
+        self.assertEqual(huge_max, router.usable_completion_token_budget(8192, prompt_tokens))
+
+    def test_response_synthesizer_prefers_strong_qwen_source_model(self) -> None:
+        qwen_35b = "inference-qwen-qwen3-5-35b-a3b-gptq-int4"
+        deepseek_14b = "inference-deepseek-r1-14b"
+        granite = "inference-granite-4b"
+        router.load_candidates = lambda: [candidate(granite), candidate(deepseek_14b), candidate(qwen_35b)]
+        req = router.EnsembleRequest(
+            request_id="response-synthesizer-select",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            sources=[router.EnsembleSource(source_id="source-1", prompt="Question?")],
+        )
+        responses = [
+            {"source_id": "source-1", "backend": {"id": granite}, "text": "a"},
+            {"source_id": "source-2", "backend": {"id": deepseek_14b}, "text": "b"},
+            {"source_id": "source-3", "backend": {"id": qwen_35b}, "text": "c"},
+        ]
+
+        self.assertEqual(router.response_synthesizer_model_alias(req, responses), qwen_35b)
+
+    async def test_response_synthesizer_falls_back_when_requested_model_unavailable(self) -> None:
+        calls: list[set[str] | None] = []
+
+        async def fake_pick_candidate(*, tenant=None, candidate_aliases=None, required_capabilities=None):
+            calls.append(candidate_aliases)
+            if candidate_aliases:
+                raise router.HTTPException(status_code=503, detail="not ready")
+            return candidate("fallback-ready"), 12.0, "ready"
+
+        router.pick_candidate = fake_pick_candidate
+        req = router.EnsembleRequest(
+            request_id="response-synthesizer-fallback",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            runner_config={"response_synthesizer_model": "qwen-35b"},
+            sources=[router.EnsembleSource(source_id="source-1", prompt="Question?")],
+        )
+
+        selected, score, reason = await router.pick_response_synthesizer_candidate(req, self.tenant, [])
+
+        self.assertEqual(selected.model_id, "fallback-ready")
+        self.assertEqual(score, 12.0)
+        self.assertEqual(reason, "ready")
+        self.assertEqual(calls, [{"qwen-35b"}, None])
+
+    async def test_response_synthesizer_uses_model_budget_without_fixed_default(self) -> None:
+        req = router.EnsembleRequest(
+            request_id="response-synthesizer-budget",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            sources=[router.EnsembleSource(source_id="source-1", prompt="Question?")],
+        )
+        responses = [
+            {"source_id": "source-1", "text": "first complete response", "weight": 1.0},
+            {"source_id": "source-2", "text": "second complete response", "weight": 1.0},
+        ]
+        source, _instruction, _user_prompt = router.build_response_synthesis_source(
+            req,
+            candidate("qwen-35b", metadata={"max_model_len": 8192}),
+            responses,
+        )
+
+        self.assertNotIn("max_tokens", source.sampling_params)
+        resolved = await router.source_with_resolved_generation_max_tokens(
+            candidate("qwen-35b", metadata={"max_model_len": 8192}),
+            source,
+            prefer_model_max=True,
+            default=router.RESPONSE_AGGREGATE_MAX_TOKENS,
+        )
+
+        self.assertGreater(resolved.sampling_params["max_tokens"], 1024)
+        self.assertNotEqual(resolved.sampling_params["max_tokens"], router.RESPONSE_AGGREGATE_MAX_TOKENS)
+
+    def test_response_synthesizer_trims_prompt_to_preserve_output_budget(self) -> None:
+        req = router.EnsembleRequest(
+            request_id="response-synthesizer-trim",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            sources=[router.EnsembleSource(source_id="source-1", prompt="Question?")],
+        )
+        long_text = "detail " * 3000
+        responses = [
+            {"source_id": "source-1", "text": long_text, "weight": 1.0},
+            {"source_id": "source-2", "text": long_text, "weight": 1.0},
+        ]
+
+        _source, _instruction, user_prompt = router.build_response_synthesis_source(
+            req,
+            candidate("qwen-35b", metadata={"max_model_len": 8192}),
+            responses,
+            max_prompt_tokens=1200,
+        )
+
+        self.assertLessEqual(router.estimate_context_prompt_tokens(user_prompt), 1200)
+        self.assertIn("[truncated]", user_prompt)
 
     async def test_response_aggregate_sources_receive_original_payloads(self) -> None:
         seen: dict[str, dict[str, Any]] = {}
 
-        async def fake_generate(_tenant, source):
+        async def fake_generate(_tenant, source, **_kwargs):
             seen[source.source_id] = {
                 "prompt": source.prompt,
                 "messages": list(source.messages or []),
@@ -964,13 +1152,31 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text, "final")
         self.assertTrue(removed)
 
+        text, removed = router.strip_response_hidden_reasoning("implicit secret</think>\nfinal")
+
+        self.assertEqual(text, "final")
+        self.assertTrue(removed)
+
+    def test_response_hidden_reasoning_filter_removes_visible_thinking_preamble(self) -> None:
+        text, removed = router.strip_response_hidden_reasoning(
+            "Thinking Process:\ninternal notes\n\nFinal Answer:\nvisible"
+        )
+
+        self.assertEqual(text, "visible")
+        self.assertTrue(removed)
+
+        text, removed = router.strip_response_hidden_reasoning("Here's a thinking process that has no answer yet")
+
+        self.assertEqual(text, "")
+        self.assertTrue(removed)
+
     async def test_response_source_filters_hidden_reasoning_without_prompt_controls(self) -> None:
         async def fake_pick(_tenant, source, required_capabilities=None):
             self.assertEqual(source.prompt, "Question?")
             self.assertIsNone(required_capabilities)
             return candidate("qwen-7b"), 10.0, "ready"
 
-        async def fake_generate_text(_candidate, source, prompt_override=None):
+        async def fake_generate_text(_candidate, source, prompt_override=None, **_kwargs):
             self.assertEqual(source.prompt, "Question?")
             self.assertIsNone(prompt_override)
             return {"text": "<think>secret</think>visible", "metadata": {}}
@@ -986,7 +1192,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["metadata"]["source_hidden_reasoning_removed"])
 
     async def test_response_aggregate_emits_parallel_flow_when_enabled(self) -> None:
-        async def fake_generate(_tenant, source):
+        async def fake_generate(_tenant, source, **_kwargs):
             if source.source_id == "source-1":
                 await asyncio.sleep(0.01)
             return {
@@ -1045,7 +1251,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(completed_sources[0], "source-2")
 
     async def test_openai_stream_renders_parallel_flow_when_enabled(self) -> None:
-        async def fake_generate(_tenant, source):
+        async def fake_generate(_tenant, source, **_kwargs):
             return {
                 "source_id": source.source_id,
                 "backend": {"id": source.model_alias or source.source_id},
@@ -1128,7 +1334,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
     async def test_auto_plan_metadata_has_budget_confidence_and_ranker_result(self) -> None:
         router.scored_candidate_pool = self.stub_scored
 
-        async def fake_generate(_tenant, source):
+        async def fake_generate(_tenant, source, **_kwargs):
             if source.source_id == "ranker":
                 text = '{"winner_source_id": "candidate-2", "confidence": 0.88, "should_fuse": false, "reason": "ok"}'
             elif source.source_id == "candidate-2":
