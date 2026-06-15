@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import tempfile
@@ -93,6 +94,7 @@ import app as router  # noqa: E402
 class FakeTenant:
     tenant_id = "test"
     trace_allowed = False
+    allowed_runners = ()
 
     def allows_model(self, model_id: str) -> bool:
         return True
@@ -138,6 +140,24 @@ async def collect_events(stream) -> list[tuple[str, dict[str, Any]]]:
     async for chunk in stream:
         events.append(router.parse_sse_chunk(chunk))
     return events
+
+
+async def collect_openai_content(stream) -> str:
+    content = ""
+    async for chunk in stream:
+        _event, data = router.parse_sse_chunk(chunk)
+        if data.get("raw") == "[DONE]":
+            continue
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            continue
+        choice = choices[0]
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta")
+        if isinstance(delta, dict):
+            content += str(delta.get("content") or "")
+    return content
 
 
 def done_payload(events: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
@@ -754,6 +774,123 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(done["text"], "combined answer")
         self.assert_call_ledger(done["metadata"], {"response.parallel", "optional.synthesizer.final"})
+
+    async def test_response_aggregate_emits_parallel_flow_when_enabled(self) -> None:
+        async def fake_generate(_tenant, source):
+            if source.source_id == "source-1":
+                await asyncio.sleep(0.01)
+            return {
+                "source_id": source.source_id,
+                "backend": {"id": source.model_alias or source.source_id},
+                "text": f"answer from {source.source_id}",
+                "metadata": {},
+                "weight": source.weight,
+                "error": None,
+                "latency_ms": 10,
+            }
+
+        async def fake_synthesis(_request, _tenant, responses):
+            self.assertEqual([item["source_id"] for item in responses], ["source-1", "source-2"])
+            return {
+                "source_id": "__response_aggregator__",
+                "backend": {"id": "aggregator"},
+                "text": "combined answer",
+                "metadata": {},
+                "latency_ms": 7,
+            }, {"instruction": "test", "prompt_chars": 8}
+
+        router.generate_response_source = fake_generate
+        router.generate_response_synthesis = fake_synthesis
+        req = router.EnsembleRequest(
+            request_id="response-aggregate-flow",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            runner_config={"show_parallel_flow": True},
+            sources=[
+                router.EnsembleSource(source_id="source-1", model_alias="qwen-7b", prompt="Question?"),
+                router.EnsembleSource(source_id="source-2", model_alias="llama-8b", prompt="Question?"),
+            ],
+        )
+        events = await collect_events(router.run_response_aggregate_ensemble(req, self.tenant))
+        stages = [data.get("stage") for event, data in events if event == "trace_step"]
+
+        self.assertEqual(stages[0], "sources.parallel.started")
+        self.assertEqual(stages[-2:], ["synthesis.started", "synthesis.completed"])
+        self.assertEqual(stages.count("source.completed"), 2)
+        completed_sources = [
+            data["source_id"]
+            for event, data in events
+            if event == "trace_step" and data.get("stage") == "source.completed"
+        ]
+        self.assertEqual(completed_sources[0], "source-2")
+
+    async def test_openai_stream_renders_parallel_flow_when_enabled(self) -> None:
+        async def fake_generate(_tenant, source):
+            return {
+                "source_id": source.source_id,
+                "backend": {"id": source.model_alias or source.source_id},
+                "text": f"answer from {source.source_id}",
+                "metadata": {},
+                "weight": source.weight,
+                "error": None,
+                "latency_ms": 11,
+            }
+
+        async def fake_synthesis(_request, _tenant, responses):
+            self.assertEqual(len(responses), 2)
+            return {
+                "source_id": "__response_aggregator__",
+                "backend": {"id": "aggregator"},
+                "text": "combined answer",
+                "metadata": {},
+                "latency_ms": 5,
+            }, {"instruction": "test", "prompt_chars": 8}
+
+        router.generate_response_source = fake_generate
+        router.generate_response_synthesis = fake_synthesis
+        base_sources = [
+            router.EnsembleSource(source_id="source-1", model_alias="qwen-7b", prompt="Question?"),
+            router.EnsembleSource(source_id="source-2", model_alias="llama-8b", prompt="Question?"),
+        ]
+        visible_req = router.EnsembleRequest(
+            request_id="openai-visible-flow",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            runner_config={"native_runner": "response.parallel", "show_parallel_flow": True},
+            sources=base_sources,
+        )
+        visible_content = await collect_openai_content(
+            router.stream_openai_ensemble_response(
+                visible_req,
+                self.tenant,
+                request_id="openai-visible-flow",
+                model="modelnet",
+            )
+        )
+
+        self.assertIn("ModelNet 并联流程", visible_content)
+        self.assertIn("并联发起", visible_content)
+        self.assertIn("source-1", visible_content)
+        self.assertIn("进入合成", visible_content)
+        self.assertIn("合成完成", visible_content)
+        self.assertIn("最终回答", visible_content)
+        self.assertTrue(visible_content.endswith("combined answer"))
+
+        hidden_req = visible_req.model_copy(
+            update={
+                "request_id": "openai-hidden-flow",
+                "runner_config": {"native_runner": "response.parallel"},
+            }
+        )
+        hidden_content = await collect_openai_content(
+            router.stream_openai_ensemble_response(
+                hidden_req,
+                self.tenant,
+                request_id="openai-hidden-flow",
+                model="modelnet",
+            )
+        )
+        self.assertEqual(hidden_content, "combined answer")
 
     async def test_auto_plan_metadata_has_budget_confidence_and_ranker_result(self) -> None:
         router.scored_candidate_pool = self.stub_scored

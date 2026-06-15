@@ -3859,6 +3859,98 @@ def openai_stream_payload(
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
+def openai_parallel_flow_enabled(request: EnsembleRequest) -> bool:
+    return (
+        coerce_bool(request.runner_config.get("show_parallel_flow"), default=False)
+        or coerce_bool(request.runner_config.get("display_parallel_flow"), default=False)
+        or (
+            request.diagnostics.enable_trace_stream
+            and coerce_bool(request.runner_config.get("show_trace_in_answer"), default=False)
+        )
+    )
+
+
+def markdown_code(value: Any, fallback: str = "unknown") -> str:
+    text = str(value or "").strip() or fallback
+    return "`" + text.replace("`", "\\`") + "`"
+
+
+def backend_label(backend: Any) -> str:
+    if not isinstance(backend, dict):
+        return "unknown"
+    return str(
+        backend.get("id")
+        or backend.get("model")
+        or backend.get("backend_model")
+        or backend.get("backend")
+        or "unknown"
+    )
+
+
+def flow_sources_summary(sources: Any) -> str:
+    if not isinstance(sources, list):
+        return ""
+    items = []
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        source_id = source.get("source_id")
+        model_alias = source.get("model_alias")
+        label = markdown_code(source_id)
+        if model_alias:
+            label += f"({markdown_code(model_alias)})"
+        items.append(label)
+    return "、".join(items)
+
+
+def openai_parallel_flow_delta(event: str, data: dict[str, Any]) -> str:
+    if event == "run_started":
+        runner = data.get("native_runner") or data.get("runner") or "response.parallel"
+        aggregator = data.get("aggregator") or "synthesize"
+        return (
+            "**ModelNet 并联流程**\n\n"
+            f"- 已启动并联运行：runner {markdown_code(runner)}，聚合器 {markdown_code(aggregator)}。\n"
+        )
+    if event != "trace_step":
+        return ""
+
+    stage = str(data.get("stage") or "")
+    if stage == "sources.parallel.started":
+        source_count = data.get("source_count")
+        summary = flow_sources_summary(data.get("sources"))
+        suffix = f"：{summary}" if summary else ""
+        return f"- 并联发起：{source_count} 个模型同时开始作答{suffix}。\n"
+    if stage == "source.completed":
+        source_id = data.get("source_id")
+        backend = backend_label(data.get("backend"))
+        latency_ms = data.get("latency_ms")
+        text_chars = data.get("text_chars")
+        return (
+            f"- {markdown_code(source_id)} 已完成：后端 {markdown_code(backend)}，"
+            f"耗时 {latency_ms} ms，返回 {text_chars} 字符。\n"
+        )
+    if stage == "source.failed":
+        source_id = data.get("source_id")
+        backend = backend_label(data.get("backend"))
+        error = str(data.get("error") or "unknown error")[:160]
+        return (
+            f"- {markdown_code(source_id)} 失败：后端 {markdown_code(backend)}，"
+            f"错误 {markdown_code(error)}。\n"
+        )
+    if stage == "synthesis.started":
+        count = data.get("successful_source_count")
+        return f"- 进入合成：{count} 个有效模型回复交给 synthesizer 生成最终回答。\n"
+    if stage == "synthesis.completed":
+        backend = backend_label(data.get("backend"))
+        latency_ms = data.get("latency_ms")
+        return (
+            f"- 合成完成：后端 {markdown_code(backend)}，耗时 {latency_ms} ms。\n\n"
+            "---\n\n"
+            "**最终回答**\n\n"
+        )
+    return ""
+
+
 async def collect_openai_ensemble_response(
     request: EnsembleRequest,
     tenant: GatewayTenant,
@@ -3885,8 +3977,17 @@ async def stream_openai_ensemble_response(
     model: str,
 ) -> AsyncIterator[bytes]:
     yield openai_stream_payload(request_id=request_id, model=model, delta={"role": "assistant"})
+    show_parallel_flow = openai_parallel_flow_enabled(request)
     async for chunk in run_ensemble_stream(request, tenant):
         event, data = parse_sse_chunk(chunk)
+        if show_parallel_flow:
+            flow_delta = openai_parallel_flow_delta(event, data)
+            if flow_delta:
+                yield openai_stream_payload(
+                    request_id=request_id,
+                    model=model,
+                    delta={"content": flow_delta},
+                )
         if event == "token":
             delta = str(data.get("delta") or "")
             if delta:
@@ -4287,7 +4388,14 @@ async def chat_completions(
 ) -> Response:
     tenant = assert_authorized(authorization)
     body = await request.json()
-    if str(body.get("model") or "") == PUBLIC_MODEL_NAME:
+    modelnet_options = body.get("modelnet") if isinstance(body.get("modelnet"), dict) else {}
+    collaboration_plan = (
+        modelnet_options.get("collaboration_plan")
+        if isinstance(modelnet_options.get("collaboration_plan"), dict)
+        else {}
+    )
+    requested_runner = canonical_runner(collaboration_plan.get("runner"))
+    if str(body.get("model") or "") == PUBLIC_MODEL_NAME and requested_runner == "route.once":
         raise HTTPException(
             status_code=410,
             detail={
@@ -5610,18 +5718,39 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
         return
 
     started = time.perf_counter()
+    emit_flow = (
+        request.diagnostics.enable_trace_stream
+        or coerce_bool(request.runner_config.get("show_parallel_flow"), default=False)
+        or coerce_bool(request.runner_config.get("display_parallel_flow"), default=False)
+    )
     try:
-        results = await asyncio.gather(
-            *(generate_response_source(tenant, source) for source in request.sources),
-            return_exceptions=False,
-        )
+        if emit_flow:
+            yield sse(
+                "trace_step",
+                {
+                    "stage": "sources.parallel.started",
+                    "source_count": len(request.sources),
+                    "sources": [
+                        {
+                            "source_id": source.source_id,
+                            "model_alias": source.model_alias,
+                            "weight": source.weight,
+                        }
+                        for source in request.sources
+                    ],
+                },
+            )
+        source_order = {source.source_id: index for index, source in enumerate(request.sources)}
+        tasks = [
+            asyncio.create_task(generate_response_source(tenant, source))
+            for source in request.sources
+        ]
+        results: list[dict[str, Any]] = []
         call_ledger: list[dict[str, Any]] = []
-        for result in results:
+        for completed in asyncio.as_completed(tasks):
+            result = await completed
+            results.append(result)
             call_ledger.extend(call_ledger_from_result(result, "response.parallel"))
-        successful = [result for result in results if result.get("error") is None]
-        failed = [result for result in results if result.get("error") is not None]
-
-        for result in results:
             backend = result.get("backend")
             if backend is not None:
                 yield sse(
@@ -5633,6 +5762,17 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
                     },
                 )
             if result.get("error") is None:
+                if emit_flow:
+                    yield sse(
+                        "trace_step",
+                        {
+                            "stage": "source.completed",
+                            "source_id": result["source_id"],
+                            "backend": backend,
+                            "latency_ms": result.get("latency_ms", 0),
+                            "text_chars": len(str(result.get("text") or "")),
+                        },
+                    )
                 yield sse(
                     "full_response",
                     {
@@ -5641,6 +5781,22 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
                         "metadata": result.get("metadata", {}),
                     },
                 )
+            else:
+                if emit_flow:
+                    yield sse(
+                        "trace_step",
+                        {
+                            "stage": "source.failed",
+                            "source_id": result["source_id"],
+                            "backend": backend,
+                            "latency_ms": result.get("latency_ms", 0),
+                            "error": result.get("error"),
+                        },
+                    )
+
+        results.sort(key=lambda item: source_order.get(str(item.get("source_id") or ""), len(source_order)))
+        successful = [result for result in results if result.get("error") is None]
+        failed = [result for result in results if result.get("error") is not None]
 
         if len(successful) < 2:
             yield sse(
@@ -5652,6 +5808,15 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
             )
             return
 
+        if emit_flow:
+            yield sse(
+                "trace_step",
+                {
+                    "stage": "synthesis.started",
+                    "successful_source_count": len(successful),
+                    "failed_source_count": len(failed),
+                },
+            )
         synthesis, synthesis_metadata = await generate_response_synthesis(request, tenant, successful)
         call_ledger.extend(call_ledger_from_result(synthesis, "optional.synthesizer.final"))
         yield sse(
@@ -5662,6 +5827,17 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
                 "role": "aggregator",
             },
         )
+        if emit_flow:
+            yield sse(
+                "trace_step",
+                {
+                    "stage": "synthesis.completed",
+                    "source_id": synthesis["source_id"],
+                    "backend": synthesis["backend"],
+                    "latency_ms": synthesis.get("latency_ms", 0),
+                    "text_chars": len(str(synthesis.get("text") or "")),
+                },
+            )
         text = synthesis["text"]
         yield sse("token", {"delta": text, "text": text})
         elapsed_ms = int((time.perf_counter() - started) * 1000)

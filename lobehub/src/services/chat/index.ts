@@ -449,12 +449,16 @@ class ChatService {
 
       payload.model = 'modelnet';
       payload.modelnet = {
+        stream_options: {
+          include_trace: true,
+        },
         collaboration_plan: {
           aggregator: 'synthesize',
           models: modelnetParallelModelIds,
           runner: 'response.parallel',
           runner_config: {
             allow_degraded: false,
+            show_parallel_flow: true,
           },
         },
       };
