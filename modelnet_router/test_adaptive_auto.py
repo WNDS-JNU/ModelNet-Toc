@@ -142,8 +142,8 @@ async def collect_events(stream) -> list[tuple[str, dict[str, Any]]]:
     return events
 
 
-async def collect_openai_content(stream) -> str:
-    content = ""
+async def collect_openai_content_deltas(stream) -> list[str]:
+    deltas: list[str] = []
     async for chunk in stream:
         _event, data = router.parse_sse_chunk(chunk)
         if data.get("raw") == "[DONE]":
@@ -155,9 +155,13 @@ async def collect_openai_content(stream) -> str:
         if not isinstance(choice, dict):
             continue
         delta = choice.get("delta")
-        if isinstance(delta, dict):
-            content += str(delta.get("content") or "")
-    return content
+        if isinstance(delta, dict) and delta.get("content"):
+            deltas.append(str(delta.get("content") or ""))
+    return deltas
+
+
+async def collect_openai_content(stream) -> str:
+    return "".join(await collect_openai_content_deltas(stream))
 
 
 def done_payload(events: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
@@ -178,6 +182,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.original_generate_text = router.generate_text
         self.original_generate_response_source = router.generate_response_source
         self.original_generate_response_synthesis = router.generate_response_synthesis
+        self.original_stream_response_synthesis = router.stream_response_synthesis
         self.original_trace_path = router.AUTO_ROUTER_TRACE_PATH
         self.original_claim_enabled = router.CLAIM_MEMORY_ENABLED
         self.original_claim_db_path = router.CLAIM_MEMORY_DB_PATH
@@ -192,6 +197,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         router.generate_text = self.original_generate_text
         router.generate_response_source = self.original_generate_response_source
         router.generate_response_synthesis = self.original_generate_response_synthesis
+        router.stream_response_synthesis = self.original_stream_response_synthesis
         router.AUTO_ROUTER_TRACE_PATH = self.original_trace_path
         router.CLAIM_MEMORY_ENABLED = self.original_claim_enabled
         router.CLAIM_MEMORY_DB_PATH = self.original_claim_db_path
@@ -751,15 +757,25 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_synthesis(_request, _tenant, responses):
             self.assertEqual(len(responses), 2)
-            return {
-                "source_id": "__response_aggregator__",
-                "backend": {"id": "aggregator"},
-                "text": "combined answer",
-                "metadata": {},
-            }, {"instruction": "test", "prompt_chars": 8}
+            yield {
+                "event": "selected",
+                "synthesis": {"source_id": "__response_aggregator__", "backend": {"id": "aggregator"}},
+            }
+            yield {"event": "token", "delta": "combined "}
+            yield {"event": "token", "delta": "answer"}
+            yield {
+                "event": "done",
+                "synthesis": {
+                    "source_id": "__response_aggregator__",
+                    "backend": {"id": "aggregator"},
+                    "text": "combined answer",
+                    "metadata": {},
+                },
+                "metadata": {"instruction": "test", "prompt_chars": 8},
+            }
 
         router.generate_response_source = fake_generate
-        router.generate_response_synthesis = fake_synthesis
+        router.stream_response_synthesis = fake_synthesis
         req = router.EnsembleRequest(
             request_id="response-aggregate-ledger",
             runner="response_aggregate",
@@ -772,6 +788,8 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         events = await collect_events(router.run_response_aggregate_ensemble(req, self.tenant))
         done = done_payload(events)
 
+        token_deltas = [data["delta"] for event, data in events if event == "token"]
+        self.assertEqual(token_deltas, ["combined ", "answer"])
         self.assertEqual(done["text"], "combined answer")
         self.assert_call_ledger(done["metadata"], {"response.parallel", "optional.synthesizer.final"})
 
@@ -791,16 +809,26 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_synthesis(_request, _tenant, responses):
             self.assertEqual([item["source_id"] for item in responses], ["source-1", "source-2"])
-            return {
-                "source_id": "__response_aggregator__",
-                "backend": {"id": "aggregator"},
-                "text": "combined answer",
-                "metadata": {},
-                "latency_ms": 7,
-            }, {"instruction": "test", "prompt_chars": 8}
+            yield {
+                "event": "selected",
+                "synthesis": {"source_id": "__response_aggregator__", "backend": {"id": "aggregator"}},
+            }
+            yield {"event": "token", "delta": "combined "}
+            yield {"event": "token", "delta": "answer"}
+            yield {
+                "event": "done",
+                "synthesis": {
+                    "source_id": "__response_aggregator__",
+                    "backend": {"id": "aggregator"},
+                    "text": "combined answer",
+                    "metadata": {},
+                    "latency_ms": 7,
+                },
+                "metadata": {"instruction": "test", "prompt_chars": 8},
+            }
 
         router.generate_response_source = fake_generate
-        router.generate_response_synthesis = fake_synthesis
+        router.stream_response_synthesis = fake_synthesis
         req = router.EnsembleRequest(
             request_id="response-aggregate-flow",
             runner="response_aggregate",
@@ -838,16 +866,26 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_synthesis(_request, _tenant, responses):
             self.assertEqual(len(responses), 2)
-            return {
-                "source_id": "__response_aggregator__",
-                "backend": {"id": "aggregator"},
-                "text": "combined answer",
-                "metadata": {},
-                "latency_ms": 5,
-            }, {"instruction": "test", "prompt_chars": 8}
+            yield {
+                "event": "selected",
+                "synthesis": {"source_id": "__response_aggregator__", "backend": {"id": "aggregator"}},
+            }
+            yield {"event": "token", "delta": "combined "}
+            yield {"event": "token", "delta": "answer"}
+            yield {
+                "event": "done",
+                "synthesis": {
+                    "source_id": "__response_aggregator__",
+                    "backend": {"id": "aggregator"},
+                    "text": "combined answer",
+                    "metadata": {},
+                    "latency_ms": 5,
+                },
+                "metadata": {"instruction": "test", "prompt_chars": 8},
+            }
 
         router.generate_response_source = fake_generate
-        router.generate_response_synthesis = fake_synthesis
+        router.stream_response_synthesis = fake_synthesis
         base_sources = [
             router.EnsembleSource(source_id="source-1", model_alias="qwen-7b", prompt="Question?"),
             router.EnsembleSource(source_id="source-2", model_alias="llama-8b", prompt="Question?"),
@@ -859,7 +897,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             runner_config={"native_runner": "response.parallel", "show_parallel_flow": True},
             sources=base_sources,
         )
-        visible_content = await collect_openai_content(
+        visible_deltas = await collect_openai_content_deltas(
             router.stream_openai_ensemble_response(
                 visible_req,
                 self.tenant,
@@ -867,13 +905,15 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                 model="modelnet",
             )
         )
+        visible_content = "".join(visible_deltas)
 
         self.assertIn("ModelNet 并联流程", visible_content)
         self.assertIn("并联发起", visible_content)
         self.assertIn("source-1", visible_content)
         self.assertIn("进入合成", visible_content)
-        self.assertIn("合成完成", visible_content)
         self.assertIn("最终回答", visible_content)
+        answer_deltas = [delta for delta in visible_deltas if delta in {"combined ", "answer"}]
+        self.assertEqual(answer_deltas, ["combined ", "answer"])
         self.assertTrue(visible_content.endswith("combined answer"))
 
         hidden_req = visible_req.model_copy(
@@ -882,7 +922,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                 "runner_config": {"native_runner": "response.parallel"},
             }
         )
-        hidden_content = await collect_openai_content(
+        hidden_deltas = await collect_openai_content_deltas(
             router.stream_openai_ensemble_response(
                 hidden_req,
                 self.tenant,
@@ -890,7 +930,8 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                 model="modelnet",
             )
         )
-        self.assertEqual(hidden_content, "combined answer")
+        self.assertEqual(hidden_deltas, ["combined ", "answer"])
+        self.assertEqual("".join(hidden_deltas), "combined answer")
 
     async def test_auto_plan_metadata_has_budget_confidence_and_ranker_result(self) -> None:
         router.scored_candidate_pool = self.stub_scored

@@ -3939,15 +3939,13 @@ def openai_parallel_flow_delta(event: str, data: dict[str, Any]) -> str:
         )
     if stage == "synthesis.started":
         count = data.get("successful_source_count")
-        return f"- 进入合成：{count} 个有效模型回复交给 synthesizer 生成最终回答。\n"
-    if stage == "synthesis.completed":
-        backend = backend_label(data.get("backend"))
-        latency_ms = data.get("latency_ms")
         return (
-            f"- 合成完成：后端 {markdown_code(backend)}，耗时 {latency_ms} ms。\n\n"
+            f"- 进入合成：{count} 个有效模型回复交给 synthesizer，最终回答开始流式输出。\n\n"
             "---\n\n"
             "**最终回答**\n\n"
         )
+    if stage == "synthesis.completed":
+        return ""
     return ""
 
 
@@ -5377,61 +5375,244 @@ async def generate_response_source(tenant: GatewayTenant, source: EnsembleSource
         }
 
 
-async def generate_response_synthesis(
+def build_response_synthesis_source(
     request: EnsembleRequest,
-    tenant: GatewayTenant,
+    candidate: Candidate,
     responses: list[dict[str, Any]],
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    candidate, score, reason = await pick_candidate(tenant=tenant)
-    backend = candidate_backend_info(candidate, score=score, reason=reason)
+    *,
+    retry_final_only: bool = False,
+) -> tuple[EnsembleSource, str, str]:
     instruction = response_aggregate_instruction(request)
     user_prompt = build_response_synthesis_user_prompt(
         instruction=instruction,
         responses=responses,
     )
-    source = EnsembleSource(
+    user_content = user_prompt
+    max_tokens = response_aggregate_max_tokens(request)
+    if retry_final_only:
+        user_content = (
+            f"{user_prompt}\n\nReturn only the final answer now. "
+            "Do not include reasoning, analysis, scratchpad text, or <think> tags. /no_think"
+        )
+        max_tokens = max(max_tokens, 768)
+    return EnsembleSource(
         source_id="__response_aggregator__",
         model_alias=candidate.model_id,
         prompt=user_prompt,
         messages=[
             {"role": "system", "content": RESPONSE_AGGREGATE_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
+            {"role": "user", "content": user_content},
         ],
-        sampling_params={"max_tokens": response_aggregate_max_tokens(request)},
+        sampling_params={"max_tokens": max_tokens},
         weight=1.0,
-    )
+    ), instruction, user_prompt
+
+
+@dataclass
+class ResponseVisibleTextStreamFilter:
+    pending: str = ""
+    in_think_block: bool = False
+    removed_hidden_reasoning: bool = False
+
+    def feed(self, delta: str) -> str:
+        if not delta:
+            return ""
+        self.pending += delta
+        visible: list[str] = []
+        while self.pending:
+            if self.in_think_block:
+                close_match = re.search(r"</think\s*>", self.pending, flags=re.IGNORECASE)
+                if close_match is None:
+                    self.pending = self.pending[-32:]
+                    self.removed_hidden_reasoning = True
+                    break
+                self.pending = self.pending[close_match.end() :]
+                self.in_think_block = False
+                self.removed_hidden_reasoning = True
+                continue
+
+            open_match = re.search(r"<think\b[^>]*>", self.pending, flags=re.IGNORECASE)
+            if open_match is not None:
+                visible.append(self.pending[: open_match.start()])
+                self.pending = self.pending[open_match.end() :]
+                self.in_think_block = True
+                self.removed_hidden_reasoning = True
+                continue
+
+            keep_from = self._pending_think_prefix_start()
+            visible.append(self.pending[:keep_from])
+            self.pending = self.pending[keep_from:]
+            break
+        return "".join(part for part in visible if part)
+
+    def flush(self) -> str:
+        if self.in_think_block:
+            self.pending = ""
+            self.removed_hidden_reasoning = True
+            return ""
+        visible = self.pending
+        self.pending = ""
+        return visible
+
+    def _pending_think_prefix_start(self) -> int:
+        lowered = self.pending.lower()
+        for index in range(max(0, len(lowered) - 16), len(lowered)):
+            suffix = lowered[index:]
+            if "<think".startswith(suffix) or suffix.startswith("<think"):
+                return index
+        return len(self.pending)
+
+
+def split_sse_events(buffer: bytes, chunk: bytes) -> tuple[list[bytes], bytes]:
+    buffer = (buffer + chunk).replace(b"\r\n", b"\n")
+    events: list[bytes] = []
+    while b"\n\n" in buffer:
+        event, buffer = buffer.split(b"\n\n", 1)
+        if event.strip():
+            events.append(event + b"\n\n")
+    return events, buffer
+
+
+def openai_stream_delta_parts(data: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    metadata: dict[str, Any] = {}
+    usage = data.get("usage")
+    if isinstance(usage, dict):
+        metadata["usage"] = usage
+    choices = data.get("choices")
+    if not isinstance(choices, list):
+        return "", "", metadata
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta")
+        if not isinstance(delta, dict):
+            continue
+        content = delta.get("content")
+        if content:
+            content_parts.append(str(content))
+        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+        if reasoning:
+            reasoning_parts.append(str(reasoning))
+    return "".join(content_parts), "".join(reasoning_parts), metadata
+
+
+async def stream_response_synthesis_attempt(
+    candidate: Candidate,
+    source: EnsembleSource,
+) -> AsyncIterator[dict[str, Any]]:
+    assert http_client is not None
+    body = {
+        "messages": message_list(source),
+        "stream": True,
+        **source.sampling_params,
+    }
+    buffer = b""
+    visible_filter = ResponseVisibleTextStreamFilter()
+    text_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    metadata: dict[str, Any] = {}
+
+    async for chunk in backend_stream_chat(
+        candidate,
+        body,
+        http_client=http_client,
+        headers=backend_headers(candidate),
+    ):
+        events, buffer = split_sse_events(buffer, chunk)
+        for event_chunk in events:
+            _event, data = parse_sse_chunk(event_chunk)
+            if data.get("raw") == "[DONE]":
+                continue
+            content_delta, reasoning_delta, chunk_metadata = openai_stream_delta_parts(data)
+            metadata.update(chunk_metadata)
+            if reasoning_delta:
+                reasoning_parts.append(reasoning_delta)
+            visible_delta = visible_filter.feed(content_delta)
+            if visible_delta:
+                text_parts.append(visible_delta)
+                yield {"event": "token", "delta": visible_delta}
+
+    if buffer.strip():
+        _event, data = parse_sse_chunk(buffer + b"\n\n")
+        if data.get("raw") != "[DONE]":
+            content_delta, reasoning_delta, chunk_metadata = openai_stream_delta_parts(data)
+            metadata.update(chunk_metadata)
+            if reasoning_delta:
+                reasoning_parts.append(reasoning_delta)
+            visible_delta = visible_filter.feed(content_delta)
+            if visible_delta:
+                text_parts.append(visible_delta)
+                yield {"event": "token", "delta": visible_delta}
+
+    tail = visible_filter.flush()
+    if tail:
+        text_parts.append(tail)
+        yield {"event": "token", "delta": tail}
+    if reasoning_parts:
+        metadata["reasoning_content"] = "".join(reasoning_parts)
+    yield {
+        "event": "result",
+        "text": "".join(text_parts).strip(),
+        "metadata": metadata,
+        "removed_hidden_reasoning": visible_filter.removed_hidden_reasoning,
+    }
+
+
+async def stream_response_synthesis(
+    request: EnsembleRequest,
+    tenant: GatewayTenant,
+    responses: list[dict[str, Any]],
+) -> AsyncIterator[dict[str, Any]]:
+    candidate: Candidate | None = None
+    released = False
+    started = time.perf_counter()
     try:
-        started = time.perf_counter()
-        result = await generate_text(candidate, source)
-        text = str(result.get("text") or "")
-        metadata = dict(result.get("metadata") or {})
-        text, removed_hidden_reasoning = strip_response_hidden_reasoning(text)
+        candidate, score, reason = await pick_candidate(tenant=tenant)
+        backend = candidate_backend_info(candidate, score=score, reason=reason)
+        source, instruction, user_prompt = build_response_synthesis_source(request, candidate, responses)
+        yield {
+            "event": "selected",
+            "synthesis": {
+                "source_id": source.source_id,
+                "backend": backend,
+                "metadata": {},
+            },
+        }
+
+        attempt_result: dict[str, Any] = {}
+        async for item in stream_response_synthesis_attempt(candidate, source):
+            if item.get("event") == "token":
+                yield item
+            elif item.get("event") == "result":
+                attempt_result = item
+
+        text = str(attempt_result.get("text") or "")
+        metadata = dict(attempt_result.get("metadata") or {})
+        text, removed_after_stream = strip_response_hidden_reasoning(text)
+        removed_hidden_reasoning = bool(attempt_result.get("removed_hidden_reasoning")) or removed_after_stream
         hidden_reasoning = str(metadata.get("reasoning_content") or "")
+
         if not text and (removed_hidden_reasoning or hidden_reasoning):
-            retry_source = EnsembleSource(
-                source_id=source.source_id,
-                model_alias=source.model_alias,
-                prompt=user_prompt,
-                messages=[
-                    {"role": "system", "content": RESPONSE_AGGREGATE_SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"{user_prompt}\n\nReturn only the final answer now. "
-                            "Do not include reasoning, analysis, scratchpad text, or <think> tags. /no_think"
-                        ),
-                    },
-                ],
-                sampling_params={
-                    **source.sampling_params,
-                    "max_tokens": max(response_aggregate_max_tokens(request), 768),
-                },
-                weight=source.weight,
+            retry_source, _retry_instruction, _retry_user_prompt = build_response_synthesis_source(
+                request,
+                candidate,
+                responses,
+                retry_final_only=True,
             )
-            retry_result = await generate_text(candidate, retry_source)
+            retry_result: dict[str, Any] = {}
+            async for item in stream_response_synthesis_attempt(candidate, retry_source):
+                if item.get("event") == "token":
+                    yield item
+                elif item.get("event") == "result":
+                    retry_result = item
             retry_text = str(retry_result.get("text") or "")
             retry_metadata = dict(retry_result.get("metadata") or {})
-            retry_text, retry_removed_hidden_reasoning = strip_response_hidden_reasoning(retry_text)
+            retry_text, retry_removed_after_stream = strip_response_hidden_reasoning(retry_text)
+            retry_removed_hidden_reasoning = (
+                bool(retry_result.get("removed_hidden_reasoning")) or retry_removed_after_stream
+            )
             if retry_text:
                 text = retry_text
                 metadata = retry_metadata
@@ -5448,9 +5629,11 @@ async def generate_response_synthesis(
                 }
         elif removed_hidden_reasoning:
             metadata["response_synthesis_hidden_reasoning_removed"] = True
+
         await release_candidate(candidate)
+        released = True
         latency_ms = int((time.perf_counter() - started) * 1000)
-        return {
+        synthesis = {
             "source_id": source.source_id,
             "backend": backend,
             "text": text,
@@ -5468,14 +5651,35 @@ async def generate_response_synthesis(
                     latency_ms=latency_ms,
                 )
             ],
-        }, {
-            "instruction": instruction,
-            "prompt_chars": len(user_prompt),
+        }
+        yield {
+            "event": "done",
+            "synthesis": synthesis,
+            "metadata": {
+                "instruction": instruction,
+                "prompt_chars": len(user_prompt),
+            },
         }
     except Exception as exc:  # noqa: BLE001
-        await release_candidate(candidate, str(exc))
+        if candidate is not None and not released:
+            await release_candidate(candidate, str(exc))
         raise
 
+
+async def generate_response_synthesis(
+    request: EnsembleRequest,
+    tenant: GatewayTenant,
+    responses: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    synthesis: dict[str, Any] | None = None
+    synthesis_metadata: dict[str, Any] = {}
+    async for item in stream_response_synthesis(request, tenant, responses):
+        if item.get("event") == "done":
+            synthesis = dict(item.get("synthesis") or {})
+            synthesis_metadata = dict(item.get("metadata") or {})
+    if synthesis is None:
+        raise RuntimeError("response synthesis did not complete")
+    return synthesis, synthesis_metadata
 
 async def run_token_step_ensemble(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
     if len(request.sources) > ENSEMBLE_MAX_SOURCES:
@@ -5817,16 +6021,35 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
                     "failed_source_count": len(failed),
                 },
             )
-        synthesis, synthesis_metadata = await generate_response_synthesis(request, tenant, successful)
+        synthesis: dict[str, Any] | None = None
+        synthesis_metadata: dict[str, Any] = {}
+        text = ""
+        async for synthesis_event in stream_response_synthesis(request, tenant, successful):
+            event = synthesis_event.get("event")
+            if event == "selected":
+                selected = dict(synthesis_event.get("synthesis") or {})
+                yield sse(
+                    "source_selected",
+                    {
+                        "source_id": selected.get("source_id"),
+                        "backend": selected.get("backend"),
+                        "role": "aggregator",
+                    },
+                )
+            elif event == "token":
+                delta = str(synthesis_event.get("delta") or "")
+                if delta:
+                    text += delta
+                    yield sse("token", {"delta": delta, "text": text})
+            elif event == "done":
+                synthesis = dict(synthesis_event.get("synthesis") or {})
+                synthesis_metadata = dict(synthesis_event.get("metadata") or {})
+
+        if synthesis is None:
+            yield sse("error", {"error": "response synthesis did not complete"})
+            return
+
         call_ledger.extend(call_ledger_from_result(synthesis, "optional.synthesizer.final"))
-        yield sse(
-            "source_selected",
-            {
-                "source_id": synthesis["source_id"],
-                "backend": synthesis["backend"],
-                "role": "aggregator",
-            },
-        )
         if emit_flow:
             yield sse(
                 "trace_step",
@@ -5838,8 +6061,7 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
                     "text_chars": len(str(synthesis.get("text") or "")),
                 },
             )
-        text = synthesis["text"]
-        yield sse("token", {"delta": text, "text": text})
+        text = str(synthesis.get("text") or text)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         yield sse(
             "done",
