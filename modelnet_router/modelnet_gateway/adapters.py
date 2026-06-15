@@ -37,7 +37,11 @@ def openai_chat_to_ir(body: dict[str, Any]) -> ModelNetRunRequest:
         required_capabilities.append("structured_output")
 
     collaboration_plan = dict(modelnet_options.get("collaboration_plan") or {})
-    collaboration_plan.setdefault("runner", "route.once")
+    if str(body.get("model") or "") == "modelnet-auto":
+        collaboration_plan["runner"] = "auto.network"
+        collaboration_plan.setdefault("aggregator", "auto")
+    else:
+        collaboration_plan.setdefault("runner", "route.once")
     if "candidate_aliases" in modelnet_options:
         collaboration_plan["candidate_aliases"] = modelnet_options["candidate_aliases"]
 
@@ -79,6 +83,8 @@ def ir_to_ensemble_request(ir: ModelNetRunRequest) -> EnsembleRequest:
     runner_config.setdefault("native_runner", runner)
     if "graph" in plan:
         runner_config["graph"] = plan["graph"]
+    if ir.required_capabilities:
+        runner_config.setdefault("required_capabilities", list(ir.required_capabilities))
     if ir.policy:
         runner_config.setdefault("policy", ir.policy)
 
@@ -111,7 +117,7 @@ def build_sources(ir: ModelNetRunRequest, plan: dict[str, Any]) -> list[Ensemble
             for index, alias in enumerate(aliases)
         ]
 
-    model_alias = ir.model if ir.model and ir.model != "modelnet" else None
+    model_alias = ir.model if ir.model and ir.model not in {"modelnet", "modelnet-auto"} else None
     return [default_source(ir, source_id="source-1", model_alias=model_alias)]
 
 
@@ -164,6 +170,8 @@ def prompt_from_messages(messages: list[dict[str, Any]]) -> str:
 
 
 def default_aggregator_for(runner: str) -> str:
+    if runner == "auto.network":
+        return "auto"
     if runner.startswith("token."):
         return "sum_score"
     if runner.startswith("response."):

@@ -27,6 +27,12 @@ class AggregatorPlugin:
 
 
 RUNNER_ALIASES = {
+    "auto": "auto.network",
+    "auto_network": "auto.network",
+    "auto.network": "auto.network",
+    "claim_graph": "auto.claim_graph",
+    "auto_claim_graph": "auto.claim_graph",
+    "auto.claim_graph": "auto.claim_graph",
     "route": "route.once",
     "route_once": "route.once",
     "route.once": "route.once",
@@ -46,6 +52,20 @@ RUNNER_ALIASES = {
 }
 
 RUNNER_PLUGINS = {
+    "auto.network": RunnerPlugin(
+        name="auto.network",
+        legacy_name="auto",
+        scope="graph",
+        description="Plan a query-conditioned model network, then execute it through an implemented runner.",
+        supported_aggregators=("auto",),
+    ),
+    "auto.claim_graph": RunnerPlugin(
+        name="auto.claim_graph",
+        legacy_name="claim_graph",
+        scope="graph",
+        description="Run explicit claim-level draft, extraction, verification, and conservative assembly.",
+        supported_aggregators=("auto",),
+    ),
     "route.once": RunnerPlugin(
         name="route.once",
         legacy_name="route",
@@ -99,6 +119,11 @@ RUNNER_PLUGINS = {
 }
 
 AGGREGATOR_PLUGINS = {
+    "auto": AggregatorPlugin(
+        name="auto",
+        scope="graph",
+        description="Planner-selected aggregator for query-conditioned automatic networking.",
+    ),
     "sum_score": AggregatorPlugin(
         name="sum_score",
         scope="token",

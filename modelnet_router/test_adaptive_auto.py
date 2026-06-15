@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -138,6 +140,10 @@ async def collect_events(stream) -> list[tuple[str, dict[str, Any]]]:
     return events
 
 
+def done_payload(events: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
+    return [data for event, data in events if event == "done"][0]
+
+
 class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.tenant = FakeTenant()
@@ -146,20 +152,295 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             (candidate("llama-8b"), 120.0, "ready"),
             (candidate("granite-3b"), 240.0, "ready"),
         ]
+        self.original_pick_source_candidate = router.pick_source_candidate
         self.original_scored_candidate_pool = router.scored_candidate_pool
+        self.original_generate_text = router.generate_text
         self.original_generate_response_source = router.generate_response_source
         self.original_generate_response_synthesis = router.generate_response_synthesis
         self.original_trace_path = router.AUTO_ROUTER_TRACE_PATH
+        self.original_claim_enabled = router.CLAIM_MEMORY_ENABLED
+        self.original_claim_db_path = router.CLAIM_MEMORY_DB_PATH
+        self.original_claim_timeout_ms = router.CLAIM_MEMORY_TIMEOUT_MS
+        self.original_claim_inject_limit = router.CLAIM_MEMORY_INJECT_LIMIT
         router.AUTO_ROUTER_TRACE_PATH = Path("/tmp/modelnet-router-test-trace.jsonl")
 
     def tearDown(self) -> None:
+        router.pick_source_candidate = self.original_pick_source_candidate
         router.scored_candidate_pool = self.original_scored_candidate_pool
+        router.generate_text = self.original_generate_text
         router.generate_response_source = self.original_generate_response_source
         router.generate_response_synthesis = self.original_generate_response_synthesis
         router.AUTO_ROUTER_TRACE_PATH = self.original_trace_path
+        router.CLAIM_MEMORY_ENABLED = self.original_claim_enabled
+        router.CLAIM_MEMORY_DB_PATH = self.original_claim_db_path
+        router.CLAIM_MEMORY_TIMEOUT_MS = self.original_claim_timeout_ms
+        router.CLAIM_MEMORY_INJECT_LIMIT = self.original_claim_inject_limit
+
+    def assert_call_ledger(self, metadata: dict[str, Any], stages: set[str]) -> None:
+        ledger = metadata.get("call_ledger")
+        self.assertIsInstance(ledger, list)
+        self.assertGreaterEqual(len(ledger), len(stages))
+        self.assertEqual(metadata.get("internal_call_count"), len(ledger))
+        self.assertGreaterEqual(metadata.get("internal_total_tokens"), 0)
+        self.assertIn("internal_usage", metadata)
+        self.assertIn("stage_latencies_ms", metadata)
+        self.assertIn("call_ledger_summary", metadata)
+        self.assertTrue(stages.issubset({str(item.get("stage")) for item in ledger}))
 
     async def stub_scored(self, *args, **kwargs):
         return list(self.scored)
+
+    def test_missing_usage_is_estimated_in_call_ledger(self) -> None:
+        entry = router.build_call_ledger_entry(
+            stage="candidate.answer",
+            source_id="candidate-1",
+            backend={"id": "qwen-7b"},
+            metadata={},
+            prompt_text="Question?",
+            completion_text="Answer.",
+            status="ok",
+            latency_ms=12,
+        )
+
+        self.assertEqual(entry["usage_source"], "estimated")
+        self.assertGreater(entry["prompt_tokens"], 0)
+        self.assertGreater(entry["completion_tokens"], 0)
+        self.assertEqual(entry["total_tokens"], entry["prompt_tokens"] + entry["completion_tokens"])
+
+    def test_injected_error_fixture_covers_required_categories(self) -> None:
+        fixture = Path(__file__).resolve().parents[1] / "benchmarks" / "fixtures" / "modelnet_claim_injected_errors.jsonl"
+        rows = [
+            json.loads(line)
+            for line in fixture.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        categories = {row["category"] for row in rows}
+
+        self.assertTrue(
+            {
+                "numeric_error",
+                "entity_replacement",
+                "conclusion_reversal",
+                "historical_context_error",
+                "local_deployment_config_error",
+            }.issubset(categories)
+        )
+        for row in rows:
+            for key in ("id", "prompt", "clean_answer", "injected_answer", "injected_claim", "risk", "expected_detection"):
+                self.assertTrue(row.get(key), f"missing {key} in {row.get('id')}")
+
+    async def test_claim_memory_injects_verified_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "claims.sqlite3"
+            router.ClaimMemoryStore(db_path).upsert_claim(
+                scope="tenant:test",
+                text="The ModelNet router is exposed on 127.0.0.1:3092.",
+                status="verified",
+                evidence_level="source_grounded",
+                entities=["ModelNet router"],
+            )
+            router.CLAIM_MEMORY_ENABLED = True
+            router.CLAIM_MEMORY_DB_PATH = db_path
+            router.scored_candidate_pool = self.stub_scored
+
+            planned, plan = await router.plan_auto_ensemble(
+                request_for("What endpoint should I call for the ModelNet router?"),
+                self.tenant,
+            )
+
+        self.assertTrue(plan["claim_memory"]["enabled"])
+        self.assertTrue(plan["claim_memory"]["available"])
+        self.assertEqual(plan["claim_memory"]["injected_count"], 1)
+        self.assertEqual(plan["injected_claims"][0]["evidence_level"], "source_grounded")
+        first_message = planned.sources[0].messages[0]
+        self.assertEqual(first_message["role"], "system")
+        self.assertIn("Verified project facts", first_message["content"])
+        self.assertIn("127.0.0.1:3092", first_message["content"])
+
+    async def test_claim_memory_contested_claim_is_signal_not_injected_fact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "claims.sqlite3"
+            router.ClaimMemoryStore(db_path).upsert_claim(
+                scope="tenant:test",
+                text="The ModelNet router is exposed on /var/log/modelnet/router_trace.jsonl.",
+                status="contested",
+                evidence_level="source_grounded",
+                entities=["ModelNet router"],
+            )
+            router.CLAIM_MEMORY_ENABLED = True
+            router.CLAIM_MEMORY_DB_PATH = db_path
+            router.scored_candidate_pool = self.stub_scored
+
+            planned, plan = await router.plan_auto_ensemble(
+                request_for("Where is the ModelNet router exposed?"),
+                self.tenant,
+            )
+
+        self.assertEqual(plan["claim_memory"]["injected_count"], 0)
+        self.assertEqual(plan["claim_memory"]["contested_count"], 1)
+        self.assertEqual(plan["injected_claims"], [])
+        self.assertEqual(len(plan["contested_claims"]), 1)
+        rendered_messages = json.dumps(planned.sources[0].messages, ensure_ascii=False)
+        self.assertNotIn("/var/log/modelnet/router_trace.jsonl", rendered_messages)
+
+    async def test_claim_memory_unavailable_fails_open(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            router.CLAIM_MEMORY_ENABLED = True
+            router.CLAIM_MEMORY_DB_PATH = Path(tmpdir)
+            router.CLAIM_MEMORY_TIMEOUT_MS = 50
+            router.scored_candidate_pool = self.stub_scored
+
+            planned, plan = await router.plan_auto_ensemble(
+                request_for("Say hello."),
+                self.tenant,
+            )
+
+        self.assertEqual(planned.runner, "route")
+        self.assertTrue(plan["claim_memory"]["enabled"])
+        self.assertFalse(plan["claim_memory"]["available"])
+        self.assertEqual(plan["injected_claims"], [])
+
+    def test_claim_graph_runner_is_registered(self) -> None:
+        self.assertEqual(router.canonical_runner("claim_graph"), "auto.claim_graph")
+        self.assertIn("auto.claim_graph", router.RUNNER_PLUGINS)
+        self.assertEqual(router.RUNNER_PLUGINS["auto.claim_graph"].legacy_name, "claim_graph")
+
+    async def test_claim_graph_strategy_selects_claim_graph_runner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            router.CLAIM_MEMORY_DB_PATH = Path(tmpdir) / "claims.sqlite3"
+            router.CLAIM_MEMORY_ENABLED = False
+            router.scored_candidate_pool = self.stub_scored
+
+            planned, plan = await router.plan_auto_ensemble(
+                request_for(
+                    "According to the deployment notes, explain the ModelNet router endpoint and risk.",
+                    {"strategy": "claim_graph"},
+                ),
+                self.tenant,
+            )
+
+        self.assertEqual(planned.runner, "claim_graph")
+        self.assertEqual(planned.aggregator, "auto")
+        self.assertEqual(plan["runner"], "auto.claim_graph")
+        self.assertEqual(plan["plan_version"], "claim_graph_v1")
+        self.assertTrue(plan["claim_memory"]["enabled"])
+        self.assertIn("claim_graph", planned.runner_config)
+
+    async def test_claim_graph_runner_extracts_verifies_and_records_metadata(self) -> None:
+        async def fake_generate(_tenant, source):
+            if source.source_id == "proposer":
+                return {
+                    "source_id": source.source_id,
+                    "backend": {"id": "qwen-7b"},
+                    "text": "The ModelNet router listens on 127.0.0.1:3092.",
+                    "metadata": {"usage": {"prompt_tokens": 5, "completion_tokens": 8, "total_tokens": 13}},
+                    "weight": source.weight,
+                    "error": None,
+                }
+            if source.source_id == "claim-extractor":
+                return {
+                    "source_id": source.source_id,
+                    "backend": {"id": "llama-8b"},
+                    "text": json.dumps(
+                        {
+                            "claims": [
+                                {
+                                    "text": "The ModelNet router listens on 127.0.0.1:3092.",
+                                    "question": "Does the ModelNet router listen on 127.0.0.1:3092?",
+                                    "risk": "high",
+                                }
+                            ]
+                        }
+                    ),
+                    "metadata": {},
+                    "weight": source.weight,
+                    "error": None,
+                }
+            return {
+                "source_id": source.source_id,
+                "backend": {"id": "granite-3b"},
+                "text": '{"verdict":"supported","confidence":0.9,"reason":"matches the deployment note"}',
+                "metadata": {},
+                "weight": source.weight,
+                "error": None,
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            router.CLAIM_MEMORY_DB_PATH = Path(tmpdir) / "claims.sqlite3"
+            router.generate_response_source = fake_generate
+            req = router.EnsembleRequest(
+                request_id="claim-graph-ok",
+                runner="claim_graph",
+                aggregator="auto",
+                runner_config={
+                    "original_prompt": "Where does the ModelNet router listen?",
+                    "claim_graph": {"frontier_k": 1, "verify_max_tokens": 32, "extract_max_tokens": 64},
+                    "auto_plan": {
+                        "claim_memory": {"scopes": ["tenant:test"]},
+                        "injected_claims": [],
+                        "contested_claims": [],
+                    },
+                },
+                sources=[
+                    router.EnsembleSource(source_id="proposer", model_alias="qwen-7b", prompt="Question?"),
+                    router.EnsembleSource(source_id="verifier", model_alias="llama-8b", prompt="Question?"),
+                ],
+            )
+
+            events = await collect_events(router.run_claim_graph_ensemble(req, self.tenant))
+
+        done = done_payload(events)
+        metadata = done["metadata"]
+        self.assertEqual(metadata["shortcut"], "none")
+        self.assertEqual(len(metadata["claim_frontier"]), 1)
+        self.assertEqual(metadata["votes"][0]["verdict"], "supported")
+        self.assertEqual(metadata["claim_writeback"]["status"], "ok")
+        self.assert_call_ledger(metadata, {"claim.proposer", "claim.extract", "claim.verify"})
+
+    async def test_claim_graph_extraction_failure_returns_draft(self) -> None:
+        async def fake_generate(_tenant, source):
+            if source.source_id == "claim-extractor":
+                return {
+                    "source_id": source.source_id,
+                    "backend": {"id": "llama-8b"},
+                    "text": "not json",
+                    "metadata": {},
+                    "weight": source.weight,
+                    "error": None,
+                }
+            return {
+                "source_id": source.source_id,
+                "backend": {"id": "qwen-7b"},
+                "text": "draft answer",
+                "metadata": {},
+                "weight": source.weight,
+                "error": None,
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            router.CLAIM_MEMORY_DB_PATH = Path(tmpdir) / "claims.sqlite3"
+            router.generate_response_source = fake_generate
+            req = router.EnsembleRequest(
+                request_id="claim-graph-extraction-fail",
+                runner="claim_graph",
+                aggregator="auto",
+                runner_config={
+                    "original_prompt": "Question?",
+                    "claim_graph": {"frontier_k": 1},
+                    "auto_plan": {"claim_memory": {"scopes": ["tenant:test"]}, "injected_claims": [], "contested_claims": []},
+                },
+                sources=[
+                    router.EnsembleSource(source_id="proposer", model_alias="qwen-7b", prompt="Question?"),
+                    router.EnsembleSource(source_id="verifier", model_alias="llama-8b", prompt="Question?"),
+                ],
+            )
+
+            events = await collect_events(router.run_claim_graph_ensemble(req, self.tenant))
+
+        done = done_payload(events)
+        self.assertEqual(done["text"], "draft answer")
+        self.assertEqual(done["metadata"]["shortcut"], "extraction_failed")
+        self.assert_call_ledger(done["metadata"], {"claim.proposer", "claim.extract"})
 
     async def test_low_complexity_selects_route_once(self) -> None:
         router.scored_candidate_pool = self.stub_scored
@@ -169,6 +450,31 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan["runner"], "route.once")
         self.assertEqual(plan["strategy"], "adaptive_sparse_graph")
         self.assertEqual(plan["call_budget"]["max_sources"], 2)
+
+    async def test_route_once_outputs_call_ledger(self) -> None:
+        async def fake_pick(_tenant, _source, required_capabilities=None):
+            return candidate("qwen-7b"), 10.0, "ready"
+
+        async def fake_generate_text(_candidate, _source, *, prompt_override=None):
+            return {
+                "text": "route answer",
+                "metadata": {"usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}},
+            }
+
+        router.pick_source_candidate = fake_pick
+        router.generate_text = fake_generate_text
+        req = router.EnsembleRequest(
+            request_id="route-ledger",
+            runner="route",
+            aggregator="load_aware",
+            sources=[router.EnsembleSource(source_id="source-1", prompt="Question?")],
+        )
+        events = await collect_events(router.run_route_ensemble(req, self.tenant))
+        done = done_payload(events)
+
+        self.assertEqual(done["text"], "route answer")
+        self.assert_call_ledger(done["metadata"], {"route.once"})
+        self.assertEqual(done["metadata"]["internal_total_tokens"], 7)
 
     async def test_complex_default_selects_rank_fuse(self) -> None:
         router.scored_candidate_pool = self.stub_scored
@@ -229,11 +535,12 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         events = await collect_events(router.run_cascade_verify_ensemble(req, self.tenant))
-        done = [data for event, data in events if event == "done"][0]
+        done = done_payload(events)
 
         self.assertEqual(done["text"], "primary answer")
         self.assertEqual(done["metadata"]["source_count"], 1)
         self.assertEqual(done["metadata"]["escalation_reason"], "verifier_passed")
+        self.assert_call_ledger(done["metadata"], {"primary.answer", "verifier.check"})
 
     async def test_verifier_failure_escalates_with_budget(self) -> None:
         async def fake_generate(_tenant, source):
@@ -264,11 +571,12 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         events = await collect_events(router.run_cascade_verify_ensemble(req, self.tenant))
-        done = [data for event, data in events if event == "done"][0]
+        done = done_payload(events)
 
         self.assertEqual(done["text"], "escalated answer")
         self.assertEqual(done["metadata"]["source_count"], 2)
         self.assertEqual(done["metadata"]["escalation_reason"], "verifier_failed_escalated")
+        self.assert_call_ledger(done["metadata"], {"primary.answer", "verifier.check", "optional.escalation"})
 
     async def test_rank_fuse_high_confidence_selects_candidate(self) -> None:
         async def fake_generate(_tenant, source):
@@ -298,11 +606,12 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         events = await collect_events(router.run_rank_fuse_ensemble(req, self.tenant))
-        done = [data for event, data in events if event == "done"][0]
+        done = done_payload(events)
 
         self.assertEqual(done["text"], "better answer")
         self.assertEqual(done["metadata"]["selected_source_id"], "candidate-2")
         self.assertEqual(done["metadata"]["escalation_reason"], "ranker_selected")
+        self.assert_call_ledger(done["metadata"], {"candidate.answer", "ranker.select"})
 
     async def test_rank_fuse_low_confidence_synthesizes(self) -> None:
         async def fake_generate(_tenant, source):
@@ -342,11 +651,49 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         events = await collect_events(router.run_rank_fuse_ensemble(req, self.tenant))
-        done = [data for event, data in events if event == "done"][0]
+        done = done_payload(events)
 
         self.assertEqual(done["text"], "fused answer")
         self.assertEqual(done["metadata"]["escalation_reason"], "ranker_fused")
         self.assertIn("response_aggregator", done["metadata"])
+        self.assert_call_ledger(done["metadata"], {"candidate.answer", "ranker.select", "optional.synthesizer.final"})
+
+    async def test_response_aggregate_outputs_call_ledger(self) -> None:
+        async def fake_generate(_tenant, source):
+            return {
+                "source_id": source.source_id,
+                "backend": {"id": source.model_alias or source.source_id},
+                "text": f"answer from {source.source_id}",
+                "metadata": {},
+                "weight": source.weight,
+                "error": None,
+            }
+
+        async def fake_synthesis(_request, _tenant, responses):
+            self.assertEqual(len(responses), 2)
+            return {
+                "source_id": "__response_aggregator__",
+                "backend": {"id": "aggregator"},
+                "text": "combined answer",
+                "metadata": {},
+            }, {"instruction": "test", "prompt_chars": 8}
+
+        router.generate_response_source = fake_generate
+        router.generate_response_synthesis = fake_synthesis
+        req = router.EnsembleRequest(
+            request_id="response-aggregate-ledger",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            sources=[
+                router.EnsembleSource(source_id="source-1", model_alias="qwen-7b", prompt="Question?"),
+                router.EnsembleSource(source_id="source-2", model_alias="llama-8b", prompt="Question?"),
+            ],
+        )
+        events = await collect_events(router.run_response_aggregate_ensemble(req, self.tenant))
+        done = done_payload(events)
+
+        self.assertEqual(done["text"], "combined answer")
+        self.assert_call_ledger(done["metadata"], {"response.parallel", "optional.synthesizer.final"})
 
     async def test_auto_plan_metadata_has_budget_confidence_and_ranker_result(self) -> None:
         router.scored_candidate_pool = self.stub_scored
@@ -377,7 +724,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                 self.tenant,
             )
         )
-        done = [data for event, data in events if event == "done"][0]
+        done = done_payload(events)
         auto_plan = done["metadata"]["auto_plan"]
 
         self.assertEqual(auto_plan["strategy"], "adaptive_sparse_graph")
@@ -389,6 +736,8 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(auto_plan["escalation_reason"], "ranker_selected")
         self.assertIn("ranker_decision", auto_plan)
         self.assertIn("compressed_contributions", auto_plan)
+        self.assertIn("call_ledger_summary", auto_plan)
+        self.assertIn("internal_total_tokens", auto_plan)
 
 
 if __name__ == "__main__":

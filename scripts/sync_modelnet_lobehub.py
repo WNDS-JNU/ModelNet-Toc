@@ -15,6 +15,7 @@ DEFAULT_ENV = REPO_ROOT / ".env"
 DEFAULT_OUTPUT = REPO_ROOT / ".env.modelnet"
 CHAT_BACKENDS = {"vllm_chat", "llama_cpp"}
 AGGREGATE_MODEL_NAME = "modelnet"
+AUTO_MODEL_NAME = "modelnet-auto"
 
 
 def parse_scalar(value: str) -> Any:
@@ -73,19 +74,23 @@ def read_env_value(path: Path, key: str) -> str | None:
     return None
 
 
-def is_embedding_model(model: dict[str, Any]) -> bool:
+def is_non_chat_model(model: dict[str, Any]) -> bool:
     haystack = " ".join(
         str(model.get(key, "")) for key in ("id", "model_name", "model_url", "type")
     ).lower()
-    return "embedding" in haystack or "embed" in haystack
+    non_chat_terms = ("embedding", "embed", "reranker", "rerank", "cross-encoder", "cross_encoder")
+    return any(term in haystack for term in non_chat_terms)
 
 
 def build_model_list(models: list[dict[str, Any]]) -> list[str]:
-    entries = [f"+{AGGREGATE_MODEL_NAME}=ModelNet/ModelNet"]
+    entries = [
+        f"+{AGGREGATE_MODEL_NAME}=ModelNet/ModelNet",
+        f"+{AUTO_MODEL_NAME}=ModelNet/Auto Network",
+    ]
     for model in models:
         if str(model.get("backend", "")) not in CHAT_BACKENDS:
             continue
-        if is_embedding_model(model):
+        if is_non_chat_model(model):
             continue
         model_id = str(model.get("id", "")).strip()
         if not model_id:
@@ -124,7 +129,7 @@ def main() -> int:
         ]
     )
     args.output.write_text(content, encoding="utf-8")
-    print(f"Wrote {args.output} with aggregate model plus {len(entries) - 1} backend models")
+    print(f"Wrote {args.output} with aggregate/auto models plus {len(entries) - 2} backend models")
     for entry in entries[:6]:
         print("- " + entry.split("=", 1)[0][1:])
     if len(entries) > 6:

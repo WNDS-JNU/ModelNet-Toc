@@ -182,9 +182,17 @@ async def generate_text(
         payload = response.json()
         choice = ((payload.get("choices") or [{}])[0] if isinstance(payload, dict) else {})
         message = choice.get("message") if isinstance(choice, dict) else {}
+        metadata = {"usage": payload.get("usage")} if isinstance(payload, dict) else {}
+        if isinstance(message, dict):
+            reasoning = message.get("reasoning_content") or message.get("reasoning")
+            if reasoning:
+                metadata["reasoning_content"] = str(reasoning)
+            content = message.get("content", "")
+        else:
+            content = ""
         return {
-            "text": message.get("content", "") if isinstance(message, dict) else "",
-            "metadata": {"usage": payload.get("usage")} if isinstance(payload, dict) else {},
+            "text": str(content or ""),
+            "metadata": metadata,
         }
 
     body = {

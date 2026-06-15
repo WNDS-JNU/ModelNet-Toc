@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = REPO_ROOT / "litellm/modelnet-config.yaml"
 CHAT_BACKENDS = {"vllm_chat", "llama_cpp"}
 AGGREGATE_MODEL_NAME = "modelnet"
+AUTO_MODEL_NAME = "modelnet-auto"
 AGGREGATE_API_BASE = "http://modelnet-router:8000/v1"
 
 
@@ -70,11 +71,12 @@ def load_registry(path: Path) -> list[dict[str, Any]]:
     return models
 
 
-def is_embedding_model(model: dict[str, Any]) -> bool:
+def is_non_chat_model(model: dict[str, Any]) -> bool:
     haystack = " ".join(
         str(model.get(key, "")) for key in ("id", "model_name", "model_url", "type")
     ).lower()
-    return "embedding" in haystack or "embed" in haystack
+    non_chat_terms = ("embedding", "embed", "reranker", "rerank", "cross-encoder", "cross_encoder")
+    return any(term in haystack for term in non_chat_terms)
 
 
 def normalize_api_base(model_url: str) -> str:
@@ -92,7 +94,7 @@ def build_config(models: list[dict[str, Any]]) -> tuple[str, list[str]]:
         backend = str(model.get("backend", ""))
         if backend not in CHAT_BACKENDS:
             continue
-        if is_embedding_model(model):
+        if is_non_chat_model(model):
             continue
         model_id = str(model.get("id", "")).strip()
         backend_model = str(model.get("model_name", "")).strip()
@@ -116,6 +118,11 @@ def build_config(models: list[dict[str, Any]]) -> tuple[str, list[str]]:
         f"      model: {yaml_quote('openai/' + AGGREGATE_MODEL_NAME)}",
         f"      api_base: {yaml_quote(AGGREGATE_API_BASE)}",
         "      api_key: 'os.environ/MODELNET_BACKEND_API_KEY'",
+        f"  - model_name: {yaml_quote(AUTO_MODEL_NAME)}",
+        "    litellm_params:",
+        f"      model: {yaml_quote('openai/' + AUTO_MODEL_NAME)}",
+        f"      api_base: {yaml_quote(AGGREGATE_API_BASE)}",
+        "      api_key: 'os.environ/MODELNET_BACKEND_API_KEY'",
     ]
     for model in chat_models:
         lines.extend(
@@ -137,7 +144,11 @@ def build_config(models: list[dict[str, Any]]) -> tuple[str, list[str]]:
             "",
         ]
     )
-    return "\n".join(lines), [AGGREGATE_MODEL_NAME, *[str(model["model_name"]) for model in chat_models]]
+    return "\n".join(lines), [
+        AGGREGATE_MODEL_NAME,
+        AUTO_MODEL_NAME,
+        *[str(model["model_name"]) for model in chat_models],
+    ]
 
 
 def main() -> int:
@@ -153,7 +164,7 @@ def main() -> int:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(config, encoding="utf-8")
-    print(f"Wrote {args.output} with aggregate model plus {len(model_names) - 1} backend models")
+    print(f"Wrote {args.output} with aggregate/auto models plus {len(model_names) - 2} backend models")
     for name in model_names[:6]:
         print(f"- {name}")
     if len(model_names) > 6:
