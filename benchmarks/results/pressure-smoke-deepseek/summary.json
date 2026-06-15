@@ -1,0 +1,149 @@
+{
+  "schema_version": "modelnet.pressure.summary.v1",
+  "generated_at": "2026-06-09T17:17:16+08:00",
+  "dataset": {
+    "name": "MT-Bench sampled pressure set",
+    "source_url": "https://raw.githubusercontent.com/lm-sys/FastChat/main/fastchat/llm_judge/data/mt_bench/question.jsonl",
+    "question_ids": [
+      81,
+      111
+    ]
+  },
+  "systems": [
+    "modelnet_auto",
+    "single_best",
+    "fixed_qwen35b",
+    "parallel_consensus"
+  ],
+  "concurrency_levels": [
+    2
+  ],
+  "judge": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "api_base": "https://api.deepseek.com"
+  },
+  "answer_status": {
+    "total": 8,
+    "ok": 8,
+    "failed": 0
+  },
+  "judgment_status": {
+    "total": 6,
+    "ok": 6,
+    "failed": 0
+  },
+  "performance": {
+    "2": {
+      "modelnet_auto": {
+        "total": 2,
+        "ok": 2,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 3.2076984763432232,
+        "p50_ms": 37394.0,
+        "p95_ms": 37410.0,
+        "p99_ms": 37410.0,
+        "mean_ms": 37402.0,
+        "max_ms": 37410.0
+      },
+      "single_best": {
+        "total": 2,
+        "ok": 2,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 8.100992371565516,
+        "p50_ms": 2251.0,
+        "p95_ms": 14813.0,
+        "p99_ms": 14813.0,
+        "mean_ms": 8532.0,
+        "max_ms": 14813.0
+      },
+      "fixed_qwen35b": {
+        "total": 2,
+        "ok": 2,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 6.056629485691213,
+        "p50_ms": 19812.0,
+        "p95_ms": 19813.0,
+        "p99_ms": 19813.0,
+        "mean_ms": 19812.5,
+        "max_ms": 19813.0
+      },
+      "parallel_consensus": {
+        "total": 2,
+        "ok": 2,
+        "failed": 0,
+        "success_rate": 1.0,
+        "throughput_per_min": 2.7324270783523463,
+        "p50_ms": 35112.0,
+        "p95_ms": 43917.0,
+        "p99_ms": 43917.0,
+        "mean_ms": 39514.5,
+        "max_ms": 43917.0
+      }
+    }
+  },
+  "quality": {
+    "2": {
+      "single_best": {
+        "question_count": 1,
+        "average_score": 0.25,
+        "bootstrap_95ci": [
+          0.25,
+          0.25
+        ],
+        "wins": 0,
+        "ties": 0,
+        "losses": 1
+      },
+      "fixed_qwen35b": {
+        "question_count": 1,
+        "average_score": 0.5,
+        "bootstrap_95ci": [
+          0.5,
+          0.5
+        ],
+        "wins": 0,
+        "ties": 1,
+        "losses": 0
+      },
+      "parallel_consensus": {
+        "question_count": 1,
+        "average_score": 0.5,
+        "bootstrap_95ci": [
+          0.5,
+          0.5
+        ],
+        "wins": 0,
+        "ties": 1,
+        "losses": 0
+      }
+    }
+  },
+  "runner_counts": {
+    "modelnet_auto": {
+      "route.once": 2,
+      "auto.role_graph": 2
+    },
+    "single_best": {
+      "route.once": 4
+    },
+    "fixed_qwen35b": {
+      "fixed.direct": 4
+    },
+    "parallel_consensus": {
+      "response.parallel": 4
+    }
+  },
+  "selected_model_counts": {
+    "inference-cyankiwi-granite-4-0-h-micro-awq-4bit": 7,
+    "inference-gaunernst-gemma-3-4b-it-int4-awq": 5,
+    "inference-cyankiwi-granite-4-1-3b-awq-int4": 3,
+    "inference-qwen-qwen3-14b-awq": 3,
+    "llama-cpp-deploy-jetson-64g-1-qwen3-4b-instruct-2507-q4km": 3,
+    "llama-cpp-deploy-pc-3090-qwen3-8b-bf16": 2,
+    "inference-tencent-hunyuan-7b-instruct-awq-int4": 1
+  }
+}
