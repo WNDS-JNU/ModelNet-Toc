@@ -14,6 +14,7 @@ import FileChunks from '../../components/FileChunks';
 import ImageFileListViewer from '../../components/ImageFileListViewer';
 import Reasoning from '../../components/Reasoning';
 import SearchGrounding from '../../components/SearchGrounding';
+import ModelNetParallelTrace from './ModelNetParallelTrace';
 import { useMarkdown } from '../useMarkdown';
 
 const MessageContent = memo<UIChatMessage>(
@@ -89,6 +90,7 @@ const MessageContent = memo<UIChatMessage>(
           markdownProps={markdownProps}
           tempDisplayContent={metadata?.tempDisplayContent}
         />
+        <ModelNetParallelTrace data={metadata?.modelnetParallel} />
         {showImageItems && <ImageFileListViewer items={imageList} />}
         {reactions.length > 0 && (
           <ReactionDisplay

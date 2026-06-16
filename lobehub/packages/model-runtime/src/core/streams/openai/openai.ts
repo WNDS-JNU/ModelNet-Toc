@@ -145,6 +145,11 @@ const transformOpenAIStream = (
     }
   }
 
+  const modelnetEvent = (chunk as any).modelnet_event;
+  if (modelnetEvent && typeof modelnetEvent === 'object') {
+    return { data: modelnetEvent, id: chunk.id, type: 'modelnet_source' };
+  }
+
   try {
     // maybe need another structure to add support for multiple choices
     if (!Array.isArray(chunk.choices) || chunk.choices.length === 0) {

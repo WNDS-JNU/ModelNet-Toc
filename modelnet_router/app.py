@@ -142,6 +142,12 @@ RESPONSE_PARALLEL_MAX_TOKEN_SAFETY_MARGIN = int(
 RESPONSE_PARALLEL_FALLBACK_MAX_TOKENS = int(
     os.environ.get("MODELNET_RESPONSE_PARALLEL_FALLBACK_MAX_TOKENS", "4096")
 )
+RESPONSE_SYNTHESIS_SUMMARY_MAX_TOKENS = int(
+    os.environ.get("MODELNET_RESPONSE_SYNTHESIS_SUMMARY_MAX_TOKENS", "384")
+)
+RESPONSE_SYNTHESIS_SUMMARY_MAX_CHARS = int(
+    os.environ.get("MODELNET_RESPONSE_SYNTHESIS_SUMMARY_MAX_CHARS", "1600")
+)
 RESPONSE_SYNTHESIS_MIN_OUTPUT_TOKENS = int(
     os.environ.get("MODELNET_RESPONSE_SYNTHESIS_MIN_OUTPUT_TOKENS", "1024")
 )
@@ -4407,14 +4413,32 @@ def openai_parallel_flow_delta(event: str, data: dict[str, Any]) -> str:
         )
     if stage == "synthesis.started":
         count = data.get("successful_source_count")
-        return (
-            f"- 进入合成：{count} 个有效模型回复交给 synthesizer，最终回答开始流式输出。\n\n"
-            "---\n\n"
-            "**最终回答**\n\n"
-        )
+        return f"- response.parallel synthesis starting with {count} successful source responses. 进入合成\n"
+    if stage == "synthesis.summary.started":
+        count = data.get("source_count")
+        return f"- synthesis prompt exceeded the context budget; summarizing {count} source responses first.\n"
+    if stage == "synthesis.summary.completed":
+        return "- source summaries are ready; retrying synthesis with summarized inputs.\n"
     if stage == "synthesis.completed":
         return ""
     return ""
+
+
+def openai_modelnet_event_payload(
+    *,
+    request_id: str,
+    model: str,
+    modelnet_event: dict[str, Any],
+) -> bytes:
+    payload = {
+        "id": request_id,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [],
+        "modelnet_event": modelnet_event,
+    }
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
 async def collect_openai_ensemble_response(
@@ -4444,8 +4468,18 @@ async def stream_openai_ensemble_response(
 ) -> AsyncIterator[bytes]:
     yield openai_stream_payload(request_id=request_id, model=model, delta={"role": "assistant"})
     show_parallel_flow = openai_parallel_flow_enabled(request)
+    final_answer_started = False
     async for chunk in run_ensemble_stream(request, tenant):
         event, data = parse_sse_chunk(chunk)
+        if event == "modelnet_event":
+            modelnet_event = dict(data)
+            modelnet_event.setdefault("requestId", request_id)
+            yield openai_modelnet_event_payload(
+                request_id=request_id,
+                model=model,
+                modelnet_event=modelnet_event,
+            )
+            continue
         if show_parallel_flow:
             flow_delta = openai_parallel_flow_delta(event, data)
             if flow_delta:
@@ -4457,6 +4491,13 @@ async def stream_openai_ensemble_response(
         if event == "token":
             delta = str(data.get("delta") or "")
             if delta:
+                if show_parallel_flow and not final_answer_started:
+                    final_answer_started = True
+                    yield openai_stream_payload(
+                        request_id=request_id,
+                        model=model,
+                        delta={"content": "\n---\n\n**Final answer**\n\n**最终回答**\n\n"},
+                    )
                 yield openai_stream_payload(request_id=request_id, model=model, delta={"content": delta})
         elif event == "error":
             payload = {"error": data}
@@ -5328,14 +5369,56 @@ def response_aggregate_max_tokens(request: EnsembleRequest) -> int:
     return explicit if explicit is not None else RESPONSE_AGGREGATE_MAX_TOKENS
 
 
+def response_synthesis_reserved_output_tokens(request: EnsembleRequest) -> int:
+    return min(response_aggregate_max_tokens(request), RESPONSE_AGGREGATE_MAX_TOKENS)
+
+
 def response_synthesis_prompt_budget_tokens(
     context_length: int | None,
     request: EnsembleRequest,
 ) -> int | None:
     if context_length is None:
         return None
-    reserved_output = response_aggregate_explicit_max_tokens(request) or RESPONSE_SYNTHESIS_MIN_OUTPUT_TOKENS
+    reserved_output = max(RESPONSE_SYNTHESIS_MIN_OUTPUT_TOKENS, response_synthesis_reserved_output_tokens(request))
     return max(256, context_length - max(0, RESPONSE_PARALLEL_MAX_TOKEN_SAFETY_MARGIN) - reserved_output)
+
+
+async def source_with_synthesis_max_tokens(
+    candidate: Candidate,
+    source: EnsembleSource,
+    request: EnsembleRequest,
+    *,
+    context_length: int | None = None,
+) -> EnsembleSource:
+    prompt_text = generation_prompt_text(candidate, message_list(source), source.prompt)
+    prompt_tokens = estimate_context_prompt_tokens(prompt_text)
+    budget = usable_completion_token_budget(context_length, prompt_tokens)
+    max_tokens = response_synthesis_reserved_output_tokens(request)
+    if budget is not None:
+        max_tokens = min(max_tokens, budget)
+    sampling_params = dict(source.sampling_params)
+    sampling_params["max_tokens"] = max(1, max_tokens)
+    return source.model_copy(update={"sampling_params": sampling_params})
+
+
+def response_synthesis_prompt_exceeds_context(
+    request: EnsembleRequest,
+    responses: list[dict[str, Any]],
+    context_length: int | None,
+) -> bool:
+    if context_length is None:
+        return False
+    instruction = response_aggregate_instruction(request)
+    user_prompt = render_response_synthesis_user_prompt(instruction=instruction, responses=responses)
+    prompt_text = RESPONSE_AGGREGATE_SYSTEM_PROMPT + "\n" + user_prompt
+    prompt_tokens = estimate_context_prompt_tokens(prompt_text)
+    reserved_output = max(RESPONSE_SYNTHESIS_MIN_OUTPUT_TOKENS, response_synthesis_reserved_output_tokens(request))
+    return (
+        prompt_tokens
+        + reserved_output
+        + max(0, RESPONSE_PARALLEL_MAX_TOKEN_SAFETY_MARGIN)
+        > context_length
+    )
 
 
 def largest_model_size_billion(text: str) -> float:
@@ -6186,6 +6269,242 @@ async def generate_response_source(
         }
 
 
+def source_model_label(source: EnsembleSource, backend: dict[str, Any] | None = None) -> str:
+    if isinstance(backend, dict) and backend.get("id"):
+        return str(backend.get("id") or "")
+    return str(source.model_alias or source.source_id)
+
+
+def response_source_modelnet_event(
+    event_type: str,
+    source_id: str,
+    *,
+    model: str,
+    backend: dict[str, Any] | None = None,
+    delta: str | None = None,
+    text: str | None = None,
+    error: str | None = None,
+    latency_ms: int | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "type": event_type,
+        "sourceId": source_id,
+        "source_id": source_id,
+        "model": model,
+    }
+    if backend is not None:
+        payload["backend"] = backend
+    if delta is not None:
+        payload["delta"] = delta
+    if text is not None:
+        payload["text"] = text
+    if error is not None:
+        payload["error"] = error
+    if latency_ms is not None:
+        payload["latencyMs"] = latency_ms
+        payload["latency_ms"] = latency_ms
+    if metadata is not None:
+        payload["metadata"] = metadata
+    return payload
+
+
+async def stream_response_source(
+    tenant: GatewayTenant,
+    source: EnsembleSource,
+    *,
+    prefer_model_max_tokens: bool = False,
+) -> AsyncIterator[dict[str, Any]]:
+    candidate: Candidate | None = None
+    backend: dict[str, Any] | None = None
+    started = time.perf_counter()
+    prompt_text = source.prompt or text_from_messages(message_list(source))
+    text_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    metadata: dict[str, Any] = {}
+    try:
+        candidate, score, reason = await pick_source_candidate(tenant, source)
+        backend = candidate_backend_info(candidate, score=score, reason=reason)
+        model = source_model_label(source, backend)
+        yield {
+            "event": "selected",
+            "source_id": source.source_id,
+            "backend": backend,
+            "model": model,
+        }
+        yield {
+            "event": "started",
+            "source_id": source.source_id,
+            "backend": backend,
+            "model": model,
+        }
+
+        messages = message_list(source)
+        prompt = source.prompt
+        if candidate.backend_type == "llama_cpp" and source.messages:
+            prompt = await llama_apply_template(candidate, source.messages)
+        if prefer_model_max_tokens:
+            budget_prompt = generation_prompt_text(candidate, messages, prompt)
+            max_tokens = await resolve_generation_max_tokens(
+                candidate,
+                source,
+                prompt_tokens=estimate_context_prompt_tokens(budget_prompt),
+                prefer_model_max=True,
+            )
+        else:
+            max_tokens = generation_max_tokens(source)
+        body = {
+            "messages": messages,
+            "stream": True,
+            **source.extra,
+            **generation_params(source, max_tokens=max_tokens),
+        }
+        assert http_client is not None
+        buffer = b""
+        visible_filter = ResponseVisibleTextStreamFilter(
+            in_think_block=think_stop_marker(candidate) is not None
+        )
+        async for chunk in backend_stream_chat(
+            candidate,
+            body,
+            http_client=http_client,
+            headers=backend_headers(candidate),
+        ):
+            events, buffer = split_sse_events(buffer, chunk)
+            for event_chunk in events:
+                _event, data = parse_sse_chunk(event_chunk)
+                if data.get("raw") == "[DONE]":
+                    continue
+                content_delta, reasoning_delta, chunk_metadata = openai_stream_delta_parts(data)
+                metadata.update(chunk_metadata)
+                if reasoning_delta:
+                    reasoning_parts.append(reasoning_delta)
+                visible_delta = visible_filter.feed(content_delta)
+                if visible_delta:
+                    text_parts.append(visible_delta)
+                    yield {
+                        "event": "delta",
+                        "source_id": source.source_id,
+                        "backend": backend,
+                        "model": model,
+                        "delta": visible_delta,
+                        "text": "".join(text_parts),
+                    }
+
+        if buffer.strip():
+            _event, data = parse_sse_chunk(buffer + b"\n\n")
+            if data.get("raw") != "[DONE]":
+                content_delta, reasoning_delta, chunk_metadata = openai_stream_delta_parts(data)
+                metadata.update(chunk_metadata)
+                if reasoning_delta:
+                    reasoning_parts.append(reasoning_delta)
+                visible_delta = visible_filter.feed(content_delta)
+                if visible_delta:
+                    text_parts.append(visible_delta)
+                    yield {
+                        "event": "delta",
+                        "source_id": source.source_id,
+                        "backend": backend,
+                        "model": model,
+                        "delta": visible_delta,
+                        "text": "".join(text_parts),
+                    }
+
+        tail = visible_filter.flush()
+        if tail:
+            text_parts.append(tail)
+            yield {
+                "event": "delta",
+                "source_id": source.source_id,
+                "backend": backend,
+                "model": model,
+                "delta": tail,
+                "text": "".join(text_parts),
+            }
+        if reasoning_parts:
+            metadata["reasoning_content"] = "".join(reasoning_parts)
+        if visible_filter.removed_hidden_reasoning:
+            metadata["source_hidden_reasoning_removed"] = True
+        text = "".join(text_parts).strip()
+        text, removed_hidden_reasoning = strip_response_hidden_reasoning(text)
+        if removed_hidden_reasoning:
+            metadata["source_hidden_reasoning_removed"] = True
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        result = {
+            "source_id": source.source_id,
+            "backend": backend,
+            "text": text,
+            "metadata": metadata,
+            "weight": source.weight,
+            "error": None,
+            "latency_ms": latency_ms,
+            "call_ledger": [
+                build_call_ledger_entry(
+                    stage="source.generate",
+                    source_id=source.source_id,
+                    backend=backend,
+                    metadata=metadata,
+                    prompt_text=prompt_text,
+                    completion_text=text,
+                    status="ok",
+                    latency_ms=latency_ms,
+                )
+            ],
+        }
+        yield {
+            "event": "completed",
+            "source_id": source.source_id,
+            "backend": backend,
+            "model": model,
+            "result": result,
+        }
+        await release_candidate(candidate)
+        candidate = None
+    except Exception as exc:  # noqa: BLE001 - one failed source should not abort its peers
+        error = str(exc)
+        if candidate is not None:
+            await release_candidate(candidate, error)
+            candidate = None
+        LOGGER.warning(
+            "response aggregate source stream failed source_id=%s backend=%s error=%s",
+            source.source_id,
+            candidate.model_id if candidate else "",
+            error,
+        )
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        result = {
+            "source_id": source.source_id,
+            "backend": backend,
+            "text": "",
+            "metadata": {},
+            "weight": source.weight,
+            "error": error,
+            "latency_ms": latency_ms,
+            "call_ledger": [
+                build_call_ledger_entry(
+                    stage="source.generate",
+                    source_id=source.source_id,
+                    backend=backend,
+                    metadata={},
+                    prompt_text=prompt_text,
+                    completion_text="",
+                    status="error",
+                    latency_ms=latency_ms,
+                    error=error,
+                )
+            ],
+        }
+        yield {
+            "event": "failed",
+            "source_id": source.source_id,
+            "backend": backend,
+            "model": source_model_label(source, backend),
+            "error": error,
+            "latency_ms": latency_ms,
+            "result": result,
+        }
+
+
 def build_response_synthesis_source(
     request: EnsembleRequest,
     candidate: Candidate,
@@ -6222,6 +6541,159 @@ def build_response_synthesis_source(
         weight=1.0,
         extra=internal_thinking_extra(request),
     ), instruction, user_prompt
+
+
+def context_length_error(exc: Exception) -> bool:
+    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    text = str(exc).lower()
+    if status_code is not None and int(status_code) != 400:
+        return False
+    markers = (
+        "maximum context length",
+        "context length",
+        "context window",
+        "too many tokens",
+        "requested",
+        "input tokens",
+    )
+    return any(marker in text for marker in markers)
+
+
+def deterministic_response_summary(response: dict[str, Any]) -> str:
+    text = str(response.get("text") or "").strip()
+    if not text:
+        return "(empty source response)"
+    return compress_contribution_text(text, max_chars=RESPONSE_SYNTHESIS_SUMMARY_MAX_CHARS)
+
+
+def response_summary_prompt(response: dict[str, Any]) -> str:
+    source_id = str(response.get("source_id") or "source")
+    text = str(response.get("text") or "")
+    return (
+        "Summarize this upstream model response for a later synthesis step. "
+        "Keep task-relevant facts, constraints, disagreements, and final answer candidates. "
+        "Do not add new claims.\n\n"
+        f"source_id: {source_id}\n\n"
+        "Response:\n"
+        "```text\n"
+        f"{text}\n"
+        "```"
+    )
+
+
+async def summarize_response_for_synthesis(
+    candidate: Candidate,
+    request: EnsembleRequest,
+    response: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    source_id = str(response.get("source_id") or "source")
+    summary_metadata: dict[str, Any] = {"summarized": True}
+    summary_source = EnsembleSource(
+        source_id=f"{source_id}__summary",
+        model_alias=candidate.model_id,
+        prompt=response_summary_prompt(response),
+        messages=[
+            {
+                "role": "system",
+                "content": "You produce concise summaries used as intermediate synthesis inputs.",
+            },
+            {"role": "user", "content": response_summary_prompt(response)},
+        ],
+        sampling_params={"max_tokens": RESPONSE_SYNTHESIS_SUMMARY_MAX_TOKENS},
+        weight=1.0,
+        extra=internal_thinking_extra(request),
+    )
+    try:
+        result = await generate_text(candidate, summary_source)
+        summary_text = str(result.get("text") or "").strip()
+        summary_text, removed_hidden_reasoning = strip_response_hidden_reasoning(summary_text)
+        if not summary_text:
+            raise RuntimeError("summary model returned empty text")
+        summary_metadata.update(dict(result.get("metadata") or {}))
+        summary_metadata["summary_method"] = "model"
+        if removed_hidden_reasoning:
+            summary_metadata["summary_hidden_reasoning_removed"] = True
+    except Exception as exc:  # noqa: BLE001 - summary must not block final synthesis
+        summary_text = deterministic_response_summary(response)
+        summary_metadata["summary_method"] = "deterministic_truncate"
+        summary_metadata["summary_error"] = str(exc)[:300]
+
+    summarized = dict(response)
+    summarized["text"] = summary_text
+    summarized["metadata"] = {
+        **dict(response.get("metadata") or {}),
+        **summary_metadata,
+        "original_text_chars": len(str(response.get("text") or "")),
+    }
+    return summarized, {
+        "source_id": source_id,
+        "summary": summary_text,
+        "original_text_chars": len(str(response.get("text") or "")),
+        "metadata": summarized["metadata"],
+    }
+
+
+async def summarize_responses_for_synthesis(
+    candidate: Candidate,
+    request: EnsembleRequest,
+    responses: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    pairs = await asyncio.gather(
+        *(summarize_response_for_synthesis(candidate, request, response) for response in responses)
+    )
+    summarized = [pair[0] for pair in pairs]
+    events = [pair[1] for pair in pairs]
+    return summarized, events
+
+
+def response_synthesis_fallback_text(responses: list[dict[str, Any]], error: str | None = None) -> str:
+    lines = [
+        "The response synthesizer could not complete, so ModelNet returned a degraded result from the source responses.",
+    ]
+    if error:
+        lines.extend(["", f"Synthesis error: {error[:240]}"])
+    lines.append("")
+    for index, response in enumerate(responses, start=1):
+        source_id = str(response.get("source_id") or f"source-{index}")
+        text = deterministic_response_summary(response)
+        lines.extend([f"## {source_id}", text, ""])
+    return "\n".join(lines).strip()
+
+
+def fallback_synthesis_result(
+    *,
+    backend: dict[str, Any] | None,
+    responses: list[dict[str, Any]],
+    error: str,
+    started: float,
+) -> dict[str, Any]:
+    text = response_synthesis_fallback_text(responses, error)
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    metadata = {
+        "degraded": True,
+        "fallback_reason": "synthesis_failed",
+        "synthesis_error": error[:500],
+    }
+    return {
+        "source_id": "__response_aggregator__",
+        "backend": backend or {"id": "source-summary-fallback"},
+        "text": text,
+        "metadata": metadata,
+        "latency_ms": latency_ms,
+        "call_ledger": [
+            build_call_ledger_entry(
+                stage="response.synthesize",
+                source_id="__response_aggregator__",
+                backend=backend,
+                metadata=metadata,
+                prompt_text="",
+                completion_text=text,
+                status="degraded",
+                latency_ms=latency_ms,
+                error=error,
+            )
+        ],
+    }
 
 
 @dataclass
@@ -6386,37 +6858,122 @@ async def stream_response_synthesis(
     released = False
     started = time.perf_counter()
     try:
-        candidate, score, reason = await pick_response_synthesizer_candidate(request, tenant, responses)
+        try:
+            candidate, score, reason = await pick_response_synthesizer_candidate(request, tenant, responses)
+        except Exception as exc:  # noqa: BLE001
+            synthesis = fallback_synthesis_result(
+                backend=None,
+                responses=responses,
+                error=str(exc),
+                started=started,
+            )
+            yield {"event": "done", "synthesis": synthesis, "metadata": {"degraded": True}}
+            return
+
         backend = candidate_backend_info(candidate, score=score, reason=reason)
         context_length = await discover_candidate_context_length(candidate)
         max_prompt_tokens = response_synthesis_prompt_budget_tokens(context_length, request)
-        source, instruction, user_prompt = build_response_synthesis_source(
-            request,
-            candidate,
-            responses,
-            max_prompt_tokens=max_prompt_tokens,
-        )
-        source = await source_with_resolved_generation_max_tokens(
-            candidate,
-            source,
-            prefer_model_max=True,
-            default=RESPONSE_AGGREGATE_MAX_TOKENS,
-        )
+        responses_for_synthesis = responses
+        used_summaries = False
+        summary_events: list[dict[str, Any]] = []
         yield {
             "event": "selected",
             "synthesis": {
-                "source_id": source.source_id,
+                "source_id": "__response_aggregator__",
                 "backend": backend,
                 "metadata": {},
             },
         }
 
+        if response_synthesis_prompt_exceeds_context(request, responses_for_synthesis, context_length):
+            yield {
+                "event": "summary_started",
+                "source_count": len(responses_for_synthesis),
+                "reason": "prompt_budget",
+            }
+            responses_for_synthesis, summary_events = await summarize_responses_for_synthesis(
+                candidate,
+                request,
+                responses_for_synthesis,
+            )
+            used_summaries = True
+            for summary_event in summary_events:
+                yield {"event": "source_summarized", **summary_event}
+            yield {
+                "event": "summary_completed",
+                "source_count": len(responses_for_synthesis),
+                "reason": "prompt_budget",
+            }
+
+        instruction = response_aggregate_instruction(request)
+        user_prompt = ""
+        source: EnsembleSource | None = None
         attempt_result: dict[str, Any] = {}
-        async for item in stream_response_synthesis_attempt(candidate, source):
-            if item.get("event") == "token":
-                yield item
-            elif item.get("event") == "result":
-                attempt_result = item
+
+        while True:
+            source, instruction, user_prompt = build_response_synthesis_source(
+                request,
+                candidate,
+                responses_for_synthesis,
+                max_prompt_tokens=max_prompt_tokens,
+            )
+            source = await source_with_synthesis_max_tokens(
+                candidate,
+                source,
+                request,
+                context_length=context_length,
+            )
+            try:
+                attempt_result = {}
+                async for item in stream_response_synthesis_attempt(candidate, source):
+                    if item.get("event") == "token":
+                        yield item
+                    elif item.get("event") == "result":
+                        attempt_result = item
+                break
+            except Exception as exc:  # noqa: BLE001
+                if not used_summaries and context_length_error(exc):
+                    yield {
+                        "event": "summary_started",
+                        "source_count": len(responses_for_synthesis),
+                        "reason": "context_length_retry",
+                        "error": str(exc)[:300],
+                    }
+                    responses_for_synthesis, summary_events = await summarize_responses_for_synthesis(
+                        candidate,
+                        request,
+                        responses_for_synthesis,
+                    )
+                    used_summaries = True
+                    for summary_event in summary_events:
+                        yield {"event": "source_summarized", **summary_event}
+                    yield {
+                        "event": "summary_completed",
+                        "source_count": len(responses_for_synthesis),
+                        "reason": "context_length_retry",
+                    }
+                    continue
+
+                synthesis = fallback_synthesis_result(
+                    backend=backend,
+                    responses=responses_for_synthesis,
+                    error=str(exc),
+                    started=started,
+                )
+                await release_candidate(candidate, str(exc))
+                released = True
+                yield {
+                    "event": "done",
+                    "synthesis": synthesis,
+                    "metadata": {
+                        "instruction": instruction,
+                        "prompt_chars": len(user_prompt),
+                        "used_summaries": used_summaries,
+                        "source_summaries": summary_events,
+                        "degraded": True,
+                    },
+                }
+                return
 
         text = str(attempt_result.get("text") or "")
         metadata = dict(attempt_result.get("metadata") or {})
@@ -6424,26 +6981,48 @@ async def stream_response_synthesis(
         removed_hidden_reasoning = bool(attempt_result.get("removed_hidden_reasoning")) or removed_after_stream
         hidden_reasoning = str(metadata.get("reasoning_content") or "")
 
-        if not text and (removed_hidden_reasoning or hidden_reasoning):
+        if not text and (removed_hidden_reasoning or hidden_reasoning) and source is not None:
             retry_source, _retry_instruction, _retry_user_prompt = build_response_synthesis_source(
                 request,
                 candidate,
-                responses,
+                responses_for_synthesis,
                 retry_final_only=True,
                 max_prompt_tokens=max_prompt_tokens,
             )
-            retry_source = await source_with_resolved_generation_max_tokens(
+            retry_source = await source_with_synthesis_max_tokens(
                 candidate,
                 retry_source,
-                prefer_model_max=True,
-                default=RESPONSE_AGGREGATE_MAX_TOKENS,
+                request,
+                context_length=context_length,
             )
             retry_result: dict[str, Any] = {}
-            async for item in stream_response_synthesis_attempt(candidate, retry_source):
-                if item.get("event") == "token":
-                    yield item
-                elif item.get("event") == "result":
-                    retry_result = item
+            try:
+                async for item in stream_response_synthesis_attempt(candidate, retry_source):
+                    if item.get("event") == "token":
+                        yield item
+                    elif item.get("event") == "result":
+                        retry_result = item
+            except Exception as exc:  # noqa: BLE001
+                synthesis = fallback_synthesis_result(
+                    backend=backend,
+                    responses=responses_for_synthesis,
+                    error=str(exc),
+                    started=started,
+                )
+                await release_candidate(candidate, str(exc))
+                released = True
+                yield {
+                    "event": "done",
+                    "synthesis": synthesis,
+                    "metadata": {
+                        "instruction": instruction,
+                        "prompt_chars": len(user_prompt),
+                        "used_summaries": used_summaries,
+                        "source_summaries": summary_events,
+                        "degraded": True,
+                    },
+                }
+                return
             retry_text = str(retry_result.get("text") or "")
             retry_metadata = dict(retry_result.get("metadata") or {})
             retry_text, retry_removed_after_stream = strip_response_hidden_reasoning(retry_text)
@@ -6467,11 +7046,15 @@ async def stream_response_synthesis(
         elif removed_hidden_reasoning:
             metadata["response_synthesis_hidden_reasoning_removed"] = True
 
+        if used_summaries:
+            metadata["used_summaries"] = True
+            metadata["source_summaries"] = summary_events
+
         await release_candidate(candidate)
         released = True
         latency_ms = int((time.perf_counter() - started) * 1000)
         synthesis = {
-            "source_id": source.source_id,
+            "source_id": source.source_id if source is not None else "__response_aggregator__",
             "backend": backend,
             "text": text,
             "metadata": metadata,
@@ -6479,7 +7062,7 @@ async def stream_response_synthesis(
             "call_ledger": [
                 build_call_ledger_entry(
                     stage="response.synthesize",
-                    source_id=source.source_id,
+                    source_id=source.source_id if source is not None else "__response_aggregator__",
                     backend=backend,
                     metadata=metadata,
                     prompt_text=user_prompt,
@@ -6495,12 +7078,20 @@ async def stream_response_synthesis(
             "metadata": {
                 "instruction": instruction,
                 "prompt_chars": len(user_prompt),
+                "used_summaries": used_summaries,
+                "source_summaries": summary_events,
             },
         }
     except Exception as exc:  # noqa: BLE001
         if candidate is not None and not released:
             await release_candidate(candidate, str(exc))
-        raise
+        synthesis = fallback_synthesis_result(
+            backend=None,
+            responses=responses,
+            error=str(exc),
+            started=started,
+        )
+        yield {"event": "done", "synthesis": synthesis, "metadata": {"degraded": True}}
 
 
 async def generate_response_synthesis(
@@ -6782,58 +7373,145 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
                 },
             )
         source_order = {source.source_id: index for index, source in enumerate(request.sources)}
-        tasks = [
-            asyncio.create_task(generate_response_source(tenant, source, prefer_model_max_tokens=True))
-            for source in request.sources
-        ]
+        source_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        async def pump_source(source: EnsembleSource) -> None:
+            try:
+                async for item in stream_response_source(tenant, source, prefer_model_max_tokens=True):
+                    await source_queue.put(item)
+            except Exception as exc:  # noqa: BLE001 - defensive; stream_response_source normally contains errors
+                await source_queue.put(
+                    {
+                        "event": "failed",
+                        "source_id": source.source_id,
+                        "backend": None,
+                        "model": source_model_label(source),
+                        "error": str(exc),
+                        "latency_ms": 0,
+                        "result": {
+                            "source_id": source.source_id,
+                            "backend": None,
+                            "text": "",
+                            "metadata": {},
+                            "weight": source.weight,
+                            "error": str(exc),
+                            "latency_ms": 0,
+                            "call_ledger": [],
+                        },
+                    }
+                )
+            finally:
+                await source_queue.put({"event": "_source_task_done", "source_id": source.source_id})
+
+        tasks = [asyncio.create_task(pump_source(source)) for source in request.sources]
         results: list[dict[str, Any]] = []
         call_ledger: list[dict[str, Any]] = []
-        for completed in asyncio.as_completed(tasks):
-            result = await completed
-            results.append(result)
-            call_ledger.extend(call_ledger_from_result(result, "response.parallel"))
-            backend = result.get("backend")
-            if backend is not None:
+        finished_sources = 0
+        while finished_sources < len(tasks):
+            item = await source_queue.get()
+            item_event = str(item.get("event") or "")
+            if item_event == "_source_task_done":
+                finished_sources += 1
+                continue
+            source_id = str(item.get("source_id") or "")
+            backend = item.get("backend") if isinstance(item.get("backend"), dict) else None
+            model = str(item.get("model") or source_id)
+            if item_event == "selected" and backend is not None:
                 yield sse(
                     "source_selected",
                     {
-                        "source_id": result["source_id"],
+                        "source_id": source_id,
                         "backend": backend,
                         "role": "source",
                     },
                 )
-            if result.get("error") is None:
-                if emit_flow:
-                    yield sse(
-                        "trace_step",
-                        {
-                            "stage": "source.completed",
-                            "source_id": result["source_id"],
-                            "backend": backend,
-                            "latency_ms": result.get("latency_ms", 0),
-                            "text_chars": len(str(result.get("text") or "")),
-                        },
-                    )
+            elif item_event == "started":
                 yield sse(
-                    "full_response",
-                    {
-                        "source_id": result["source_id"],
-                        "text": result.get("text", ""),
-                        "metadata": result.get("metadata", {}),
-                    },
+                    "modelnet_event",
+                    response_source_modelnet_event(
+                        "source.started",
+                        source_id,
+                        model=model,
+                        backend=backend,
+                    ),
                 )
-            else:
-                if emit_flow:
+            elif item_event == "delta":
+                yield sse(
+                    "modelnet_event",
+                    response_source_modelnet_event(
+                        "source.delta",
+                        source_id,
+                        model=model,
+                        backend=backend,
+                        delta=str(item.get("delta") or ""),
+                        text=str(item.get("text") or ""),
+                    ),
+                )
+            elif item_event in {"completed", "failed"}:
+                result = dict(item.get("result") or {})
+                if not result:
+                    continue
+                results.append(result)
+                call_ledger.extend(call_ledger_from_result(result, "response.parallel"))
+                if item_event == "completed":
                     yield sse(
-                        "trace_step",
+                        "modelnet_event",
+                        response_source_modelnet_event(
+                            "source.completed",
+                            source_id,
+                            model=model,
+                            backend=backend,
+                            text=str(result.get("text") or ""),
+                            latency_ms=int(result.get("latency_ms") or 0),
+                            metadata=dict(result.get("metadata") or {}),
+                        ),
+                    )
+                else:
+                    yield sse(
+                        "modelnet_event",
+                        response_source_modelnet_event(
+                            "source.failed",
+                            source_id,
+                            model=model,
+                            backend=backend,
+                            error=str(result.get("error") or item.get("error") or "unknown error"),
+                            latency_ms=int(result.get("latency_ms") or item.get("latency_ms") or 0),
+                        ),
+                    )
+                if result.get("error") is None:
+                    if emit_flow:
+                        yield sse(
+                            "trace_step",
+                            {
+                                "stage": "source.completed",
+                                "source_id": result["source_id"],
+                                "backend": backend,
+                                "latency_ms": result.get("latency_ms", 0),
+                                "text_chars": len(str(result.get("text") or "")),
+                            },
+                        )
+                    yield sse(
+                        "full_response",
                         {
-                            "stage": "source.failed",
                             "source_id": result["source_id"],
-                            "backend": backend,
-                            "latency_ms": result.get("latency_ms", 0),
-                            "error": result.get("error"),
+                            "text": result.get("text", ""),
+                            "metadata": result.get("metadata", {}),
                         },
                     )
+                else:
+                    if emit_flow:
+                        yield sse(
+                            "trace_step",
+                            {
+                                "stage": "source.failed",
+                                "source_id": result["source_id"],
+                                "backend": backend,
+                                "latency_ms": result.get("latency_ms", 0),
+                                "error": result.get("error"),
+                            },
+                        )
+
+        await asyncio.gather(*tasks, return_exceptions=True)
 
         results.sort(key=lambda item: source_order.get(str(item.get("source_id") or ""), len(source_order)))
         successful = [result for result in results if result.get("error") is None]
@@ -6878,6 +7556,57 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
                 if delta:
                     text += delta
                     yield sse("token", {"delta": delta, "text": text})
+            elif event == "summary_started":
+                if emit_flow:
+                    yield sse(
+                        "trace_step",
+                        {
+                            "stage": "synthesis.summary.started",
+                            "source_count": synthesis_event.get("source_count"),
+                            "reason": synthesis_event.get("reason"),
+                            "error": synthesis_event.get("error"),
+                        },
+                    )
+                yield sse(
+                    "modelnet_event",
+                    {
+                        "type": "synthesis.summary.started",
+                        "sourceCount": synthesis_event.get("source_count"),
+                        "reason": synthesis_event.get("reason"),
+                        "error": synthesis_event.get("error"),
+                    },
+                )
+            elif event == "source_summarized":
+                source_id = str(synthesis_event.get("source_id") or "")
+                summary = str(synthesis_event.get("summary") or "")
+                yield sse(
+                    "modelnet_event",
+                    response_source_modelnet_event(
+                        "source.summarized",
+                        source_id,
+                        model=source_id,
+                        text=summary,
+                        metadata=dict(synthesis_event.get("metadata") or {}),
+                    ),
+                )
+            elif event == "summary_completed":
+                if emit_flow:
+                    yield sse(
+                        "trace_step",
+                        {
+                            "stage": "synthesis.summary.completed",
+                            "source_count": synthesis_event.get("source_count"),
+                            "reason": synthesis_event.get("reason"),
+                        },
+                    )
+                yield sse(
+                    "modelnet_event",
+                    {
+                        "type": "synthesis.summary.completed",
+                        "sourceCount": synthesis_event.get("source_count"),
+                        "reason": synthesis_event.get("reason"),
+                    },
+                )
             elif event == "done":
                 synthesis = dict(synthesis_event.get("synthesis") or {})
                 synthesis_metadata = dict(synthesis_event.get("metadata") or {})

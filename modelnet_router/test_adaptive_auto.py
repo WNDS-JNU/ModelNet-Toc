@@ -89,6 +89,7 @@ if "yaml" not in sys.modules:
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import app as router  # noqa: E402
+from modelnet_gateway import backend_adapters  # noqa: E402
 
 
 class FakeTenant:
@@ -170,6 +171,41 @@ async def collect_openai_content(stream) -> str:
     return "".join(await collect_openai_content_deltas(stream))
 
 
+async def fake_stream_response_source_from_result(source: router.EnsembleSource, result: dict[str, Any]):
+    backend = result.get("backend")
+    model = str((backend or {}).get("id") or source.model_alias or source.source_id)
+    if backend is not None:
+        yield {"event": "selected", "source_id": source.source_id, "backend": backend, "model": model}
+    yield {"event": "started", "source_id": source.source_id, "backend": backend, "model": model}
+    text = str(result.get("text") or "")
+    if result.get("error") is None and text:
+        yield {
+            "event": "delta",
+            "source_id": source.source_id,
+            "backend": backend,
+            "model": model,
+            "delta": text,
+            "text": text,
+        }
+    if result.get("error") is None:
+        yield {
+            "event": "completed",
+            "source_id": source.source_id,
+            "backend": backend,
+            "model": model,
+            "result": result,
+        }
+    else:
+        yield {
+            "event": "failed",
+            "source_id": source.source_id,
+            "backend": backend,
+            "model": model,
+            "error": result.get("error"),
+            "result": result,
+        }
+
+
 def done_payload(events: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
     return [data for event, data in events if event == "done"][0]
 
@@ -186,12 +222,14 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.original_pick_candidate = router.pick_candidate
         self.original_load_candidates = router.load_candidates
         self.original_backend_generate_text = router.backend_generate_text
+        self.original_backend_stream_chat = router.backend_stream_chat
         self.original_http_client = router.http_client
         self.original_context_length_cache = dict(router.context_length_cache)
         self.original_scored_candidate_pool = router.scored_candidate_pool
         self.original_visible_candidates = router.visible_candidates
         self.original_generate_text = router.generate_text
         self.original_generate_response_source = router.generate_response_source
+        self.original_stream_response_source = router.stream_response_source
         self.original_generate_response_synthesis = router.generate_response_synthesis
         self.original_stream_response_synthesis = router.stream_response_synthesis
         self.original_trace_path = router.AUTO_ROUTER_TRACE_PATH
@@ -206,12 +244,14 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         router.pick_candidate = self.original_pick_candidate
         router.load_candidates = self.original_load_candidates
         router.backend_generate_text = self.original_backend_generate_text
+        router.backend_stream_chat = self.original_backend_stream_chat
         router.http_client = self.original_http_client
         router.context_length_cache = dict(self.original_context_length_cache)
         router.scored_candidate_pool = self.original_scored_candidate_pool
         router.visible_candidates = self.original_visible_candidates
         router.generate_text = self.original_generate_text
         router.generate_response_source = self.original_generate_response_source
+        router.stream_response_source = self.original_stream_response_source
         router.generate_response_synthesis = self.original_generate_response_synthesis
         router.stream_response_synthesis = self.original_stream_response_synthesis
         router.AUTO_ROUTER_TRACE_PATH = self.original_trace_path
@@ -868,7 +908,12 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                 "metadata": {"instruction": "test", "prompt_chars": 8},
             }
 
-        router.generate_response_source = fake_generate
+        async def fake_stream(_tenant, source, **_kwargs):
+            result = await fake_generate(_tenant, source, **_kwargs)
+            async for item in fake_stream_response_source_from_result(source, result):
+                yield item
+
+        router.stream_response_source = fake_stream
         router.stream_response_synthesis = fake_synthesis
         req = router.EnsembleRequest(
             request_id="response-aggregate-ledger",
@@ -1046,7 +1091,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reason, "ready")
         self.assertEqual(calls, [{"qwen-35b"}, None])
 
-    async def test_response_synthesizer_uses_model_budget_without_fixed_default(self) -> None:
+    async def test_response_synthesizer_caps_output_at_aggregate_max_tokens(self) -> None:
         req = router.EnsembleRequest(
             request_id="response-synthesizer-budget",
             runner="response_aggregate",
@@ -1064,15 +1109,14 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertNotIn("max_tokens", source.sampling_params)
-        resolved = await router.source_with_resolved_generation_max_tokens(
+        resolved = await router.source_with_synthesis_max_tokens(
             candidate("qwen-35b", metadata={"max_model_len": 8192}),
             source,
-            prefer_model_max=True,
-            default=router.RESPONSE_AGGREGATE_MAX_TOKENS,
+            req,
+            context_length=8192,
         )
 
-        self.assertGreater(resolved.sampling_params["max_tokens"], 1024)
-        self.assertNotEqual(resolved.sampling_params["max_tokens"], router.RESPONSE_AGGREGATE_MAX_TOKENS)
+        self.assertEqual(resolved.sampling_params["max_tokens"], router.RESPONSE_AGGREGATE_MAX_TOKENS)
 
     def test_response_synthesizer_trims_prompt_to_preserve_output_budget(self) -> None:
         req = router.EnsembleRequest(
@@ -1141,7 +1185,12 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                 "metadata": {"instruction": "test", "prompt_chars": 8},
             }
 
-        router.generate_response_source = fake_generate
+        async def fake_stream(_tenant, source, **_kwargs):
+            result = await fake_generate(_tenant, source, **_kwargs)
+            async for item in fake_stream_response_source_from_result(source, result):
+                yield item
+
+        router.stream_response_source = fake_stream
         router.stream_response_synthesis = fake_synthesis
         source_messages = [{"role": "user", "content": "Question?"}]
         req = router.EnsembleRequest(
@@ -1169,6 +1218,140 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["source-1"]["extra"], {"chat_template_kwargs": {"enable_thinking": True}})
         self.assertEqual(seen["source-2"]["prompt"], "Question?")
         self.assert_no_response_prompt_control_leakage(json.dumps(seen, ensure_ascii=False))
+
+    async def test_response_aggregate_streams_source_modelnet_events(self) -> None:
+        async def fake_stream(_tenant, source, **_kwargs):
+            backend = {"id": source.model_alias or source.source_id}
+            model = str(backend["id"])
+            yield {"event": "selected", "source_id": source.source_id, "backend": backend, "model": model}
+            yield {"event": "started", "source_id": source.source_id, "backend": backend, "model": model}
+            if source.source_id == "source-1":
+                yield {
+                    "event": "delta",
+                    "source_id": source.source_id,
+                    "backend": backend,
+                    "model": model,
+                    "delta": "alpha ",
+                    "text": "alpha ",
+                }
+                await asyncio.sleep(0.01)
+                text = "alpha done"
+                yield {
+                    "event": "delta",
+                    "source_id": source.source_id,
+                    "backend": backend,
+                    "model": model,
+                    "delta": "done",
+                    "text": text,
+                }
+            else:
+                text = "beta done"
+                yield {
+                    "event": "delta",
+                    "source_id": source.source_id,
+                    "backend": backend,
+                    "model": model,
+                    "delta": text,
+                    "text": text,
+                }
+            yield {
+                "event": "completed",
+                "source_id": source.source_id,
+                "backend": backend,
+                "model": model,
+                "result": {
+                    "source_id": source.source_id,
+                    "backend": backend,
+                    "text": text,
+                    "metadata": {},
+                    "weight": source.weight,
+                    "error": None,
+                    "latency_ms": 3,
+                },
+            }
+
+        async def fake_synthesis(_request, _tenant, responses):
+            yield {
+                "event": "done",
+                "synthesis": {
+                    "source_id": "__response_aggregator__",
+                    "backend": {"id": "aggregator"},
+                    "text": "combined",
+                    "metadata": {},
+                },
+                "metadata": {"instruction": "test", "prompt_chars": 8},
+            }
+
+        router.stream_response_source = fake_stream
+        router.stream_response_synthesis = fake_synthesis
+        req = router.EnsembleRequest(
+            request_id="response-aggregate-source-stream",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            sources=[
+                router.EnsembleSource(source_id="source-1", model_alias="qwen-7b", prompt="Question?"),
+                router.EnsembleSource(source_id="source-2", model_alias="llama-8b", prompt="Question?"),
+            ],
+        )
+
+        events = await collect_events(router.run_response_aggregate_ensemble(req, self.tenant))
+        modelnet_events = [data for event, data in events if event == "modelnet_event"]
+        delta_events = [data for data in modelnet_events if data.get("type") == "source.delta"]
+
+        self.assertGreaterEqual(len(delta_events), 2)
+        self.assertIn("source.started", [data.get("type") for data in modelnet_events])
+        self.assertIn("source.completed", [data.get("type") for data in modelnet_events])
+        self.assertEqual(done_payload(events)["text"], "combined")
+
+    async def test_response_synthesis_context_400_summarizes_and_retries(self) -> None:
+        attempts: list[int] = []
+        seen_max_tokens: list[int] = []
+
+        async def fake_pick_candidate(*, tenant=None, candidate_aliases=None, required_capabilities=None):
+            return candidate("qwen-35b", metadata={"max_model_len": 8192}), 10.0, "ready"
+
+        async def fake_generate_text(_candidate, source, **_kwargs):
+            return {"text": f"summary for {source.source_id}", "metadata": {}}
+
+        async def fake_backend_stream_chat(_candidate, body, *, http_client, headers):
+            attempts.append(1)
+            seen_max_tokens.append(int(body.get("max_tokens") or 0))
+            if len(attempts) == 1:
+                response = types.SimpleNamespace(status_code=400)
+                raise router.httpx.HTTPStatusError(
+                    "This model's maximum context length is 8192 tokens. However, you requested "
+                    "1536 output tokens and your prompt contains at least 6657 input tokens, for "
+                    "a total of at least 8193 tokens.",
+                    response=response,
+                )
+            yield b'data: {"choices":[{"delta":{"content":"final answer"}}]}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        router.pick_candidate = fake_pick_candidate
+        router.generate_text = fake_generate_text
+        router.backend_stream_chat = fake_backend_stream_chat
+        router.http_client = object()
+        req = router.EnsembleRequest(
+            request_id="response-synthesis-context-retry",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            sources=[router.EnsembleSource(source_id="source-1", prompt="Question?")],
+        )
+        responses = [
+            {"source_id": "source-1", "text": "first complete response", "weight": 1.0},
+            {"source_id": "source-2", "text": "second complete response", "weight": 1.0},
+        ]
+
+        events = []
+        async for event in router.stream_response_synthesis(req, self.tenant, responses):
+            events.append(event)
+
+        self.assertEqual(len(attempts), 2)
+        self.assertTrue(all(value <= router.RESPONSE_AGGREGATE_MAX_TOKENS for value in seen_max_tokens))
+        self.assertIn("source_summarized", [event.get("event") for event in events])
+        done = [event for event in events if event.get("event") == "done"][0]
+        self.assertEqual(done["synthesis"]["text"], "final answer")
+        self.assertTrue(done["metadata"]["used_summaries"])
 
     def test_response_hidden_reasoning_filter_removes_think_blocks(self) -> None:
         text, removed = router.strip_response_hidden_reasoning("<think>secret</think>\nfinal")
@@ -1249,7 +1432,12 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                 "metadata": {"instruction": "test", "prompt_chars": 8},
             }
 
-        router.generate_response_source = fake_generate
+        async def fake_stream(_tenant, source, **_kwargs):
+            result = await fake_generate(_tenant, source, **_kwargs)
+            async for item in fake_stream_response_source_from_result(source, result):
+                yield item
+
+        router.stream_response_source = fake_stream
         router.stream_response_synthesis = fake_synthesis
         req = router.EnsembleRequest(
             request_id="response-aggregate-flow",
@@ -1306,7 +1494,12 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                 "metadata": {"instruction": "test", "prompt_chars": 8},
             }
 
-        router.generate_response_source = fake_generate
+        async def fake_stream(_tenant, source, **_kwargs):
+            result = await fake_generate(_tenant, source, **_kwargs)
+            async for item in fake_stream_response_source_from_result(source, result):
+                yield item
+
+        router.stream_response_source = fake_stream
         router.stream_response_synthesis = fake_synthesis
         base_sources = [
             router.EnsembleSource(source_id="source-1", model_alias="qwen-7b", prompt="Question?"),
@@ -1399,6 +1592,27 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("compressed_contributions", auto_plan)
         self.assertIn("call_ledger_summary", auto_plan)
         self.assertIn("internal_total_tokens", auto_plan)
+
+
+class BackendAdapterTests(unittest.TestCase):
+    def test_context_limit_retry_uses_backend_token_count(self) -> None:
+        detail = (
+            "This model's maximum context length is 8192 tokens. However, you requested "
+            "7600 output tokens and your prompt contains at least 593 input tokens, for "
+            "a total of at least 8193 tokens."
+        )
+
+        self.assertEqual(backend_adapters.context_limit_retry_max_tokens(detail, 7600), 3800)
+
+    def test_context_limit_retry_skips_when_prompt_exceeds_context(self) -> None:
+        detail = (
+            "This model's maximum context length is 8192 tokens. However, you requested "
+            "1024 output tokens and your prompt contains 10816 input tokens, for a total "
+            "of 11840 tokens."
+        )
+
+        self.assertIsNone(backend_adapters.context_limit_retry_max_tokens(detail, 1024))
+        self.assertIsNone(backend_adapters.context_limit_retry_max_tokens("other bad request", 1024))
 
 
 if __name__ == "__main__":

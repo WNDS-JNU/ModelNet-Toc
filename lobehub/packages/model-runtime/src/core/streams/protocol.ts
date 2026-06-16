@@ -97,6 +97,8 @@ export interface StreamProtocolChunk {
     | 'usage'
     // performance monitor
     | 'speed'
+    // ModelNet source-level stream event
+    | 'modelnet_source'
     // unknown data result
     | 'data';
 }
