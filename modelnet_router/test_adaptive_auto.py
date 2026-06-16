@@ -1141,6 +1141,28 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(router.estimate_context_prompt_tokens(user_prompt), 1200)
         self.assertIn("[truncated]", user_prompt)
 
+    def test_response_synthesis_fallback_closes_truncated_summaries(self) -> None:
+        long_text = "Zhu Yuanzhang consolidated resources and built institutions " * 600
+        summary = router.deterministic_response_summary(
+            {"source_id": "source-1", "text": long_text, "weight": 1.0}
+        )
+
+        fallback = router.response_synthesis_fallback_text(
+            [{"source_id": "source-1", "text": long_text, "weight": 1.0}],
+            "synthesis returned no visible final answer",
+        )
+
+        short_cutoff = router.deterministic_response_summary(
+            {"source_id": "source-2", "text": ("detail " * 40) + "unfinished:", "weight": 1.0}
+        )
+
+        self.assertTrue(summary.endswith("[truncated]."))
+        self.assertFalse(router.answer_looks_cut_off(summary))
+        self.assertTrue(short_cutoff.endswith("[truncated]."))
+        self.assertFalse(router.answer_looks_cut_off(short_cutoff))
+        self.assertTrue(fallback.endswith("final answer for this request."))
+        self.assertFalse(router.answer_looks_cut_off(fallback))
+
     async def test_response_aggregate_sources_receive_original_payloads(self) -> None:
         seen: dict[str, dict[str, Any]] = {}
 
@@ -1302,6 +1324,105 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("source.started", [data.get("type") for data in modelnet_events])
         self.assertIn("source.completed", [data.get("type") for data in modelnet_events])
         self.assertEqual(done_payload(events)["text"], "combined")
+
+    def test_openai_modelnet_content_marker_uses_compact_delta_event(self) -> None:
+        event = {
+            "type": "source.delta",
+            "sourceId": "source-1",
+            "source_id": "source-1",
+            "model": "qwen",
+            "backend": {"id": "qwen", "capabilities": ["chat"]},
+            "delta": "beta",
+            "text": "alpha beta",
+        }
+
+        chunk = router.openai_modelnet_event_payload(
+            request_id="req",
+            model="modelnet",
+            modelnet_event=event,
+            include_content_marker=True,
+        )
+        _event, data = router.parse_sse_chunk(chunk)
+        marker = data["choices"][0]["delta"]["content"]
+        self.assertTrue(marker.startswith(router.MODELNET_EVENT_CONTENT_PREFIX))
+        raw_marker = marker[
+            len(router.MODELNET_EVENT_CONTENT_PREFIX) : -len(router.MODELNET_EVENT_CONTENT_SUFFIX)
+        ]
+        marker_event = json.loads(raw_marker)
+
+        self.assertEqual(data["modelnet_event"]["text"], "alpha beta")
+        self.assertEqual(marker_event["type"], "source.delta")
+        self.assertEqual(marker_event["sourceId"], "source-1")
+        self.assertEqual(marker_event["delta"], "beta")
+        self.assertNotIn("text", marker_event)
+        self.assertNotIn("backend", marker_event)
+
+    def test_response_synthesizer_ignores_empty_source_responses(self) -> None:
+        router.load_candidates = lambda: [
+            candidate("large-empty", metadata={"family": "qwen", "size": "35b"}),
+            candidate("smaller-visible", metadata={"family": "qwen", "size": "14b"}),
+        ]
+        req = router.EnsembleRequest(
+            request_id="response-synthesizer-nonempty",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            sources=[router.EnsembleSource(source_id="source-1", prompt="Question?")],
+        )
+        responses = [
+            {"source_id": "source-1", "backend": {"id": "large-empty"}, "text": "", "weight": 1.0},
+            {"source_id": "source-2", "backend": {"id": "smaller-visible"}, "text": "visible", "weight": 1.0},
+        ]
+        self.assertEqual(router.response_synthesizer_model_alias(req, responses), "smaller-visible")
+
+    async def test_response_synthesis_continues_cut_off_final_answer(self) -> None:
+        calls: list[str] = []
+
+        async def fake_pick_candidate(*, tenant=None, candidate_aliases=None, required_capabilities=None):
+            return candidate("qwen-35b", metadata={"max_model_len": 8192}), 10.0, "ready"
+
+        async def fake_backend_stream_chat(_candidate, body, *, http_client, headers):
+            messages = body.get("messages") or []
+            prompt = "\n".join(str(message.get("content") or "") for message in messages)
+            if "Partial final answer already sent" in prompt:
+                calls.append("continue")
+                yield (
+                    'data: {"choices":[{"delta":{"content":"白手起家，最终建立明朝。'
+                    '综合来看，若看创业难度朱元璋更强；若看制度与盛世，李世民更强。"}}]}\n\n'
+                ).encode()
+                yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+                yield b"data: [DONE]\n\n"
+                return
+
+            calls.append("initial")
+            yield (
+                'data: {"choices":[{"delta":{"content":"朱元璋出身贫寒，从社会最底层"}}]}\n\n'
+            ).encode()
+            yield b'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        router.pick_candidate = fake_pick_candidate
+        router.backend_stream_chat = fake_backend_stream_chat
+        router.http_client = object()
+        req = router.EnsembleRequest(
+            request_id="response-synthesis-continue",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            sources=[router.EnsembleSource(source_id="source-1", prompt="Question?")],
+        )
+        responses = [
+            {"source_id": "source-1", "text": "李世民善治。", "weight": 1.0},
+            {"source_id": "source-2", "text": "朱元璋创业难度高。", "weight": 1.0},
+        ]
+
+        events = []
+        async for event in router.stream_response_synthesis(req, self.tenant, responses):
+            events.append(event)
+
+        done = [event for event in events if event.get("event") == "done"][0]
+        self.assertEqual(calls, ["initial", "continue"])
+        self.assertIn("最终建立明朝", done["synthesis"]["text"])
+        self.assertTrue(done["synthesis"]["text"].endswith("李世民更强。"))
+        self.assertTrue(done["synthesis"]["metadata"]["response_synthesis_continuation"]["applied"])
 
     async def test_response_synthesis_context_400_summarizes_and_retries(self) -> None:
         attempts: list[int] = []

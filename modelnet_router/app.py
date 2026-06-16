@@ -134,7 +134,10 @@ CLAIM_EXTRACT_MAX_TOKENS = int(os.environ.get("MODELNET_CLAIM_EXTRACT_MAX_TOKENS
 CLAIM_COVERAGE_SHORTCUT = float(os.environ.get("MODELNET_CLAIM_COVERAGE_SHORTCUT", "0.8"))
 ENSEMBLE_THINK_MAX_TOKENS = int(os.environ.get("MODELNET_ENSEMBLE_THINK_MAX_TOKENS", "1024"))
 RESPONSE_AGGREGATE_MAX_TOKENS = int(
-    os.environ.get("MODELNET_RESPONSE_AGGREGATE_MAX_TOKENS", "1536")
+    os.environ.get("MODELNET_RESPONSE_AGGREGATE_MAX_TOKENS", "4096")
+)
+RESPONSE_SYNTHESIS_MAX_CONTINUATIONS = int(
+    os.environ.get("MODELNET_RESPONSE_SYNTHESIS_MAX_CONTINUATIONS", "2")
 )
 RESPONSE_PARALLEL_MAX_TOKEN_SAFETY_MARGIN = int(
     os.environ.get("MODELNET_RESPONSE_PARALLEL_MAX_TOKEN_SAFETY_MARGIN", "512")
@@ -2294,6 +2297,16 @@ def internal_thinking_extra(request: EnsembleRequest) -> dict[str, Any]:
     return {}
 
 
+def response_synthesis_extra(request: EnsembleRequest) -> dict[str, Any]:
+    extra = dict(internal_thinking_extra(request))
+    if coerce_bool(request.runner_config.get("enable_synthesis_thinking"), default=False):
+        return extra
+    chat_template_kwargs = dict(extra.get("chat_template_kwargs") or {})
+    chat_template_kwargs["enable_thinking"] = False
+    extra["chat_template_kwargs"] = chat_template_kwargs
+    return extra
+
+
 async def plan_auto_ensemble(
     request: EnsembleRequest,
     tenant: GatewayTenant,
@@ -4433,6 +4446,43 @@ def openai_modelnet_event_content_marker(modelnet_event: dict[str, Any]) -> str:
     return f"{MODELNET_EVENT_CONTENT_PREFIX}{event_json}{MODELNET_EVENT_CONTENT_SUFFIX}"
 
 
+def compact_modelnet_event_for_content_marker(modelnet_event: dict[str, Any]) -> dict[str, Any]:
+    event_type = str(modelnet_event.get("type") or "")
+    source_id = modelnet_event.get("sourceId") or modelnet_event.get("source_id")
+    compact: dict[str, Any] = {"type": event_type}
+    if source_id:
+        compact["sourceId"] = source_id
+        compact["source_id"] = source_id
+    model = modelnet_event.get("model")
+    if model and event_type != "source.delta":
+        compact["model"] = model
+    if event_type == "source.delta":
+        compact["delta"] = str(modelnet_event.get("delta") or "")
+        return compact
+    if event_type == "source.started":
+        return compact
+    if event_type == "source.completed":
+        latency = modelnet_event.get("latencyMs", modelnet_event.get("latency_ms"))
+        if latency is not None:
+            compact["latencyMs"] = latency
+            compact["latency_ms"] = latency
+        return compact
+    if event_type == "source.failed":
+        compact["error"] = str(modelnet_event.get("error") or "unknown error")
+        latency = modelnet_event.get("latencyMs", modelnet_event.get("latency_ms"))
+        if latency is not None:
+            compact["latencyMs"] = latency
+            compact["latency_ms"] = latency
+        return compact
+    if event_type == "source.summarized":
+        compact["text"] = str(modelnet_event.get("text") or "")
+        return compact
+    for key in ("reason", "sourceCount", "source_count", "error"):
+        if key in modelnet_event:
+            compact[key] = modelnet_event[key]
+    return compact
+
+
 def openai_modelnet_event_payload(
     *,
     request_id: str,
@@ -4442,10 +4492,11 @@ def openai_modelnet_event_payload(
 ) -> bytes:
     choices: list[dict[str, Any]] = []
     if include_content_marker:
+        marker_event = compact_modelnet_event_for_content_marker(modelnet_event)
         choices.append(
             {
                 "index": 0,
-                "delta": {"content": openai_modelnet_event_content_marker(modelnet_event)},
+                "delta": {"content": openai_modelnet_event_content_marker(marker_event)},
                 "finish_reason": None,
             }
         )
@@ -5421,6 +5472,13 @@ async def source_with_synthesis_max_tokens(
     return source.model_copy(update={"sampling_params": sampling_params})
 
 
+def response_synthesis_continuation_max_tokens(request: EnsembleRequest) -> int:
+    return positive_int(
+        request.runner_config.get("continuation_max_tokens", response_aggregate_max_tokens(request)),
+        response_aggregate_max_tokens(request),
+    )
+
+
 def response_synthesis_prompt_exceeds_context(
     request: EnsembleRequest,
     responses: list[dict[str, Any]],
@@ -5476,13 +5534,21 @@ def response_backend_id(response: dict[str, Any]) -> str:
     return ""
 
 
+def response_has_visible_text(response: dict[str, Any]) -> bool:
+    return bool(str(response.get("text") or "").strip())
+
+
 def response_synthesizer_model_alias(request: EnsembleRequest, responses: list[dict[str, Any]]) -> str | None:
     for key in ("response_synthesizer_model", "synthesizer_model"):
         raw = request.runner_config.get(key)
         if raw:
             return str(raw).strip() or None
 
-    response_ids = {response_backend_id(response) for response in responses}
+    response_ids = {
+        response_backend_id(response)
+        for response in responses
+        if response_has_visible_text(response)
+    }
     response_ids.discard("")
     if not response_ids:
         return None
@@ -6559,8 +6625,37 @@ def build_response_synthesis_source(
         ],
         sampling_params=sampling_params,
         weight=1.0,
-        extra=internal_thinking_extra(request),
+        extra=response_synthesis_extra(request),
     ), instruction, user_prompt
+
+
+def build_response_synthesis_continuation_source(
+    request: EnsembleRequest,
+    candidate: Candidate,
+    user_prompt: str,
+    partial_answer: str,
+) -> EnsembleSource:
+    continuation_prompt = "\n\n".join(
+        [
+            user_prompt,
+            "Partial final answer already sent:",
+            "```text\n" + (partial_answer or "").rstrip() + "\n```",
+            "Continue from the exact next character after the partial answer. "
+            "Do not repeat text already written. Finish the user-facing answer cleanly.",
+        ]
+    )
+    return EnsembleSource(
+        source_id="__response_aggregator_continuation__",
+        model_alias=candidate.model_id,
+        prompt=continuation_prompt,
+        messages=[
+            {"role": "system", "content": RESPONSE_AGGREGATE_SYSTEM_PROMPT},
+            {"role": "user", "content": continuation_prompt},
+        ],
+        sampling_params={"max_tokens": response_synthesis_continuation_max_tokens(request)},
+        weight=1.0,
+        extra=response_synthesis_extra(request),
+    )
 
 
 def context_length_error(exc: Exception) -> bool:
@@ -6579,11 +6674,41 @@ def context_length_error(exc: Exception) -> bool:
     return any(marker in text for marker in markers)
 
 
+def truncate_text_for_fallback_summary(text: str, max_chars: int) -> str:
+    limit = positive_int(max_chars, RESPONSE_SYNTHESIS_SUMMARY_MAX_CHARS)
+    compact = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(compact) <= limit:
+        if answer_looks_cut_off(compact):
+            return f"{compact} ... [truncated]."
+        return compact
+
+    suffix = " ... [truncated]."
+    window = compact[: max(1, limit - len(suffix))].rstrip()
+    if not window:
+        return "[truncated]."
+
+    minimum_useful = min(len(window), max(80, len(window) // 3))
+    sentence_cut = 0
+    for match in re.finditer(r"[.!?\u3002\uff01\uff1f](?:[\"'\)\]\}])?", window):
+        if match.end() >= minimum_useful:
+            sentence_cut = match.end()
+    if sentence_cut:
+        window = window[:sentence_cut].rstrip()
+    else:
+        separator_cut = max(window.rfind(separator) for separator in (";", ",", ":", " "))
+        if separator_cut >= minimum_useful:
+            window = window[:separator_cut].rstrip(" ;,:")
+
+    if not window:
+        window = compact[: max(1, limit - len(suffix))].rstrip()
+    return f"{window}{suffix}"
+
+
 def deterministic_response_summary(response: dict[str, Any]) -> str:
     text = str(response.get("text") or "").strip()
     if not text:
         return "(empty source response)"
-    return compress_contribution_text(text, max_chars=RESPONSE_SYNTHESIS_SUMMARY_MAX_CHARS)
+    return truncate_text_for_fallback_summary(text, RESPONSE_SYNTHESIS_SUMMARY_MAX_CHARS)
 
 
 def response_summary_prompt(response: dict[str, Any]) -> str:
@@ -6671,12 +6796,14 @@ def response_synthesis_fallback_text(responses: list[dict[str, Any]], error: str
         "The response synthesizer could not complete, so ModelNet returned a degraded result from the source responses.",
     ]
     if error:
-        lines.extend(["", f"Synthesis error: {error[:240]}"])
+        error_text = truncate_text_for_fallback_summary(str(error), 240)
+        lines.extend(["", f"Synthesis error: {error_text}"])
     lines.append("")
     for index, response in enumerate(responses, start=1):
         source_id = str(response.get("source_id") or f"source-{index}")
         text = deterministic_response_summary(response)
         lines.extend([f"## {source_id}", text, ""])
+    lines.append("These stable source summaries are the degraded final answer for this request.")
     return "\n".join(lines).strip()
 
 
@@ -6794,6 +6921,9 @@ def openai_stream_delta_parts(data: dict[str, Any]) -> tuple[str, str, dict[str,
     for choice in choices:
         if not isinstance(choice, dict):
             continue
+        finish_reason = choice.get("finish_reason")
+        if finish_reason:
+            metadata["finish_reason"] = str(finish_reason)
         delta = choice.get("delta")
         if not isinstance(delta, dict):
             continue
@@ -7065,6 +7195,102 @@ async def stream_response_synthesis(
                 }
         elif removed_hidden_reasoning:
             metadata["response_synthesis_hidden_reasoning_removed"] = True
+
+        continuation_events: list[dict[str, Any]] = []
+        max_continuations = positive_int(
+            request.runner_config.get("synthesis_max_continuations", RESPONSE_SYNTHESIS_MAX_CONTINUATIONS),
+            RESPONSE_SYNTHESIS_MAX_CONTINUATIONS,
+        )
+        for continuation_index in range(max_continuations):
+            if source is None or not answer_needs_continuation(text, metadata):
+                break
+            continuation_source = build_response_synthesis_continuation_source(
+                request,
+                candidate,
+                user_prompt,
+                text,
+            )
+            continuation_source = await source_with_synthesis_max_tokens(
+                candidate,
+                continuation_source,
+                request,
+                context_length=context_length,
+            )
+            continuation_result: dict[str, Any] = {}
+            event_metadata: dict[str, Any] = {
+                "attempted": True,
+                "applied": False,
+                "index": continuation_index + 1,
+                "reason": metadata.get("finish_reason") or "cut_off",
+            }
+            try:
+                async for item in stream_response_synthesis_attempt(candidate, continuation_source):
+                    if item.get("event") == "result":
+                        continuation_result = item
+            except Exception as exc:  # noqa: BLE001
+                event_metadata["error"] = str(exc)[:300]
+                continuation_events.append(event_metadata)
+                break
+
+            continuation_text = str(continuation_result.get("text") or "")
+            continuation_metadata = dict(continuation_result.get("metadata") or {})
+            continuation_text, continuation_removed_hidden = strip_response_hidden_reasoning(
+                continuation_text
+            )
+            if not continuation_text:
+                event_metadata.update(
+                    {
+                        "metadata": continuation_metadata,
+                        "removed_hidden_reasoning": continuation_removed_hidden,
+                    }
+                )
+                continuation_events.append(event_metadata)
+                break
+
+            merged_text = merge_continuation_text(text, continuation_text)
+            append_delta = merged_text[len(text) :] if merged_text.startswith(text) else continuation_text
+            if append_delta:
+                yield {"event": "token", "delta": append_delta}
+            text = merged_text
+            event_metadata.update(
+                {
+                    "applied": True,
+                    "metadata": continuation_metadata,
+                    "removed_hidden_reasoning": continuation_removed_hidden,
+                }
+            )
+            continuation_events.append(event_metadata)
+            metadata["finish_reason"] = continuation_metadata.get("finish_reason") or metadata.get("finish_reason")
+        if continuation_events:
+            metadata["response_synthesis_continuation"] = continuation_events[-1]
+            metadata["response_synthesis_continuations"] = continuation_events
+        if text and answer_needs_continuation(text, metadata):
+            fallback_tail = response_synthesis_fallback_text(
+                responses_for_synthesis,
+                "synthesis stopped before a complete final answer",
+            )
+            fallback_delta = "\n\n---\n\n" + fallback_tail
+            yield {"event": "token", "delta": fallback_delta}
+            text = text.rstrip() + fallback_delta
+            metadata["degraded"] = True
+            metadata["fallback_reason"] = "cutoff_after_continuation"
+            metadata["synthesis_error"] = "synthesis stopped before a complete final answer"
+            metadata["response_synthesis_cutoff_fallback"] = {
+                "applied": True,
+                "reason": metadata.get("finish_reason") or "cut_off",
+            }
+
+        if not text:
+            fallback_text = response_synthesis_fallback_text(
+                responses_for_synthesis,
+                "synthesis returned no visible final answer",
+            )
+            if fallback_text:
+                text = fallback_text
+                metadata["degraded"] = True
+                metadata["fallback_reason"] = "empty_synthesis"
+                metadata["synthesis_error"] = "synthesis returned no visible final answer"
+                yield {"event": "token", "delta": text}
 
         if used_summaries:
             metadata["used_summaries"] = True
@@ -7534,8 +7760,21 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
         await asyncio.gather(*tasks, return_exceptions=True)
 
         results.sort(key=lambda item: source_order.get(str(item.get("source_id") or ""), len(source_order)))
-        successful = [result for result in results if result.get("error") is None]
+        successful = [
+            result
+            for result in results
+            if result.get("error") is None and response_has_visible_text(result)
+        ]
         failed = [result for result in results if result.get("error") is not None]
+        empty_successful = [
+            result
+            for result in results
+            if result.get("error") is None and not response_has_visible_text(result)
+        ]
+        for result in empty_successful:
+            failed_result = dict(result)
+            failed_result["error"] = "empty source response"
+            failed.append(failed_result)
 
         if len(successful) < 2:
             yield sse(
@@ -7630,6 +7869,12 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
             elif event == "done":
                 synthesis = dict(synthesis_event.get("synthesis") or {})
                 synthesis_metadata = dict(synthesis_event.get("metadata") or {})
+                synthesis_text = str(synthesis.get("text") or "")
+                if synthesis_text and synthesis_text != text:
+                    delta = synthesis_text[len(text) :] if synthesis_text.startswith(text) else synthesis_text
+                    if delta:
+                        text = synthesis_text
+                        yield sse("token", {"delta": delta, "text": text})
 
         if synthesis is None:
             yield sse("error", {"error": "response synthesis did not complete"})
@@ -7664,6 +7909,7 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
                     "weights": {item["source_id"]: item.get("weight", 1.0) for item in successful},
                     "response_aggregator": {
                         "backend": synthesis["backend"],
+                        **dict(synthesis.get("metadata") or {}),
                         **synthesis_metadata,
                     },
                     "trace_summary": {
