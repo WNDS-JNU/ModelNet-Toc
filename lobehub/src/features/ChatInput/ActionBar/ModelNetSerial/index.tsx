@@ -391,3 +391,125 @@ const ModelNetSerial = memo(() => {
             <span className={styles.availableHeader}>{CHAIN_LABEL}</span>
             <div className={styles.chainPreview}>{chainPreview}</div>
             <Flexbox className={styles.list} gap={6}>
+              {draftIds.map((id, index) => {
+                const candidate = modelMap.get(id);
+                const displayName = candidate?.displayName || id;
+                const showId = id !== displayName;
+
+                return (
+                  <div className={styles.option} key={`${id}-${index}`} title={id}>
+                    <span className={styles.stepBadge}>step-{index + 1}</span>
+                    <Flexbox flex={1} gap={2} style={{ minWidth: 0 }}>
+                      <span className={styles.modelName}>{displayName}</span>
+                      {showId && <span className={styles.modelId}>{id}</span>}
+                    </Flexbox>
+                    <Flexbox horizontal className={styles.rowActions} gap={2}>
+                      <Button
+                        disabled={index === 0}
+                        icon={<Icon icon={ArrowUpIcon} size={14} />}
+                        size="small"
+                        type="text"
+                        onClick={() => setDraftIds((current) => moveItem(current, index, -1))}
+                      />
+                      <Button
+                        disabled={index === draftIds.length - 1}
+                        icon={<Icon icon={ArrowDownIcon} size={14} />}
+                        size="small"
+                        type="text"
+                        onClick={() => setDraftIds((current) => moveItem(current, index, 1))}
+                      />
+                      <Button
+                        icon={<Icon icon={Trash2Icon} size={14} />}
+                        size="small"
+                        type="text"
+                        onClick={() => setDraftIds((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                      />
+                    </Flexbox>
+                  </div>
+                );
+              })}
+            </Flexbox>
+          </Flexbox>
+
+          <SearchBar
+            allowClear
+            className={styles.search}
+            placeholder={SEARCH_PLACEHOLDER_LABEL}
+            size="small"
+            value={searchKeyword}
+            variant="borderless"
+            onChange={(event) => setSearchKeyword(event.target.value)}
+            onKeyDown={(event) => event.stopPropagation()}
+          />
+
+          <Flexbox gap={6}>
+            <Flexbox horizontal align={'center'} justify={'space-between'}>
+              <span className={styles.availableHeader}>{AVAILABLE_LABEL}</span>
+              <span className={cx(styles.hint, draftInvalid && styles.hintInvalid)}>{draftHint}</span>
+            </Flexbox>
+            <Flexbox className={styles.list} gap={6}>
+              {filteredCandidates.length === 0 ? (
+                <div className={styles.empty}>{EMPTY_LABEL}</div>
+              ) : (
+                filteredCandidates.map((candidate) => {
+                  const displayName = candidate.displayName || candidate.id;
+                  const showId = candidate.id !== displayName;
+                  const blocked = draftIds.length >= MAX_MODELNET_SERIAL_MODELS;
+
+                  return (
+                    <button
+                      className={cx(styles.option, blocked && styles.invalid)}
+                      disabled={blocked}
+                      key={candidate.id}
+                      title={candidate.id}
+                      type="button"
+                      onClick={() => handleAdd(candidate.id)}
+                    >
+                      <Icon icon={PlusIcon} size={14} />
+                      <Flexbox flex={1} gap={2} style={{ minWidth: 0 }}>
+                        <span className={styles.modelName}>{displayName}</span>
+                        {showId && <span className={styles.modelId}>{candidate.id}</span>}
+                      </Flexbox>
+                    </button>
+                  );
+                })
+              )}
+            </Flexbox>
+          </Flexbox>
+
+          <Flexbox horizontal align={'center'} className={styles.footer} justify={'space-between'}>
+            <span className={styles.count}>
+              {draftIds.length}/{MAX_MODELNET_SERIAL_MODELS}
+            </span>
+            <Flexbox horizontal gap={8}>
+              <Button size="small" onClick={() => setOpen(false)}>
+                {CANCEL_LABEL}
+              </Button>
+              <Button disabled={draftInvalid} size="small" type="primary" onClick={handleSave}>
+                {SAVE_LABEL}
+              </Button>
+            </Flexbox>
+          </Flexbox>
+        </Flexbox>
+      }
+      nativeButton={false}
+      open={open}
+      placement="top"
+      onOpenChange={setOpen}
+    >
+      <button
+        className={cx(styles.trigger, invalid && styles.invalid)}
+        title="ModelNet 串联模型"
+        type="button"
+      >
+        <Icon icon={LinkIcon} size={14} />
+        <span>{SERIAL_LABEL}</span>
+        <span className={styles.triggerBadge}>{selectedIds.length}</span>
+      </button>
+    </Popover>
+  );
+});
+
+ModelNetSerial.displayName = 'ModelNetSerial';
+
+export default ModelNetSerial;
