@@ -1,10 +1,7 @@
 from pathlib import Path
 
 
-def discover_targets() -> list[Path]:
-    candidates = [Path("/app/litellm/responses/utils.py")]
-    candidates.extend(Path("/usr/lib").glob("python*/site-packages/litellm/responses/utils.py"))
-    candidates.extend(Path("/usr/local/lib").glob("python*/site-packages/litellm/responses/utils.py"))
+def unique_existing(candidates: list[Path]) -> list[Path]:
     seen: set[Path] = set()
     targets: list[Path] = []
     for candidate in candidates:
@@ -12,6 +9,20 @@ def discover_targets() -> list[Path]:
             seen.add(candidate)
             targets.append(candidate)
     return targets
+
+
+def discover_response_targets() -> list[Path]:
+    candidates = [Path("/app/litellm/responses/utils.py")]
+    candidates.extend(Path("/usr/lib").glob("python*/site-packages/litellm/responses/utils.py"))
+    candidates.extend(Path("/usr/local/lib").glob("python*/site-packages/litellm/responses/utils.py"))
+    return unique_existing(candidates)
+
+
+def discover_chat_targets() -> list[Path]:
+    candidates = [Path("/app/litellm/llms/openai/openai.py")]
+    candidates.extend(Path("/usr/lib").glob("python*/site-packages/litellm/llms/openai/openai.py"))
+    candidates.extend(Path("/usr/local/lib").glob("python*/site-packages/litellm/llms/openai/openai.py"))
+    return unique_existing(candidates)
 
 
 upstream_param_filter = '''        valid_keys = get_type_hints(ResponsesAPIOptionalRequestParams).keys()
@@ -89,8 +100,64 @@ new_allowed_params = '''        non_default_params = cast(Dict, response_api_opt
         ResponsesAPIRequestUtils._check_valid_arg(
 '''
 
+chat_helper_anchor = '''    def _set_dynamic_params_on_client(
+        self,
+        client: Union[OpenAI, AsyncOpenAI],
+        organization: Optional[str] = None,
+        max_retries: Optional[int] = None,
+    ):
+'''
 
-def patch_target(target: Path) -> bool:
+chat_helper = '''    @staticmethod
+    def _move_modelnet_to_extra_body(data: dict) -> dict:
+        modelnet_param = data.pop("modelnet", None)
+        if modelnet_param is None:
+            return data
+        extra_body = data.get("extra_body")
+        if isinstance(extra_body, dict):
+            extra_body = dict(extra_body)
+        else:
+            extra_body = {}
+        extra_body["modelnet"] = modelnet_param
+        data["extra_body"] = extra_body
+        return data
+
+'''
+
+async_request_anchor = '''        start_time = time.time()
+        try:
+            raw_response = (
+                await openai_aclient.chat.completions.with_raw_response.create(
+                    **data, timeout=timeout
+                )
+'''
+
+async_request_patch = '''        start_time = time.time()
+        data = self._move_modelnet_to_extra_body(data)
+        try:
+            raw_response = (
+                await openai_aclient.chat.completions.with_raw_response.create(
+                    **data, timeout=timeout
+                )
+'''
+
+sync_request_anchor = '''        raw_response = None
+        try:
+            raw_response = openai_client.chat.completions.with_raw_response.create(
+                **data, timeout=timeout
+            )
+'''
+
+sync_request_patch = '''        raw_response = None
+        data = self._move_modelnet_to_extra_body(data)
+        try:
+            raw_response = openai_client.chat.completions.with_raw_response.create(
+                **data, timeout=timeout
+            )
+'''
+
+
+def patch_response_target(target: Path) -> bool:
     text = target.read_text(encoding="utf-8")
     patched = False
 
@@ -123,20 +190,60 @@ def patch_target(target: Path) -> bool:
     return patched
 
 
+def patch_chat_target(target: Path) -> bool:
+    text = target.read_text(encoding="utf-8")
+    patched = False
+
+    if "_move_modelnet_to_extra_body" not in text:
+        if chat_helper_anchor not in text:
+            raise RuntimeError(f"Could not find LiteLLM OpenAI chat helper anchor in {target}")
+        text = text.replace(chat_helper_anchor, chat_helper + chat_helper_anchor, 1)
+        patched = True
+
+    if async_request_anchor in text:
+        text = text.replace(async_request_anchor, async_request_patch, 1)
+        patched = True
+    elif "data = self._move_modelnet_to_extra_body(data)" not in text:
+        raise RuntimeError(f"Could not find LiteLLM async chat request block in {target}")
+
+    if sync_request_anchor in text:
+        text = text.replace(sync_request_anchor, sync_request_patch, 1)
+        patched = True
+    elif text.count("data = self._move_modelnet_to_extra_body(data)") < 2:
+        raise RuntimeError(f"Could not find LiteLLM sync chat request block in {target}")
+
+    if patched:
+        target.write_text(text, encoding="utf-8")
+    return patched
+
+
 def main() -> None:
-    targets = discover_targets()
-    if not targets:
+    response_targets = discover_response_targets()
+    chat_targets = discover_chat_targets()
+    if not response_targets:
         raise SystemExit("Could not find LiteLLM Responses utils.py to patch")
+    if not chat_targets:
+        raise SystemExit("Could not find LiteLLM OpenAI chat openai.py to patch")
+
     patched_any = False
-    for target in targets:
-        patched = patch_target(target)
+    for target in response_targets:
+        patched = patch_response_target(target)
         patched_any = patched_any or patched
         if patched:
             print(f"Patched {target} for ModelNet Responses passthrough")
         else:
             print(f"{target} already contains ModelNet Responses passthrough patch")
+
+    for target in chat_targets:
+        patched = patch_chat_target(target)
+        patched_any = patched_any or patched
+        if patched:
+            print(f"Patched {target} for ModelNet Chat Completions passthrough")
+        else:
+            print(f"{target} already contains ModelNet Chat Completions passthrough patch")
+
     if not patched_any:
-        print("All LiteLLM Responses utils.py targets already contained ModelNet patch")
+        print("All LiteLLM targets already contained ModelNet patch")
 
 
 if __name__ == "__main__":
