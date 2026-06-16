@@ -61,6 +61,24 @@ const processMarkdownBase64Images = (text: string): { cleanedText: string; urls:
   return { cleanedText, urls };
 };
 
+const MODELNET_EVENT_CONTENT_PREFIX = '\u001eMODELNET_EVENT:';
+const MODELNET_EVENT_CONTENT_SUFFIX = '\u001e';
+
+const parseModelNetEventContentMarker = (content: unknown) => {
+  if (typeof content !== 'string' || !content.startsWith(MODELNET_EVENT_CONTENT_PREFIX)) return;
+
+  const raw = content.endsWith(MODELNET_EVENT_CONTENT_SUFFIX)
+    ? content.slice(MODELNET_EVENT_CONTENT_PREFIX.length, -MODELNET_EVENT_CONTENT_SUFFIX.length)
+    : content.slice(MODELNET_EVENT_CONTENT_PREFIX.length);
+
+  try {
+    const event = JSON.parse(raw);
+    return event && typeof event === 'object' ? event : undefined;
+  } catch {
+    return;
+  }
+};
+
 const transformOpenAIStream = (
   chunk: OpenAI.ChatCompletionChunk,
   streamContext: StreamContext,
@@ -162,6 +180,11 @@ const transformOpenAIStream = (
     }
 
     const item = chunk.choices[0];
+
+    const modelnetMarkerEvent = parseModelNetEventContentMarker(item?.delta?.content);
+    if (modelnetMarkerEvent) {
+      return { data: modelnetMarkerEvent, id: chunk.id, type: 'modelnet_source' };
+    }
 
     if (item && typeof item.delta?.tool_calls === 'object' && item.delta.tool_calls?.length > 0) {
       // tools calling

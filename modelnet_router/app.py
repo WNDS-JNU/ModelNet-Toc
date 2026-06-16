@@ -4424,18 +4424,37 @@ def openai_parallel_flow_delta(event: str, data: dict[str, Any]) -> str:
     return ""
 
 
+MODELNET_EVENT_CONTENT_PREFIX = "\u001eMODELNET_EVENT:"
+MODELNET_EVENT_CONTENT_SUFFIX = "\u001e"
+
+
+def openai_modelnet_event_content_marker(modelnet_event: dict[str, Any]) -> str:
+    event_json = json.dumps(modelnet_event, ensure_ascii=False, separators=(",", ":"))
+    return f"{MODELNET_EVENT_CONTENT_PREFIX}{event_json}{MODELNET_EVENT_CONTENT_SUFFIX}"
+
+
 def openai_modelnet_event_payload(
     *,
     request_id: str,
     model: str,
     modelnet_event: dict[str, Any],
+    include_content_marker: bool = False,
 ) -> bytes:
+    choices: list[dict[str, Any]] = []
+    if include_content_marker:
+        choices.append(
+            {
+                "index": 0,
+                "delta": {"content": openai_modelnet_event_content_marker(modelnet_event)},
+                "finish_reason": None,
+            }
+        )
     payload = {
         "id": request_id,
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": model,
-        "choices": [],
+        "choices": choices,
         "modelnet_event": modelnet_event,
     }
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
@@ -4478,6 +4497,7 @@ async def stream_openai_ensemble_response(
                 request_id=request_id,
                 model=model,
                 modelnet_event=modelnet_event,
+                include_content_marker=show_parallel_flow,
             )
             continue
         if show_parallel_flow:
