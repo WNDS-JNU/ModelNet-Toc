@@ -325,6 +325,152 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ensemble.runner_config["allow_degraded"], False)
         self.assertEqual([source.model_alias for source in ensemble.sources], ["qwen-7b", "llama-8b"])
 
+    def serial_dify_request(self, serial_topology: dict[str, Any]) -> router.EnsembleRequest:
+        return router.EnsembleRequest(
+            sources=[router.EnsembleSource(source_id="source-1", prompt="hello")],
+            runner="dynamic_collab_route",
+            aggregator="dify.dsl",
+            runner_config={
+                "native_runner": "response.serial",
+                "serial_topology": serial_topology,
+            },
+            request_id="serial-test",
+        )
+
+    def test_serial_dify_preflight_reports_missing_generator_config_before_stream(self) -> None:
+        original = (
+            router.MODELNET_DIFY_INNER_API_KEY,
+            router.MODELNET_DIFY_WORKSPACE_ID,
+            router.MODELNET_DIFY_CREATOR_EMAIL,
+        )
+        try:
+            router.MODELNET_DIFY_INNER_API_KEY = ""
+            router.MODELNET_DIFY_WORKSPACE_ID = ""
+            router.MODELNET_DIFY_CREATOR_EMAIL = ""
+            error = router.serial_dify_preflight_error(
+                self.serial_dify_request(
+                    {
+                        "version": "modelnet.serial.v1",
+                        "nodes": [
+                            {"id": "step-1", "modelId": "model-a"},
+                            {"id": "step-2", "modelId": "model-b"},
+                        ],
+                        "edges": [{"source": "step-1", "target": "step-2"}],
+                    }
+                )
+            )
+        finally:
+            (
+                router.MODELNET_DIFY_INNER_API_KEY,
+                router.MODELNET_DIFY_WORKSPACE_ID,
+                router.MODELNET_DIFY_CREATOR_EMAIL,
+            ) = original
+
+        self.assertIsNotNone(error)
+        assert error is not None
+        self.assertEqual(error["stage"], "serial.dify.config")
+        self.assertEqual(router.serial_dify_preflight_status(error), 503)
+
+    def test_serial_dify_preflight_reports_invalid_topology_before_stream(self) -> None:
+        original = (
+            router.MODELNET_DIFY_INNER_API_KEY,
+            router.MODELNET_DIFY_WORKSPACE_ID,
+            router.MODELNET_DIFY_CREATOR_EMAIL,
+        )
+        try:
+            router.MODELNET_DIFY_INNER_API_KEY = "inner-secret"
+            router.MODELNET_DIFY_WORKSPACE_ID = "61fa3f27-e7fc-4e7f-813f-bbef43b4ebc2"
+            router.MODELNET_DIFY_CREATOR_EMAIL = "15225743339@163.com"
+            error = router.serial_dify_preflight_error(
+                self.serial_dify_request(
+                    {
+                        "version": "modelnet.serial.v1",
+                        "nodes": [{"id": "step-1", "modelId": "model-a"}],
+                        "edges": [],
+                    }
+                )
+            )
+        finally:
+            (
+                router.MODELNET_DIFY_INNER_API_KEY,
+                router.MODELNET_DIFY_WORKSPACE_ID,
+                router.MODELNET_DIFY_CREATOR_EMAIL,
+            ) = original
+
+        self.assertIsNotNone(error)
+        assert error is not None
+        self.assertEqual(error["stage"], "serial.topology")
+        self.assertEqual(router.serial_dify_preflight_status(error), 400)
+
+    async def test_dify_serial_provision_uses_admin_creator_and_topology_hash(self) -> None:
+        class FakeResponse:
+            is_error = False
+
+            def json(self) -> dict[str, Any]:
+                return {"api_key": "app-key", "app_id": "app-1", "workflow_id": "workflow-1"}
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, Any]] = []
+
+            async def post(self, url: str, **kwargs: Any) -> FakeResponse:
+                self.calls.append({"url": url, **kwargs})
+                return FakeResponse()
+
+        payload = {
+            "version": "modelnet.serial.v1",
+            "nodes": [
+                {"id": "step-1", "modelId": "model-a"},
+                {"id": "step-2", "modelId": "model-b"},
+            ],
+            "edges": [{"source": "step-1", "target": "step-2"}],
+        }
+        topology = router.parse_serial_topology(payload)
+        yaml_content = router.build_serial_dify_dsl(topology)
+        fake_client = FakeClient()
+        original = (
+            router.http_client,
+            router.MODELNET_DIFY_INNER_API_BASE,
+            router.MODELNET_DIFY_INNER_API_KEY,
+            router.MODELNET_DIFY_WORKSPACE_ID,
+            router.MODELNET_DIFY_CREATOR_EMAIL,
+            dict(router.dify_serial_workflow_cache),
+        )
+        try:
+            router.http_client = fake_client
+            router.MODELNET_DIFY_INNER_API_BASE = "http://api:5001/inner/api"
+            router.MODELNET_DIFY_INNER_API_KEY = "inner-secret"
+            router.MODELNET_DIFY_WORKSPACE_ID = "61fa3f27-e7fc-4e7f-813f-bbef43b4ebc2"
+            router.MODELNET_DIFY_CREATOR_EMAIL = "15225743339@163.com"
+            router.dify_serial_workflow_cache.clear()
+            result = await router.provision_dify_serial_workflow(topology, yaml_content)
+        finally:
+            (
+                router.http_client,
+                router.MODELNET_DIFY_INNER_API_BASE,
+                router.MODELNET_DIFY_INNER_API_KEY,
+                router.MODELNET_DIFY_WORKSPACE_ID,
+                router.MODELNET_DIFY_CREATOR_EMAIL,
+                cache,
+            ) = original
+            router.dify_serial_workflow_cache.clear()
+            router.dify_serial_workflow_cache.update(cache)
+
+        self.assertEqual(result["api_key"], "app-key")
+        self.assertEqual(len(fake_client.calls), 1)
+        call = fake_client.calls[0]
+        self.assertIn(
+            "/enterprise/workspaces/61fa3f27-e7fc-4e7f-813f-bbef43b4ebc2/modelnet/dsl/provision",
+            call["url"],
+        )
+        request_json = call["json"]
+        self.assertEqual(request_json["creator_email"], "15225743339@163.com")
+        self.assertEqual(request_json["external_key"], topology.hash)
+        self.assertEqual(request_json["topology_hash"], topology.hash)
+        self.assertEqual(request_json["yaml_content"], yaml_content)
+        self.assertNotIn("api_key", request_json)
+        self.assertEqual(call["headers"]["X-Inner-Api-Key"], "inner-secret")
+
 
     def test_openai_responses_payload_normalizes_to_auto_network(self) -> None:
         chat_body = router.openai_responses_to_chat_body(

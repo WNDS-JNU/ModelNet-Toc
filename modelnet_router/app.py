@@ -4316,6 +4316,39 @@ async def openai_ensemble_responses_response(
     native_runner = canonical_runner(ir.collaboration_plan.get("runner"))
     model_name = str(chat_body.get("model") or PUBLIC_AUTO_MODEL_NAME)
     prompt_text = text_from_messages(ir.messages)
+    headers = {
+        "X-ModelNet-Request-ID": request_id,
+        "X-ModelNet-Runner": native_runner,
+    }
+    preflight_error = serial_dify_preflight_error(ensemble_request)
+    if preflight_error is not None:
+        return openai_preflight_error_response(
+            error=preflight_error,
+            request_id=request_id,
+            model=model_name,
+            headers=headers,
+        )
+    if chat_body.get("stream") and is_serial_dify_request(ensemble_request):
+        try:
+            text, metadata = await collect_openai_ensemble_response(ensemble_request, tenant)
+        except HTTPException as exc:
+            return openai_preflight_error_response(
+                error=serial_dify_runtime_error_payload(ensemble_request, exc),
+                request_id=request_id,
+                model=model_name,
+                headers=headers,
+            )
+        return StreamingResponse(
+            stream_precomputed_openai_responses_response(
+                request_id=request_id,
+                model=model_name,
+                prompt_text=prompt_text,
+                text=text,
+                metadata=metadata,
+            ),
+            media_type="text/event-stream",
+            headers=headers,
+        )
     if chat_body.get("stream"):
         return StreamingResponse(
             stream_openai_responses_response(
@@ -4326,10 +4359,7 @@ async def openai_ensemble_responses_response(
                 prompt_text=prompt_text,
             ),
             media_type="text/event-stream",
-            headers={
-                "X-ModelNet-Request-ID": request_id,
-                "X-ModelNet-Runner": native_runner,
-            },
+            headers=headers,
         )
     text, metadata = await collect_openai_ensemble_response(ensemble_request, tenant)
     return JSONResponse(
@@ -4340,10 +4370,7 @@ async def openai_ensemble_responses_response(
             prompt_text=prompt_text,
             metadata=metadata,
         ),
-        headers={
-            "X-ModelNet-Request-ID": request_id,
-            "X-ModelNet-Runner": native_runner,
-        },
+        headers=headers,
     )
 
 def openai_parallel_flow_enabled(request: EnsembleRequest) -> bool:
@@ -4511,6 +4538,62 @@ def openai_modelnet_event_payload(
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
+def serial_dify_preflight_error(request: EnsembleRequest) -> dict[str, Any] | None:
+    native_runner = canonical_runner(str(request.runner_config.get("native_runner") or request.runner))
+    if native_runner != "response.serial" or request.aggregator != "dify.dsl":
+        return None
+    config_error = dify_serial_config_error()
+    if config_error:
+        return {
+            "error": config_error,
+            "stage": "serial.dify.config",
+            "runner": legacy_runner_name(native_runner),
+            "native_runner": native_runner,
+            "aggregator": request.aggregator,
+        }
+    try:
+        parse_serial_topology(
+            request.runner_config.get("serial_topology"),
+            max_nodes=MODELNET_DIFY_SERIAL_MAX_NODES,
+        )
+    except SerialTopologyError as exc:
+        return {
+            "error": str(exc),
+            "stage": "serial.topology",
+            "runner": legacy_runner_name(native_runner),
+            "native_runner": native_runner,
+            "aggregator": request.aggregator,
+        }
+    return None
+
+
+def serial_dify_preflight_status(error: dict[str, Any]) -> int:
+    return 400 if error.get("stage") == "serial.topology" else 503
+
+
+def openai_preflight_error_response(
+    *,
+    error: dict[str, Any],
+    request_id: str,
+    model: str,
+    headers: dict[str, str],
+) -> JSONResponse:
+    message = str(error.get("error") or "ModelNet serial preflight failed")
+    payload = {
+        "error": {
+            "message": message,
+            "type": "modelnet_serial_preflight_error",
+            "param": error.get("stage"),
+            "code": error.get("stage") or "modelnet_serial_preflight_error",
+        },
+        "message": message,
+        "model": model,
+        "request_id": request_id,
+        "modelnet": error,
+    }
+    return JSONResponse(payload, status_code=serial_dify_preflight_status(error), headers=headers)
+
+
 async def collect_openai_ensemble_response(
     request: EnsembleRequest,
     tenant: GatewayTenant,
@@ -4527,6 +4610,99 @@ async def collect_openai_ensemble_response(
         elif event == "error":
             raise HTTPException(status_code=502, detail=data)
     return text, metadata
+
+
+def is_serial_dify_request(request: EnsembleRequest) -> bool:
+    native_runner = canonical_runner(str(request.runner_config.get("native_runner") or request.runner))
+    return native_runner == "response.serial" and request.aggregator == "dify.dsl"
+
+
+def serial_dify_runtime_error_payload(request: EnsembleRequest, exc: HTTPException) -> dict[str, Any]:
+    detail = exc.detail
+    if isinstance(detail, dict):
+        error = detail.get("error") or detail.get("message") or str(detail)
+        stage = str(detail.get("stage") or "serial.dify")
+        topology_hash = detail.get("topology_hash")
+    else:
+        error = str(detail)
+        stage = "serial.dify"
+        topology_hash = None
+    native_runner = canonical_runner(str(request.runner_config.get("native_runner") or request.runner))
+    payload: dict[str, Any] = {
+        "error": str(error),
+        "stage": stage,
+        "runner": legacy_runner_name(native_runner),
+        "native_runner": native_runner,
+        "aggregator": request.aggregator,
+    }
+    if topology_hash:
+        payload["topology_hash"] = topology_hash
+    return payload
+
+
+async def stream_precomputed_openai_ensemble_response(
+    *,
+    request_id: str,
+    model: str,
+    text: str,
+) -> AsyncIterator[bytes]:
+    yield openai_stream_payload(request_id=request_id, model=model, delta={"role": "assistant"})
+    if text:
+        yield openai_stream_payload(request_id=request_id, model=model, delta={"content": text})
+    yield openai_stream_payload(request_id=request_id, model=model, delta={}, finish_reason="stop")
+    yield b"data: [DONE]\n\n"
+
+
+async def stream_precomputed_openai_responses_response(
+    *,
+    request_id: str,
+    model: str,
+    prompt_text: str,
+    text: str,
+    metadata: dict[str, Any],
+) -> AsyncIterator[bytes]:
+    message_id = openai_response_message_id(request_id)
+    yield openai_responses_stream_payload(
+        event="response.created",
+        data={
+            "type": "response.created",
+            "response": openai_response_base_payload(
+                request_id=request_id,
+                model=model,
+                status="in_progress",
+            ),
+        },
+    )
+    if text:
+        yield openai_responses_stream_payload(
+            event="response.output_text.delta",
+            data={
+                "type": "response.output_text.delta",
+                "item_id": message_id,
+                "output_index": 0,
+                "content_index": 0,
+                "delta": text,
+            },
+        )
+    completed = openai_response_payload(
+        request_id=request_id,
+        model=model,
+        text=text,
+        prompt_text=prompt_text,
+        metadata=metadata,
+    )
+    yield openai_responses_stream_payload(
+        event="response.output_item.done",
+        data={
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": completed["output"][0],
+        },
+    )
+    yield openai_responses_stream_payload(
+        event="response.completed",
+        data={"type": "response.completed", "response": completed},
+    )
 
 
 async def stream_openai_ensemble_response(
@@ -4591,14 +4767,42 @@ async def openai_ensemble_chat_response(
         ensemble_request = ensemble_request.model_copy(update={"request_id": request_id})
     native_runner = canonical_runner(ir.collaboration_plan.get("runner"))
     model_name = str(body.get("model") or PUBLIC_AUTO_MODEL_NAME)
+    headers = {
+        "X-ModelNet-Request-ID": request_id,
+        "X-ModelNet-Runner": native_runner,
+    }
+    preflight_error = serial_dify_preflight_error(ensemble_request)
+    if preflight_error is not None:
+        return openai_preflight_error_response(
+            error=preflight_error,
+            request_id=request_id,
+            model=model_name,
+            headers=headers,
+        )
+    if body.get("stream") and is_serial_dify_request(ensemble_request):
+        try:
+            text, metadata = await collect_openai_ensemble_response(ensemble_request, tenant)
+        except HTTPException as exc:
+            return openai_preflight_error_response(
+                error=serial_dify_runtime_error_payload(ensemble_request, exc),
+                request_id=request_id,
+                model=model_name,
+                headers=headers,
+            )
+        return StreamingResponse(
+            stream_precomputed_openai_ensemble_response(
+                request_id=request_id,
+                model=model_name,
+                text=text,
+            ),
+            media_type="text/event-stream",
+            headers=headers,
+        )
     if body.get("stream"):
         return StreamingResponse(
             stream_openai_ensemble_response(ensemble_request, tenant, request_id=request_id, model=model_name),
             media_type="text/event-stream",
-            headers={
-                "X-ModelNet-Request-ID": request_id,
-                "X-ModelNet-Runner": native_runner,
-            },
+            headers=headers,
         )
     text, metadata = await collect_openai_ensemble_response(ensemble_request, tenant)
     return JSONResponse(
@@ -4609,10 +4813,7 @@ async def openai_ensemble_chat_response(
             prompt_text=text_from_messages(ir.messages),
             metadata=metadata,
         ),
-        headers={
-            "X-ModelNet-Request-ID": request_id,
-            "X-ModelNet-Runner": native_runner,
-        },
+        headers=headers,
     )
 
 
@@ -8048,7 +8249,7 @@ async def run_dify_serial_ensemble(request: EnsembleRequest, tenant: GatewayTena
     emit_flow = (
         coerce_bool(request.runner_config.get("show_serial_flow"), default=False)
         or coerce_bool(request.runner_config.get("display_serial_flow"), default=False)
-        or bool(request.diagnostics.get("enable_trace_stream"))
+        or bool(request.diagnostics.enable_trace_stream)
     )
     config_error = dify_serial_config_error()
     if config_error:

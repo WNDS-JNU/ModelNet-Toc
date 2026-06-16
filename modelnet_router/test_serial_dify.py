@@ -76,14 +76,15 @@ class SerialTopologyTests(unittest.TestCase):
         parsed = parse_serial_topology(
             topology(["model-a", "model-b"], [("step-1", "step-2")])
         )
-        dsl = json.loads(
-            build_serial_dify_dsl(
-                parsed,
-                provider="langgenius/openai_api_compatible/openai_api_compatible",
-                max_tokens=512,
-                temperature=0.2,
-            )
+        dsl_text = build_serial_dify_dsl(
+            parsed,
+            provider="langgenius/openai_api_compatible/openai_api_compatible",
+            max_tokens=512,
+            temperature=0.2,
         )
+        dsl_text.encode("utf-8")
+        self.assertNotRegex(dsl_text, r"[\ud800-\udfff]")
+        dsl = json.loads(dsl_text)
 
         graph = dsl["workflow"]["graph"]
         node_types = [node["data"]["type"] for node in graph["nodes"]]
