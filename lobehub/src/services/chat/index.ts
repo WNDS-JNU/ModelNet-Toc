@@ -517,7 +517,7 @@ class ChatService {
           include_trace: true,
         },
         collaboration_plan: {
-          aggregator: 'dify.dsl',
+          aggregator: 'judge_refine',
           runner: 'response.serial',
           runner_config: {
             allow_degraded: false,

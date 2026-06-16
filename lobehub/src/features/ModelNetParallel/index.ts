@@ -162,7 +162,7 @@ const parallelModel: AiModelForSelect = {
 
 const serialModel: AiModelForSelect = {
   abilities: {},
-  description: 'Run selected ModelNet models in a Dify-backed serial chain.',
+  description: 'Run selected ModelNet models in a gateway-managed serial chain.',
   displayName: MODELNET_SERIAL_DISPLAY_NAME,
   id: MODELNET_SERIAL_MODEL_ID,
 };

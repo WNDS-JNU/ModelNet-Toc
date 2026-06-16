@@ -332,6 +332,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             aggregator="dify.dsl",
             runner_config={
                 "native_runner": "response.serial",
+                "serial_engine": "dify",
                 "serial_topology": serial_topology,
             },
             request_id="serial-test",
@@ -1133,6 +1134,230 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             disabled_req, candidate("aggregator"), responses
         )
         self.assertEqual(disabled_source.extra, {"chat_template_kwargs": {"enable_thinking": False}})
+
+
+    async def test_response_serial_judge_refine_dispatches_gateway_runner(self) -> None:
+        original_gateway = router.run_gateway_serial_ensemble
+        original_dify = router.run_dify_serial_ensemble
+        calls: list[str] = []
+
+        async def fake_gateway(request, tenant):
+            calls.append("gateway")
+            yield router.sse("done", {"text": "gateway final", "metadata": {"runner": request.runner}})
+
+        async def fake_dify(_request, _tenant):
+            calls.append("dify")
+            raise AssertionError("judge_refine serial requests must not call Dify")
+            yield b""
+
+        try:
+            router.run_gateway_serial_ensemble = fake_gateway
+            router.run_dify_serial_ensemble = fake_dify
+            req = router.EnsembleRequest(
+                request_id="serial-dispatch",
+                runner="dynamic_collab_route",
+                aggregator="judge_refine",
+                runner_config={
+                    "native_runner": "response.serial",
+                    "serial_topology": {
+                        "version": "modelnet.serial.v1",
+                        "nodes": [
+                            {"id": "step-1", "modelId": "model-a"},
+                            {"id": "step-2", "modelId": "model-b"},
+                        ],
+                        "edges": [{"source": "step-1", "target": "step-2"}],
+                    },
+                },
+                sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
+            )
+
+            events = await collect_events(router.run_ensemble_stream(req, self.tenant))
+        finally:
+            router.run_gateway_serial_ensemble = original_gateway
+            router.run_dify_serial_ensemble = original_dify
+
+        self.assertEqual(calls, ["gateway"])
+        self.assertEqual(done_payload(events)["text"], "gateway final")
+
+    async def test_gateway_serial_runs_topology_order_and_refines_previous_answer(self) -> None:
+        seen: list[dict[str, Any]] = []
+
+        async def fake_pick(_tenant, source, required_capabilities=None):
+            return candidate(str(source.model_alias), metadata={"max_model_len": 8192}), 10.0, "ready"
+
+        async def fake_generate(source_candidate, source, **_kwargs):
+            seen.append(
+                {
+                    "model": source_candidate.model_id,
+                    "source_id": source.source_id,
+                    "prompt": source.prompt,
+                    "messages": list(source.messages or []),
+                }
+            )
+            return {"text": f"answer from {source_candidate.model_id}", "metadata": {}}
+
+        router.pick_source_candidate = fake_pick
+        router.generate_text = fake_generate
+        req = router.EnsembleRequest(
+            request_id="serial-local",
+            runner="dynamic_collab_route",
+            aggregator="judge_refine",
+            runner_config={
+                "native_runner": "response.serial",
+                "serial_topology": {
+                    "version": "modelnet.serial.v1",
+                    "nodes": [
+                        {"id": "step-1", "modelId": "model-a"},
+                        {"id": "step-2", "modelId": "model-b"},
+                    ],
+                    "edges": [{"source": "step-1", "target": "step-2"}],
+                },
+            },
+            sources=[
+                router.EnsembleSource(
+                    source_id="input",
+                    prompt="Question?",
+                    messages=[{"role": "user", "content": "Question?"}],
+                    sampling_params={"max_tokens": 64},
+                )
+            ],
+        )
+
+        events = await collect_events(router.run_gateway_serial_ensemble(req, self.tenant))
+        done = done_payload(events)
+
+        self.assertEqual([item["model"] for item in seen], ["model-a", "model-b"])
+        self.assertIn("Question?", seen[1]["prompt"])
+        self.assertIn("answer from model-a", seen[1]["prompt"])
+        self.assertEqual(done["text"], "answer from model-b")
+        self.assertFalse(done["metadata"]["used_summaries"])
+
+    async def test_gateway_serial_summarizes_when_next_prompt_exceeds_context(self) -> None:
+        seen: list[dict[str, Any]] = []
+
+        async def fake_pick(_tenant, source, required_capabilities=None):
+            return candidate(str(source.model_alias), metadata={"max_model_len": 900}), 10.0, "ready"
+
+        async def fake_generate(source_candidate, source, **_kwargs):
+            seen.append(
+                {
+                    "model": source_candidate.model_id,
+                    "source_id": source.source_id,
+                    "prompt": source.prompt,
+                    "max_tokens": source.sampling_params.get("max_tokens"),
+                }
+            )
+            if source.source_id.endswith("__summary"):
+                return {"text": "compact serial context", "metadata": {}}
+            return {"text": "detail " * 200 if source.source_id == "step-1" else "final answer", "metadata": {}}
+
+        router.pick_source_candidate = fake_pick
+        router.generate_text = fake_generate
+        req = router.EnsembleRequest(
+            request_id="serial-summary",
+            runner="dynamic_collab_route",
+            aggregator="judge_refine",
+            runner_config={
+                "native_runner": "response.serial",
+                "serial_reserved_output_tokens": 64,
+                "serial_topology": {
+                    "version": "modelnet.serial.v1",
+                    "nodes": [
+                        {"id": "step-1", "modelId": "model-a"},
+                        {"id": "step-2", "modelId": "model-b"},
+                    ],
+                    "edges": [{"source": "step-1", "target": "step-2"}],
+                },
+            },
+            sources=[
+                router.EnsembleSource(
+                    source_id="input",
+                    prompt="Question?",
+                    messages=[{"role": "user", "content": "Question?"}],
+                    sampling_params={},
+                )
+            ],
+        )
+
+        events = await collect_events(router.run_gateway_serial_ensemble(req, self.tenant))
+        done = done_payload(events)
+        event_names = [event for event, _data in events]
+
+        self.assertIn("step-2__summary", [item["source_id"] for item in seen])
+        step2_call = [item for item in seen if item["source_id"] == "step-2"][-1]
+        self.assertIn("Compressed context", step2_call["prompt"])
+        self.assertIn("compact serial context", step2_call["prompt"])
+        self.assertEqual(done["text"], "final answer")
+        self.assertTrue(done["metadata"]["used_summaries"])
+        self.assertIn("modelnet_event", event_names)
+        summary = done["metadata"]["serial_steps"][1]["summary"]
+        self.assertEqual(summary["metadata"]["summary_method"], "model")
+        self.assertIn("prompt_tokens_before", summary["metadata"])
+        self.assertIn("prompt_tokens_after", summary["metadata"])
+
+    async def test_gateway_serial_uses_deterministic_summary_fallback(self) -> None:
+        async def fake_pick(_tenant, source, required_capabilities=None):
+            return candidate(str(source.model_alias), metadata={"max_model_len": 260}), 10.0, "ready"
+
+        async def fake_generate(_candidate, source, **_kwargs):
+            if source.source_id.endswith("__summary"):
+                raise RuntimeError("summary unavailable")
+            return {"text": "detail " * 200 if source.source_id == "step-1" else "final answer", "metadata": {}}
+
+        router.pick_source_candidate = fake_pick
+        router.generate_text = fake_generate
+        req = router.EnsembleRequest(
+            request_id="serial-summary-fallback",
+            runner="dynamic_collab_route",
+            aggregator="judge_refine",
+            runner_config={
+                "native_runner": "response.serial",
+                "serial_reserved_output_tokens": 64,
+                "serial_topology": {
+                    "version": "modelnet.serial.v1",
+                    "nodes": [
+                        {"id": "step-1", "modelId": "model-a"},
+                        {"id": "step-2", "modelId": "model-b"},
+                    ],
+                    "edges": [{"source": "step-1", "target": "step-2"}],
+                },
+            },
+            sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
+        )
+
+        events = await collect_events(router.run_gateway_serial_ensemble(req, self.tenant))
+        done = done_payload(events)
+        summary = done["metadata"]["serial_steps"][1]["summary"]
+
+        self.assertEqual(done["text"], "final answer")
+        self.assertEqual(summary["metadata"]["summary_method"], "deterministic_truncate")
+        self.assertIn("summary unavailable", summary["metadata"]["summary_error"])
+
+    async def test_gateway_serial_reports_invalid_topology(self) -> None:
+        req = router.EnsembleRequest(
+            request_id="serial-invalid",
+            runner="dynamic_collab_route",
+            aggregator="judge_refine",
+            runner_config={
+                "native_runner": "response.serial",
+                "serial_topology": {
+                    "version": "modelnet.serial.v1",
+                    "nodes": [{"id": "step-1", "modelId": "model-a"}],
+                    "edges": [],
+                },
+            },
+            sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
+        )
+
+        preflight = router.serial_dify_preflight_error(req)
+        events = await collect_events(router.run_gateway_serial_ensemble(req, self.tenant))
+
+        self.assertIsNotNone(preflight)
+        assert preflight is not None
+        self.assertEqual(preflight["stage"], "serial.topology")
+        self.assertEqual(router.serial_dify_preflight_status(preflight), 400)
+        self.assertEqual(events[0][0], "error")
+        self.assertEqual(events[0][1]["stage"], "serial.topology")
 
     async def test_response_source_uses_model_budget_without_explicit_max_tokens(self) -> None:
         seen: dict[str, Any] = {}

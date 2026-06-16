@@ -112,7 +112,7 @@ RUNNER_PLUGINS = {
         name="response.serial",
         legacy_name="dynamic_collab_route",
         scope="response",
-        description="Run complete responses in sequence through a generated Dify workflow.",
+        description="Run complete responses in sequence through the gateway, with optional Dify workflow fallback.",
         supported_aggregators=("dify.dsl", "judge_refine", "synthesize"),
     ),
     "hybrid.graph": RunnerPlugin(
@@ -187,9 +187,7 @@ AGGREGATOR_PLUGINS = {
     "judge_refine": AggregatorPlugin(
         name="judge_refine",
         scope="response",
-        description="Judge and refine a previous response.",
-        status="degraded",
-        status_reason="Only available through the legacy response.serial fallback.",
+        description="Judge and refine a previous response in a gateway-local serial chain.",
     ),
     "load_aware": AggregatorPlugin(
         name="load_aware",

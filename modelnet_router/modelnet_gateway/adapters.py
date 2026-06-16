@@ -182,7 +182,7 @@ def default_aggregator_for(runner: str) -> str:
     if runner.startswith("token."):
         return "sum_score"
     if runner == "response.serial":
-        return "dify.dsl"
+        return "judge_refine"
     if runner.startswith("response."):
         return "synthesize"
     return "load_aware"

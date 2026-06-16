@@ -4538,19 +4538,19 @@ def openai_modelnet_event_payload(
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
+def serial_dify_engine_enabled(request: EnsembleRequest) -> bool:
+    native_runner = canonical_runner(str(request.runner_config.get("native_runner") or request.runner))
+    return (
+        native_runner == "response.serial"
+        and request.aggregator == "dify.dsl"
+        and str(request.runner_config.get("serial_engine") or "").strip().lower() == "dify"
+    )
+
+
 def serial_dify_preflight_error(request: EnsembleRequest) -> dict[str, Any] | None:
     native_runner = canonical_runner(str(request.runner_config.get("native_runner") or request.runner))
-    if native_runner != "response.serial" or request.aggregator != "dify.dsl":
+    if native_runner != "response.serial":
         return None
-    config_error = dify_serial_config_error()
-    if config_error:
-        return {
-            "error": config_error,
-            "stage": "serial.dify.config",
-            "runner": legacy_runner_name(native_runner),
-            "native_runner": native_runner,
-            "aggregator": request.aggregator,
-        }
     try:
         parse_serial_topology(
             request.runner_config.get("serial_topology"),
@@ -4560,6 +4560,17 @@ def serial_dify_preflight_error(request: EnsembleRequest) -> dict[str, Any] | No
         return {
             "error": str(exc),
             "stage": "serial.topology",
+            "runner": legacy_runner_name(native_runner),
+            "native_runner": native_runner,
+            "aggregator": request.aggregator,
+        }
+    if not serial_dify_engine_enabled(request):
+        return None
+    config_error = dify_serial_config_error()
+    if config_error:
+        return {
+            "error": config_error,
+            "stage": "serial.dify.config",
             "runner": legacy_runner_name(native_runner),
             "native_runner": native_runner,
             "aggregator": request.aggregator,
@@ -4613,8 +4624,7 @@ async def collect_openai_ensemble_response(
 
 
 def is_serial_dify_request(request: EnsembleRequest) -> bool:
-    native_runner = canonical_runner(str(request.runner_config.get("native_runner") or request.runner))
-    return native_runner == "response.serial" and request.aggregator == "dify.dsl"
+    return serial_dify_engine_enabled(request)
 
 
 def serial_dify_runtime_error_payload(request: EnsembleRequest, exc: HTTPException) -> dict[str, Any]:
@@ -8244,6 +8254,467 @@ async def provision_dify_serial_workflow(topology: SerialTopology, yaml_content:
     return dict(payload)
 
 
+
+def serial_reserved_output_tokens(request: EnsembleRequest, source: EnsembleSource) -> int:
+    raw = request.runner_config.get("serial_reserved_output_tokens")
+    if raw is not None:
+        return positive_int(raw, ENSEMBLE_DEFAULT_MAX_TOKENS)
+    explicit = explicit_generation_max_tokens(source)
+    return explicit if explicit is not None else ENSEMBLE_DEFAULT_MAX_TOKENS
+
+
+def serial_step_prompt(
+    *,
+    original_prompt: str,
+    previous_answer: str,
+    index: int,
+    compressed: bool = False,
+) -> str:
+    if index == 0:
+        return original_prompt
+    if compressed:
+        return (
+            "Original task and previous-stage answer were compressed to fit this model's context window.\n\n"
+            "Compressed context:\n"
+            "```text\n"
+            f"{previous_answer}\n"
+            "```\n\n"
+            "Use the compressed context to write the best final answer for the user. "
+            "Preserve correctness, fix mistakes, and avoid inventing details."
+        )
+    return (
+        "Original user question:\n"
+        f"{original_prompt}\n\n"
+        "Previous stage answer:\n"
+        "```text\n"
+        f"{previous_answer}\n"
+        "```\n\n"
+        "Review the previous answer. Keep correct parts, fix mistakes, fill gaps, "
+        "and return the improved final answer for the user."
+    )
+
+
+def serial_step_source(
+    base_source: EnsembleSource,
+    *,
+    node: SerialNode,
+    index: int,
+    original_prompt: str,
+    previous_answer: str,
+    compressed: bool = False,
+) -> EnsembleSource:
+    prompt = serial_step_prompt(
+        original_prompt=original_prompt,
+        previous_answer=previous_answer,
+        index=index,
+        compressed=compressed,
+    )
+    messages = (
+        message_list(base_source)
+        if index == 0 and base_source.messages
+        else [{"role": "user", "content": prompt}]
+    )
+    return EnsembleSource(
+        source_id=node.id,
+        model_alias=node.model_id,
+        prompt=prompt,
+        messages=messages,
+        sampling_params=dict(base_source.sampling_params),
+        extra=dict(base_source.extra),
+        weight=base_source.weight,
+    )
+
+
+def serial_prompt_budget_metadata(
+    candidate: Candidate,
+    source: EnsembleSource,
+    *,
+    context_length: int | None,
+    reserved_output_tokens: int,
+) -> dict[str, Any]:
+    prompt_text = generation_prompt_text(candidate, message_list(source), source.prompt)
+    prompt_tokens = estimate_context_prompt_tokens(prompt_text)
+    exceeds = False
+    if context_length is not None:
+        exceeds = (
+            prompt_tokens
+            + reserved_output_tokens
+            + max(0, RESPONSE_PARALLEL_MAX_TOKEN_SAFETY_MARGIN)
+            > context_length
+        )
+    return {
+        "context_length": context_length,
+        "prompt_tokens": prompt_tokens,
+        "reserved_output_tokens": reserved_output_tokens,
+        "safety_margin_tokens": max(0, RESPONSE_PARALLEL_MAX_TOKEN_SAFETY_MARGIN),
+        "exceeds_context": exceeds,
+    }
+
+
+def serial_source_with_max_tokens(
+    candidate: Candidate,
+    source: EnsembleSource,
+    *,
+    context_length: int | None,
+    reserved_output_tokens: int,
+) -> EnsembleSource:
+    prompt_text = generation_prompt_text(candidate, message_list(source), source.prompt)
+    prompt_tokens = estimate_context_prompt_tokens(prompt_text)
+    budget = usable_completion_token_budget(context_length, prompt_tokens)
+    max_tokens = reserved_output_tokens
+    if budget is not None:
+        max_tokens = min(max_tokens, budget)
+    sampling_params = dict(source.sampling_params)
+    sampling_params["max_tokens"] = max(1, max_tokens)
+    return source.model_copy(update={"sampling_params": sampling_params})
+
+
+def serial_context_text(original_prompt: str, previous_answer: str) -> str:
+    return (
+        "Original task:\n"
+        f"{original_prompt}\n\n"
+        "Previous-stage answer:\n"
+        f"{previous_answer}"
+    )
+
+
+def serial_summary_prompt(original_prompt: str, previous_answer: str) -> str:
+    return (
+        "Summarize the original task and the previous-stage answer for the next model in a serial chain. "
+        "Keep task-relevant facts, constraints, uncertainties, and the current best answer. "
+        "Do not add new claims.\n\n"
+        "Context to summarize:\n"
+        "```text\n"
+        f"{serial_context_text(original_prompt, previous_answer)}\n"
+        "```"
+    )
+
+
+async def summarize_serial_context(
+    candidate: Candidate,
+    request: EnsembleRequest,
+    *,
+    step_source_id: str,
+    original_prompt: str,
+    previous_answer: str,
+) -> tuple[str, dict[str, Any]]:
+    max_tokens = positive_int(
+        request.runner_config.get("serial_summary_max_tokens"),
+        RESPONSE_SYNTHESIS_SUMMARY_MAX_TOKENS,
+    )
+    original_text = serial_context_text(original_prompt, previous_answer)
+    prompt = serial_summary_prompt(original_prompt, previous_answer)
+    metadata: dict[str, Any] = {
+        "summarized": True,
+        "original_text_chars": len(original_text),
+    }
+    summary_source = EnsembleSource(
+        source_id=f"{step_source_id}__summary",
+        model_alias=candidate.model_id,
+        prompt=prompt,
+        messages=[
+            {
+                "role": "system",
+                "content": "You produce concise summaries used as intermediate serial-chain inputs.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        sampling_params={"max_tokens": max_tokens},
+        weight=1.0,
+        extra=internal_thinking_extra(request),
+    )
+    try:
+        result = await generate_text(candidate, summary_source)
+        summary_text = str(result.get("text") or "").strip()
+        summary_text, removed_hidden_reasoning = strip_response_hidden_reasoning(summary_text)
+        if not summary_text:
+            raise RuntimeError("summary model returned empty text")
+        metadata.update(dict(result.get("metadata") or {}))
+        metadata["summary_method"] = "model"
+        if removed_hidden_reasoning:
+            metadata["summary_hidden_reasoning_removed"] = True
+        return summary_text, metadata
+    except Exception as exc:  # noqa: BLE001
+        fallback = truncate_text_for_fallback_summary(original_text, RESPONSE_SYNTHESIS_SUMMARY_MAX_CHARS)
+        metadata["summary_method"] = "deterministic_truncate"
+        metadata["summary_error"] = str(exc)[:300]
+        return fallback, metadata
+
+
+async def prepare_serial_step_source(
+    request: EnsembleRequest,
+    base_source: EnsembleSource,
+    candidate: Candidate,
+    *,
+    node: SerialNode,
+    index: int,
+    original_prompt: str,
+    previous_answer: str,
+) -> tuple[EnsembleSource, dict[str, Any] | None, dict[str, Any]]:
+    source = serial_step_source(
+        base_source,
+        node=node,
+        index=index,
+        original_prompt=original_prompt,
+        previous_answer=previous_answer,
+    )
+    context_length = await discover_candidate_context_length(candidate)
+    reserved_output_tokens = serial_reserved_output_tokens(request, source)
+    budget = serial_prompt_budget_metadata(
+        candidate,
+        source,
+        context_length=context_length,
+        reserved_output_tokens=reserved_output_tokens,
+    )
+    summary_event: dict[str, Any] | None = None
+    if index > 0 and budget["exceeds_context"]:
+        summary_text, summary_metadata = await summarize_serial_context(
+            candidate,
+            request,
+            step_source_id=node.id,
+            original_prompt=original_prompt,
+            previous_answer=previous_answer,
+        )
+        source = serial_step_source(
+            base_source,
+            node=node,
+            index=index,
+            original_prompt=original_prompt,
+            previous_answer=summary_text,
+            compressed=True,
+        )
+        after_budget = serial_prompt_budget_metadata(
+            candidate,
+            source,
+            context_length=context_length,
+            reserved_output_tokens=reserved_output_tokens,
+        )
+        if after_budget["exceeds_context"]:
+            summary_text = truncate_text_for_fallback_summary(
+                summary_text,
+                max(256, RESPONSE_SYNTHESIS_SUMMARY_MAX_CHARS // 2),
+            )
+            source = serial_step_source(
+                base_source,
+                node=node,
+                index=index,
+                original_prompt=original_prompt,
+                previous_answer=summary_text,
+                compressed=True,
+            )
+            after_budget = serial_prompt_budget_metadata(
+                candidate,
+                source,
+                context_length=context_length,
+                reserved_output_tokens=reserved_output_tokens,
+            )
+            summary_metadata["summary_method"] = "deterministic_truncate"
+            summary_metadata["summary_still_exceeded_after_model"] = True
+        summary_event = {
+            "source_id": node.id,
+            "summary": summary_text,
+            "metadata": {
+                **summary_metadata,
+                "context_length": context_length,
+                "prompt_tokens_before": budget["prompt_tokens"],
+                "prompt_tokens_after": after_budget["prompt_tokens"],
+                "reserved_output_tokens": reserved_output_tokens,
+            },
+        }
+        budget = after_budget
+    source = serial_source_with_max_tokens(
+        candidate,
+        source,
+        context_length=context_length,
+        reserved_output_tokens=reserved_output_tokens,
+    )
+    return source, summary_event, budget
+
+
+async def run_gateway_serial_ensemble(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
+    started = time.perf_counter()
+    emit_flow = (
+        coerce_bool(request.runner_config.get("show_serial_flow"), default=False)
+        or coerce_bool(request.runner_config.get("display_serial_flow"), default=False)
+        or bool(request.diagnostics.enable_trace_stream)
+    )
+    try:
+        topology = parse_serial_topology(
+            request.runner_config.get("serial_topology"),
+            max_nodes=MODELNET_DIFY_SERIAL_MAX_NODES,
+        )
+    except SerialTopologyError as exc:
+        yield sse("error", {"error": str(exc), "stage": "serial.topology"})
+        return
+
+    base_source = request.sources[0]
+    original_prompt = serial_prompt_text(request)
+    answer = ""
+    steps: list[dict[str, Any]] = []
+    call_ledger: list[dict[str, Any]] = []
+    if emit_flow:
+        yield sse(
+            "trace_step",
+            {
+                "stage": "serial.gateway.started",
+                "topology_hash": topology.hash,
+                "total_steps": len(topology.nodes),
+                "model_ids": topology.ordered_model_ids,
+            },
+        )
+
+    for index, node in enumerate(topology.nodes):
+        candidate: Candidate | None = None
+        step_started = time.perf_counter()
+        try:
+            seed_source = serial_step_source(
+                base_source,
+                node=node,
+                index=index,
+                original_prompt=original_prompt,
+                previous_answer=answer,
+            )
+            candidate, score, reason = await pick_source_candidate(tenant, seed_source)
+            backend = candidate_backend_info(candidate, score=score, reason=reason)
+            yield sse(
+                "source_selected",
+                {
+                    "source_id": node.id,
+                    "backend": backend,
+                    "role": "serial_step",
+                    "stage": "serial.step",
+                    "step": index + 1,
+                },
+            )
+            source, summary_event, budget = await prepare_serial_step_source(
+                request,
+                base_source,
+                candidate,
+                node=node,
+                index=index,
+                original_prompt=original_prompt,
+                previous_answer=answer,
+            )
+            if summary_event is not None:
+                if emit_flow:
+                    yield sse(
+                        "trace_step",
+                        {
+                            "stage": "serial.summary.completed",
+                            "source_id": node.id,
+                            "step": index + 1,
+                            **summary_event["metadata"],
+                        },
+                    )
+                yield sse(
+                    "modelnet_event",
+                    response_source_modelnet_event(
+                        "source.summarized",
+                        node.id,
+                        model=node.model_id,
+                        backend=backend,
+                        text=str(summary_event.get("summary") or ""),
+                        metadata=dict(summary_event.get("metadata") or {}),
+                    ),
+                )
+            result = await generate_text(candidate, source)
+            text = str(result.get("text") or "").strip()
+            metadata = dict(result.get("metadata") or {})
+            text, removed_hidden_reasoning = strip_response_hidden_reasoning(text)
+            if removed_hidden_reasoning:
+                metadata["source_hidden_reasoning_removed"] = True
+            latency_ms = int((time.perf_counter() - step_started) * 1000)
+            step_record = {
+                "source_id": node.id,
+                "step": index + 1,
+                "backend": backend,
+                "text": text,
+                "metadata": metadata,
+                "latency_ms": latency_ms,
+                "summary": summary_event,
+                "context_budget": budget,
+            }
+            steps.append(step_record)
+            call_ledger.append(
+                build_call_ledger_entry(
+                    stage="response.serial.step",
+                    source_id=node.id,
+                    backend=backend,
+                    metadata=metadata,
+                    prompt_text=generation_prompt_text(candidate, message_list(source), source.prompt),
+                    completion_text=text,
+                    status="ok",
+                    latency_ms=latency_ms,
+                )
+            )
+            answer = text or answer
+            if emit_flow:
+                yield sse(
+                    "trace_step",
+                    {
+                        "stage": "serial.step.completed",
+                        "source_id": node.id,
+                        "step": index + 1,
+                        "backend": backend,
+                        "latency_ms": latency_ms,
+                        "text_chars": len(text),
+                        "context_budget": budget,
+                    },
+                )
+            yield sse(
+                "full_response",
+                {
+                    "source_id": node.id,
+                    "text": answer,
+                    "metadata": metadata,
+                },
+            )
+            await release_candidate(candidate)
+            candidate = None
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc)
+            if candidate is not None:
+                await release_candidate(candidate, error)
+            LOGGER.exception("gateway serial step failed request_id=%s source_id=%s", request.request_id, node.id)
+            yield sse(
+                "error",
+                {
+                    "error": error,
+                    "stage": "serial.step.failed",
+                    "source_id": node.id,
+                    "step": index + 1,
+                },
+            )
+            return
+
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    yield sse("token", {"delta": answer, "text": answer})
+    yield sse(
+        "done",
+        {
+            "text": answer,
+            "metadata": {
+                "runner": request.runner,
+                "native_runner": "response.serial",
+                "aggregator": request.aggregator,
+                "topology_hash": topology.hash,
+                "total_steps": len(topology.nodes),
+                "model_ids": topology.ordered_model_ids,
+                "elapsed_ms": elapsed_ms,
+                "serial_steps": steps,
+                "used_summaries": any(step.get("summary") for step in steps),
+                "trace_summary": {
+                    "elapsed_ms": elapsed_ms,
+                    "source_count": len(topology.nodes),
+                    "tokens_count": len(answer),
+                    "stopped_by": "serial.gateway.completed",
+                },
+                **call_ledger_metadata(call_ledger),
+            },
+        },
+    )
+
+
 async def run_dify_serial_ensemble(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
     started = time.perf_counter()
     emit_flow = (
@@ -8434,9 +8905,13 @@ async def run_ensemble_stream(request: EnsembleRequest, tenant: GatewayTenant) -
             async for event in run_token_step_ensemble(request, tenant):
                 yield event
             return
-        if native_runner == "response.serial" and request.aggregator == "dify.dsl":
-            async for event in run_dify_serial_ensemble(request, tenant):
-                yield event
+        if native_runner == "response.serial":
+            if is_serial_dify_request(request):
+                async for event in run_dify_serial_ensemble(request, tenant):
+                    yield event
+            else:
+                async for event in run_gateway_serial_ensemble(request, tenant):
+                    yield event
             return
         if effective_runner == "dynamic_collab_route":
             async for event in run_dynamic_collab_ensemble(request, tenant):

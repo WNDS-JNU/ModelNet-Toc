@@ -1816,7 +1816,7 @@ describe('ChatService', () => {
       });
     });
 
-    it('should request Dify DSL runtime for ModelNet serial responses', async () => {
+    it('should request gateway serial runtime for ModelNet serial responses', async () => {
       const topology = {
         version: 'modelnet.serial.v1',
         nodes: [
@@ -1846,7 +1846,7 @@ describe('ChatService', () => {
           include_trace: true,
         },
         collaboration_plan: {
-          aggregator: 'dify.dsl',
+          aggregator: 'judge_refine',
           runner: 'response.serial',
           runner_config: {
             allow_degraded: false,
