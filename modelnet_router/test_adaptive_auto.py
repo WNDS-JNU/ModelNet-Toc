@@ -190,6 +190,18 @@ async def collect_openai_deltas(stream) -> tuple[list[str], list[str]]:
     return content_deltas, reasoning_deltas
 
 
+async def collect_openai_modelnet_events(stream) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    async for chunk in stream:
+        _event, data = router.parse_sse_chunk(chunk)
+        if data.get("raw") == "[DONE]":
+            continue
+        modelnet_event = data.get("modelnet_event")
+        if isinstance(modelnet_event, dict):
+            events.append(modelnet_event)
+    return events
+
+
 async def collect_openai_content(stream) -> str:
     return "".join(await collect_openai_content_deltas(stream))
 
@@ -1990,6 +2002,38 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("source.completed", [data.get("type") for data in modelnet_events])
         self.assertEqual(done_payload(events)["text"], "combined")
 
+    def test_litellm_safe_openai_stream_chunk_fills_empty_choices(self) -> None:
+        chunk = (
+            b'data: {"id":"chatcmpl","object":"chat.completion.chunk",'
+            b'"choices":[],"usage":{"prompt_tokens":1}}\n\n'
+        )
+
+        _event, data = router.parse_sse_chunk(router.litellm_safe_openai_stream_chunk(chunk))
+
+        self.assertEqual(len(data["choices"]), 1)
+        self.assertEqual(data["choices"][0]["delta"], {})
+        self.assertEqual(data["usage"]["prompt_tokens"], 1)
+
+    def test_openai_modelnet_event_payload_keeps_non_empty_choices_for_litellm(self) -> None:
+        event = {
+            "type": "source.started",
+            "sourceId": "source-1",
+            "source_id": "source-1",
+            "model": "qwen",
+        }
+
+        chunk = router.openai_modelnet_event_payload(
+            request_id="req",
+            model="modelnet",
+            modelnet_event=event,
+        )
+        _event, data = router.parse_sse_chunk(chunk)
+
+        self.assertEqual(len(data["choices"]), 1)
+        self.assertEqual(data["choices"][0]["delta"], {})
+        self.assertIsNone(data["choices"][0]["finish_reason"])
+        self.assertEqual(data["modelnet_event"]["type"], "source.started")
+
     def test_openai_modelnet_content_marker_uses_compact_delta_event(self) -> None:
         event = {
             "type": "source.delta",
@@ -2038,6 +2082,41 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             {"source_id": "source-2", "backend": {"id": "smaller-visible"}, "text": "visible", "weight": 1.0},
         ]
         self.assertEqual(router.response_synthesizer_model_alias(req, responses), "smaller-visible")
+
+    def test_response_synthesizer_skips_configured_source_alias_without_visible_output(self) -> None:
+        router.load_candidates = lambda: [
+            candidate("large-empty", metadata={"family": "qwen", "size": "35b"}),
+            candidate("smaller-visible", metadata={"family": "qwen", "size": "14b"}),
+        ]
+        req = router.EnsembleRequest(
+            request_id="response-synthesizer-configured-empty",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            runner_config={"response_synthesizer_model": "large-empty"},
+            sources=[
+                router.EnsembleSource(source_id="source-1", model_alias="large-empty", prompt="Question?"),
+                router.EnsembleSource(source_id="source-2", model_alias="smaller-visible", prompt="Question?"),
+            ],
+        )
+        responses = [
+            {"source_id": "source-2", "backend": {"id": "smaller-visible"}, "text": "visible", "weight": 1.0},
+        ]
+
+        self.assertEqual(router.response_synthesizer_model_alias(req, responses), "smaller-visible")
+
+    def test_response_synthesizer_honors_configured_external_alias(self) -> None:
+        req = router.EnsembleRequest(
+            request_id="response-synthesizer-external",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            runner_config={"response_synthesizer_model": "dedicated-synth"},
+            sources=[router.EnsembleSource(source_id="source-1", model_alias="source-model", prompt="Question?")],
+        )
+        responses = [
+            {"source_id": "source-1", "backend": {"id": "source-model"}, "text": "visible", "weight": 1.0},
+        ]
+
+        self.assertEqual(router.response_synthesizer_model_alias(req, responses), "dedicated-synth")
 
     def test_response_stream_filter_splits_think_tags_into_reasoning(self) -> None:
         stream_filter = router.ResponseVisibleTextStreamFilter()
@@ -2164,6 +2243,113 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertIn({"reasoning_content": "thinking "}, deltas)
         self.assertIn({"content": "answer"}, deltas)
+
+    async def test_openai_stream_exposes_serial_source_outputs_as_modelnet_events(self) -> None:
+        original_run_ensemble_stream = router.run_ensemble_stream
+
+        async def fake_run_ensemble_stream(_request, _tenant):
+            yield router.sse(
+                "source_selected",
+                {
+                    "source_id": "step-1",
+                    "backend": {"id": "model-a"},
+                    "role": "serial_step",
+                    "stage": "serial.step",
+                    "step": 1,
+                },
+            )
+            yield router.sse(
+                "full_response",
+                {
+                    "source_id": "step-1",
+                    "text": "step 1 visible answer",
+                    "metadata": {"finish_reason": "stop"},
+                },
+            )
+            yield router.sse("token", {"delta": "final answer", "text": "final answer"})
+            yield router.sse("done", {"text": "final answer", "metadata": {}})
+
+        router.run_ensemble_stream = fake_run_ensemble_stream
+        try:
+            req = router.EnsembleRequest(
+                request_id="openai-serial-modelnet-events",
+                runner="dynamic_collab_route",
+                aggregator="judge_refine",
+                runner_config={"native_runner": "response.serial", "show_serial_flow": True},
+                sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
+            )
+            events = await collect_openai_modelnet_events(
+                router.stream_openai_ensemble_response(
+                    req,
+                    self.tenant,
+                    request_id="openai-serial-modelnet-events",
+                    model="modelnet",
+                )
+            )
+        finally:
+            router.run_ensemble_stream = original_run_ensemble_stream
+
+        self.assertEqual([event["type"] for event in events], ["source.started", "source.completed"])
+        self.assertEqual(events[0]["source_id"], "step-1")
+        self.assertEqual(events[0]["model"], "model-a")
+        self.assertEqual(events[0]["role"], "serial_step")
+        self.assertEqual(events[1]["source_id"], "step-1")
+        self.assertEqual(events[1]["model"], "model-a")
+        self.assertEqual(events[1]["text"], "step 1 visible answer")
+        self.assertEqual(events[1]["metadata"]["finish_reason"], "stop")
+
+    async def test_openai_stream_exposes_auto_candidate_outputs_as_modelnet_events(self) -> None:
+        original_run_ensemble_stream = router.run_ensemble_stream
+
+        async def fake_run_ensemble_stream(_request, _tenant):
+            yield router.sse(
+                "source_selected",
+                {
+                    "source_id": "candidate-1",
+                    "backend": {"id": "model-a"},
+                    "role": "candidate",
+                    "stage": "candidates.parallel",
+                },
+            )
+            yield router.sse(
+                "full_response",
+                {
+                    "source_id": "candidate-1",
+                    "role": "candidate",
+                    "text": "candidate visible answer",
+                    "metadata": {"finish_reason": "stop"},
+                },
+            )
+            yield router.sse("token", {"delta": "final answer", "text": "final answer"})
+            yield router.sse("done", {"text": "final answer", "metadata": {}})
+
+        router.run_ensemble_stream = fake_run_ensemble_stream
+        try:
+            req = router.EnsembleRequest(
+                request_id="openai-auto-modelnet-events",
+                runner="dynamic_collab_route",
+                aggregator="auto",
+                runner_config={"native_runner": "auto.network", "show_auto_flow": True},
+                sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
+            )
+            events = await collect_openai_modelnet_events(
+                router.stream_openai_ensemble_response(
+                    req,
+                    self.tenant,
+                    request_id="openai-auto-modelnet-events",
+                    model="modelnet-auto",
+                )
+            )
+        finally:
+            router.run_ensemble_stream = original_run_ensemble_stream
+
+        self.assertEqual([event["type"] for event in events], ["source.started", "source.completed"])
+        self.assertEqual(events[0]["source_id"], "candidate-1")
+        self.assertEqual(events[0]["model"], "model-a")
+        self.assertEqual(events[0]["role"], "candidate")
+        self.assertEqual(events[1]["source_id"], "candidate-1")
+        self.assertEqual(events[1]["text"], "candidate visible answer")
+        self.assertEqual(events[1]["stage"], "candidates.parallel")
 
     async def test_openai_stream_renders_serial_flow_as_reasoning_content(self) -> None:
         original_run_ensemble_stream = router.run_ensemble_stream

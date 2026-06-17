@@ -661,6 +661,12 @@ export const createAgentExecutors = (context: {
           finalUsage = result.usage;
           finalToolCalls = result.toolCalls;
 
+          const latestMessages = context.get().dbMessagesMap[context.messageKey] || [];
+          const assistantMessage = latestMessages.find((m) => m.id === assistantMessageId);
+          const modelnetParallelMetadata = (
+            assistantMessage?.metadata as (MessageMetadata & { modelnetParallel?: unknown }) | undefined
+          )?.modelnetParallel;
+
           await optimisticUpdateMessageContent(
             assistantMessageId,
             result.content,
@@ -670,6 +676,7 @@ export const createAgentExecutors = (context: {
               search: result.metadata.search,
               imageList: result.metadata.imageList,
               metadata: {
+                ...(modelnetParallelMetadata ? { modelnetParallel: modelnetParallelMetadata } : {}),
                 ...result.metadata.usage,
                 ...result.metadata.performance,
                 performance: result.metadata.performance,
