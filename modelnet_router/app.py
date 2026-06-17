@@ -4716,16 +4716,18 @@ def openai_modelnet_event_payload(
     modelnet_event: dict[str, Any],
     include_content_marker: bool = False,
 ) -> bytes:
-    choices: list[dict[str, Any]] = []
     if include_content_marker:
         marker_event = compact_modelnet_event_for_content_marker(modelnet_event)
-        choices.append(
+        choices: list[dict[str, Any]] = [
             {
                 "index": 0,
                 "delta": {"content": openai_modelnet_event_content_marker(marker_event)},
                 "finish_reason": None,
             }
-        )
+        ]
+    else:
+        # LiteLLM's stream handler assumes every OpenAI stream chunk has choices[0].
+        choices = [{"index": 0, "delta": {}, "finish_reason": None}]
     payload = {
         "id": request_id,
         "object": "chat.completion.chunk",
@@ -4735,6 +4737,128 @@ def openai_modelnet_event_payload(
         "modelnet_event": modelnet_event,
     }
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
+
+OPENAI_MODELNET_SOURCE_EVENT_ROLES = {
+    "source",
+    "serial_step",
+    "expert",
+    "critic",
+    "candidate",
+    "ranker",
+    "primary",
+    "verifier",
+    "escalation",
+}
+
+
+def openai_modelnet_source_id(data: dict[str, Any]) -> str | None:
+    for key in ("source_id", "sourceId", "model"):
+        value = data.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def openai_modelnet_source_role(data: dict[str, Any], known: dict[str, Any] | None = None) -> str:
+    role = data.get("role")
+    if role is None and known is not None:
+        role = known.get("role")
+    return str(role or "").strip()
+
+
+def openai_modelnet_should_expose_source(
+    data: dict[str, Any],
+    known: dict[str, Any] | None = None,
+) -> bool:
+    return openai_modelnet_source_role(data, known) in OPENAI_MODELNET_SOURCE_EVENT_ROLES
+
+
+def openai_modelnet_backend(
+    data: dict[str, Any],
+    known: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    backend = data.get("backend")
+    if isinstance(backend, dict):
+        return backend
+    if known is not None and isinstance(known.get("backend"), dict):
+        return known["backend"]
+    return None
+
+
+def openai_modelnet_source_model_label(
+    source_id: str,
+    data: dict[str, Any],
+    known: dict[str, Any] | None = None,
+) -> str:
+    backend = openai_modelnet_backend(data, known)
+    candidates = [
+        data.get("model"),
+        data.get("model_alias"),
+        known.get("model") if known is not None else None,
+        backend.get("id") if backend is not None else None,
+        source_id,
+    ]
+    for value in candidates:
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return source_id
+
+
+def openai_modelnet_source_state(data: dict[str, Any]) -> dict[str, Any]:
+    state: dict[str, Any] = {}
+    for key in ("backend", "model", "model_alias", "role", "stage", "step"):
+        if key in data:
+            state[key] = data[key]
+    return state
+
+
+def openai_modelnet_copy_source_context(
+    payload: dict[str, Any],
+    data: dict[str, Any],
+    known: dict[str, Any] | None = None,
+) -> None:
+    for key in ("role", "stage", "step"):
+        if key in data:
+            payload[key] = data[key]
+        elif known is not None and key in known:
+            payload[key] = known[key]
+
+
+def openai_modelnet_source_started_event(data: dict[str, Any]) -> dict[str, Any] | None:
+    source_id = openai_modelnet_source_id(data)
+    if not source_id or not openai_modelnet_should_expose_source(data):
+        return None
+    event = response_source_modelnet_event(
+        "source.started",
+        source_id,
+        model=openai_modelnet_source_model_label(source_id, data),
+        backend=openai_modelnet_backend(data),
+    )
+    openai_modelnet_copy_source_context(event, data)
+    return event
+
+
+def openai_modelnet_source_completed_event(
+    data: dict[str, Any],
+    known: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    source_id = openai_modelnet_source_id(data)
+    if not source_id or not openai_modelnet_should_expose_source(data, known):
+        return None
+    metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else None
+    event = response_source_modelnet_event(
+        "source.completed",
+        source_id,
+        model=openai_modelnet_source_model_label(source_id, data, known),
+        backend=openai_modelnet_backend(data, known),
+        text=str(data.get("text") or ""),
+        latency_ms=data.get("latency_ms") if isinstance(data.get("latency_ms"), int) else None,
+        metadata=metadata,
+    )
+    openai_modelnet_copy_source_context(event, data, known)
+    return event
 
 
 def serial_dify_engine_enabled(request: EnsembleRequest) -> bool:
@@ -4925,10 +5049,16 @@ async def stream_openai_ensemble_response(
     show_parallel_flow = openai_parallel_flow_enabled(request)
     show_serial_flow = openai_serial_flow_enabled(request)
     show_auto_flow = openai_auto_flow_enabled(request)
+    modelnet_source_states: dict[str, dict[str, Any]] = {}
     async for chunk in run_ensemble_stream(request, tenant):
         event, data = parse_sse_chunk(chunk)
         if event == "modelnet_event":
             modelnet_event = dict(data)
+            source_id = openai_modelnet_source_id(modelnet_event)
+            if source_id:
+                state = dict(modelnet_source_states.get(source_id) or {})
+                state.update(openai_modelnet_source_state(modelnet_event))
+                modelnet_source_states[source_id] = state
             modelnet_event.setdefault("requestId", request_id)
             yield openai_modelnet_event_payload(
                 request_id=request_id,
@@ -4936,6 +5066,33 @@ async def stream_openai_ensemble_response(
                 modelnet_event=modelnet_event,
             )
             continue
+        if event == "source_selected":
+            source_id = openai_modelnet_source_id(data)
+            modelnet_event = openai_modelnet_source_started_event(data)
+            if source_id and modelnet_event is not None:
+                state = dict(modelnet_source_states.get(source_id) or {})
+                state.update(openai_modelnet_source_state(data))
+                modelnet_source_states[source_id] = state
+                modelnet_event.setdefault("requestId", request_id)
+                yield openai_modelnet_event_payload(
+                    request_id=request_id,
+                    model=model,
+                    modelnet_event=modelnet_event,
+                )
+        elif event == "full_response":
+            source_id = openai_modelnet_source_id(data)
+            known = modelnet_source_states.get(source_id or "") if source_id else None
+            modelnet_event = openai_modelnet_source_completed_event(data, known)
+            if source_id and modelnet_event is not None:
+                state = dict(modelnet_source_states.get(source_id) or {})
+                state.update(openai_modelnet_source_state(data))
+                modelnet_source_states[source_id] = state
+                modelnet_event.setdefault("requestId", request_id)
+                yield openai_modelnet_event_payload(
+                    request_id=request_id,
+                    model=model,
+                    modelnet_event=modelnet_event,
+                )
         if event == "reasoning":
             delta = str(data.get("delta") or "")
             if delta:
@@ -5591,13 +5748,18 @@ async def stream_backend(candidate: Candidate, request_id: str, body: dict[str, 
     error: str | None = None
     try:
         assert http_client is not None
+        buffer = b""
         async for chunk in backend_stream_chat(
             candidate,
             body,
             http_client=http_client,
             headers=backend_headers(candidate),
         ):
-            yield chunk
+            events, buffer = split_sse_events(buffer, chunk)
+            for event_chunk in events:
+                yield litellm_safe_openai_stream_chunk(event_chunk)
+        if buffer.strip():
+            yield litellm_safe_openai_stream_chunk(buffer + b"\n\n")
     except httpx.HTTPStatusError as exc:
         if response_should_cooldown(exc.response.status_code):
             error = f"backend status {exc.response.status_code}"
@@ -5966,18 +6128,45 @@ def response_has_visible_text(response: dict[str, Any]) -> bool:
     return bool(str(response.get("text") or "").strip())
 
 
-def response_synthesizer_model_alias(request: EnsembleRequest, responses: list[dict[str, Any]]) -> str | None:
+def configured_response_synthesizer_model_alias(request: EnsembleRequest) -> str | None:
     for key in ("response_synthesizer_model", "synthesizer_model"):
         raw = request.runner_config.get(key)
         if raw:
             return str(raw).strip() or None
+    return None
 
+
+def response_synthesizer_model_alias(request: EnsembleRequest, responses: list[dict[str, Any]]) -> str | None:
     response_ids = {
         response_backend_id(response)
         for response in responses
         if response_has_visible_text(response)
     }
     response_ids.discard("")
+
+    configured_alias = configured_response_synthesizer_model_alias(request)
+    if configured_alias:
+        source_aliases = {
+            str(source.model_alias or "").strip()
+            for source in request.sources
+            if str(source.model_alias or "").strip()
+        }
+        force_configured = coerce_bool(
+            request.runner_config.get("force_response_synthesizer_model"),
+            default=False,
+        )
+        if (
+            force_configured
+            or configured_alias not in source_aliases
+            or configured_alias in response_ids
+            or not response_ids
+        ):
+            return configured_alias
+        LOGGER.warning(
+            "configured response synthesizer %s was a source model without visible output; falling back to visible sources",
+            configured_alias,
+        )
+
     if not response_ids:
         return None
     candidates = [candidate for candidate in load_candidates() if candidate.model_id in response_ids]
@@ -7348,6 +7537,23 @@ def split_sse_events(buffer: bytes, chunk: bytes) -> tuple[list[bytes], bytes]:
         if event.strip():
             events.append(event + b"\n\n")
     return events, buffer
+
+
+def sse_chunk(event: str, data: dict[str, Any]) -> bytes:
+    prefix = "" if event == "message" else f"event: {event}\n"
+    return (prefix + f"data: {json.dumps(data, ensure_ascii=False)}\n\n").encode("utf-8")
+
+
+def litellm_safe_openai_stream_chunk(chunk: bytes) -> bytes:
+    event, data = parse_sse_chunk(chunk)
+    if data.get("raw") == "[DONE]":
+        return chunk
+    choices = data.get("choices")
+    if isinstance(choices, list) and not choices:
+        payload = dict(data)
+        payload["choices"] = [{"index": 0, "delta": {}, "finish_reason": None}]
+        return sse_chunk(event, payload)
+    return chunk
 
 
 def openai_stream_delta_parts(data: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:

@@ -10,7 +10,7 @@
 ## Model Deployment
 
 - Local-LAN ModelNet inference backends are deployed through Kubernetes.
-- The gateway path is LobeHub -> LiteLLM -> modelnet-router -> K8S model backends.
+- LiteLLM is the outer OpenAI-compatible proxy. Aggregate/auto aliases such as `modelnet` and `modelnet-auto` go to `modelnet-router`; concrete backend model IDs go directly to their generated K8S backend endpoints.
 - Do not assume model backends are local Docker Compose services when running smoke tests or debugging backend availability.
 
 ## P0 Smoke Notes
@@ -37,3 +37,41 @@
   - `python3 -m py_compile modelnet_router/app.py benchmarks/run_mtbench_modelnet.py benchmarks/run_pressure_modelnet.py benchmarks/run_load_balancing_modelnet.py`
 - Do not start P1 work until this P0-B state is committed or explicitly accepted.
 - P1 first slice should remain read-only Claim Memory: SQLite schema, manual strong-evidence writes, verified/contested retrieval and injection. Do not implement model automatic promotion in the first P1 slice.
+
+<!-- codex-memory:modelnet-public-chain:start -->
+## Current Memory: Public TOC/Dify Exposure and ModelNet Request Chain
+
+- As of 2026-06-17, public traffic enters through Aliyun `aliyunM` (`123.56.135.150`) and reaches 4A100 over Tailscale. Aliyun Tailscale IP is `100.76.239.10`; 4A100 currently appears as `wnds-server` with Tailscale IP `100.116.34.3`.
+- Aliyun Nginx config is `/etc/nginx/conf.d/toc-dify-tailscale.conf`.
+  - `http://123.56.135.150/` and `http://toc.123.56.135.150.sslip.io/` proxy to `100.116.34.3:3081` (TOC).
+  - `http://123.56.135.150:8080/` and `http://tob.123.56.135.150.sslip.io/` proxy to `100.116.34.3:80` (Dify / TOB).
+  - Aliyun does **not** proxy ModelNet gateway ports `3090` or `3092`; public access to `123.56.135.150:3090` and `:3092` should fail.
+- 4A100 project root is `/home/duxianghe/ModelNet-toc`; all development for this project happens there.
+- TOC compose chain:
+  - `lobehub-toc-lb` (`toc-lb`) publishes `0.0.0.0:3081 -> 80` and uses `haproxy.cfg`.
+  - HAProxy frontend `toc_http` forwards to backend `lobe_apps`, server `lobe:3210`.
+  - `lobehub-toc-lobe` (`lobe`) runs the Lobe/TOC app on internal port `3210`.
+  - `.env` currently sets `APP_URL=http://123.56.135.150`; this was required so auth callbacks stop pointing at `http://10.154.22.10:3081`.
+- ModelNet internal chain from TOC:
+  - Lobe chat code adds ModelNet payload controls in `lobehub/src/services/chat/index.ts` and ModelNet constants live in `lobehub/src/features/ModelNetParallel/index.ts`.
+  - Lobe calls internal `modelnet-litellm` on the compose network. LiteLLM also publishes `127.0.0.1:3090->8000` only for local debugging.
+  - LiteLLM config is `litellm/modelnet-config.yaml`. It defines `modelnet` and `modelnet-auto` as `openai/*` aliases with `api_base: http://modelnet-router:8000/v1` and `allowed_openai_params: [modelnet]`.
+  - `modelnet-router` is exposed only as `127.0.0.1:3092->8000` and as compose alias `modelnet-gateway` on `lobe-network` and `dify-default`.
+  - Router registry is mounted from `/home/duxianghe/dify/api/configs/model_net.yaml` into `/app/model_net.yaml`.
+  - Router source of truth is `modelnet_router/app.py`; runner aliases are registered in `modelnet_router/modelnet_gateway/plugins.py`.
+- Current model naming / API behavior:
+  - `modelnet_router/app.py` defines `PUBLIC_MODEL_NAME=modelnet` and `PUBLIC_AUTO_MODEL_NAME=modelnet-auto`.
+  - Current code treats `modelnet` as retired for automatic networking and says to use `modelnet-auto`.
+  - Existing LiteLLM config still contains both aliases, so UI/model selection may still send `model=modelnet`.
+- Current public-error diagnosis:
+  - The observed public URL error `litellm.MidStreamFallbackError ... Received Model Group=modelnet` is **not** caused by needing to expose LiteLLM publicly.
+  - The request reaches TOC and internal LiteLLM. Logs show LiteLLM forwarding `/v1/responses` to concrete backends such as llama.cpp endpoints, e.g. `.../v1/responses`, where some backends return `404 File Not Found`.
+  - Likely root class: Responses API compatibility / model alias selection / backend capability mismatch, not Aliyun or Tailscale routing.
+  - First debug direction: reproduce from inside 4A100 against `modelnet-litellm` and `modelnet-router`, compare `modelnet` vs `modelnet-auto`, and either route Responses API only to compatible backends or force chat-completions-compatible flow for incompatible llama.cpp backends.
+- Useful verification commands:
+  - `ssh aliyunM "nginx -t && systemctl is-active nginx && tailscale status"`
+  - `ssh aliyunM "curl -sS -L -o /tmp/toc.html -w '%{http_code}\n' http://127.0.0.1/"`
+  - `ssh aliyunM "curl -sS -L -o /tmp/dify.html -w '%{http_code}\n' http://127.0.0.1:8080/"`
+  - `ssh 4A100 "cd /home/duxianghe/ModelNet-toc && docker compose ps"`
+  - `ssh 4A100 "cd /home/duxianghe/ModelNet-toc && docker compose logs --tail=200 litellm modelnet-router"`
+<!-- codex-memory:modelnet-public-chain:end -->

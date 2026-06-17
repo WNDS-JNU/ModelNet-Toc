@@ -8,7 +8,6 @@ import { SkillStoreApiName, SkillStoreIdentifier } from '@lobechat/builtin-tool-
 import { SkillStoreInspectors, SkillStoreRenders } from '@lobechat/builtin-tool-skill-store/client';
 import { UserInteractionIdentifier } from '@lobechat/builtin-tool-user-interaction';
 import {
-  WebOnboardingApiName,
   WebOnboardingIdentifier,
   WebOnboardingManifest,
 } from '@lobechat/builtin-tool-web-onboarding';
@@ -46,9 +45,9 @@ describe('builtin tool registry', () => {
     expect(runtime.plugins).toContain(WebOnboardingIdentifier);
   });
 
-  it('exposes the marketplace APIs under the web onboarding manifest', () => {
+  it('does not expose marketplace picker APIs under the web onboarding manifest', () => {
     const apiNames = WebOnboardingManifest.api.map((entry) => entry.name);
-    expect(apiNames).toContain(WebOnboardingApiName.showAgentMarketplace);
-    expect(apiNames).toContain(WebOnboardingApiName.submitAgentPick);
+    expect(apiNames).not.toContain('showAgentMarketplace');
+    expect(apiNames).not.toContain('submitAgentPick');
   });
 });

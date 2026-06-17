@@ -4,7 +4,7 @@
 
 ## 1. 先用一句话讲清楚
 
-`modelnet-router` 是 ModelNet 的模型网关和路由器。它接收 LobeHub、LiteLLM 或 SDK 发来的 OpenAI-compatible 请求，也接收 ModelNet Native 请求；然后把它们统一成内部 IR，根据租户权限、模型能力、K8s 状态、Prometheus 负载、端点健康和协作策略，选择一个或多个模型后端执行。
+`modelnet-router` 是 ModelNet 的模型网关和路由器。它接收 `modelnet` / `modelnet-auto` 这类聚合入口或直连 router API 发来的 OpenAI-compatible 请求，也接收 ModelNet Native 请求；然后把它们统一成内部 IR，根据租户权限、模型能力、K8s 状态、Prometheus 负载、端点健康和协作策略，选择一个或多个模型后端执行。
 
 它不是一个简单反向代理。反向代理主要回答“转发到哪里”，而这里还要回答：
 
@@ -25,16 +25,23 @@ flowchart LR
     Lite["LiteLLM"]
     Router["modelnet-router"]
     Registry["model_net.yaml\n模型注册表"]
+    AutoAlias["modelnet / modelnet-auto"]
+    Concrete["具体模型 ID"]
     K8s["K8s / Prometheus\n健康与负载"]
     Backend["vLLM / llama.cpp /\nOpenAI-compatible / Ollama"]
 
     User --> Lobe
     Lobe --> Lite
-    Lite --> Router
+    Lite --> AutoAlias
+    Lite --> Concrete
+    AutoAlias --> Router
+    Concrete --> Backend
     Registry --> Router
     K8s --> Router
     Router --> Backend
 ```
+
+LiteLLM 是统一外层代理。只有 `modelnet` / `modelnet-auto` 等需要聚合、协作和观测汇总的入口进入 `modelnet-router`；具体后端模型 ID 由 LiteLLM 根据生成配置直接转发到对应 `/v1` 后端。
 
 在当前仓库里，关键代码主要在：
 
@@ -64,9 +71,9 @@ flowchart LR
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 
-这是 LobeHub、LiteLLM 和 OpenAI SDK 风格客户端最常用的路径。
+这是进入 `modelnet-router` 后的 OpenAI-compatible 路径，通常对应 LiteLLM 的 `modelnet` / `modelnet-auto` 入口或直接调用 router API 的客户端。
 
-普通模型请求默认走 `route.once`。如果请求的模型是 `modelnet-auto`，就进入 `auto.network` 自动组网路径。
+进入 router 后，普通模型请求默认走 `route.once`。如果请求的模型是 `modelnet-auto`，就进入 `auto.network` 自动组网路径。LiteLLM 暴露的具体后端模型 ID 通常不进入这一层，而是按生成配置直连后端。
 
 ```mermaid
 sequenceDiagram
@@ -354,7 +361,7 @@ flowchart TB
 
 可以按这个顺序讲，不需要一开始就打开 5000 行的 `app.py`：
 
-1. 先讲定位：它是 LobeHub / LiteLLM 和真实模型后端之间的 ModelNet 网关。
+1. 先讲定位：LiteLLM 是外层代理，`modelnet-router` 是聚合/自动路由入口和真实模型后端之间的 ModelNet 网关。
 2. 再讲入口：OpenAI-compatible 负责兼容，Native 负责高级协作和 trace。
 3. 讲核心对象：IR、Candidate、Runner、Aggregator。
 4. 讲普通路由：注册表候选 -> 权限/能力过滤 -> K8s/Prometheus/health 打分 -> 调后端。

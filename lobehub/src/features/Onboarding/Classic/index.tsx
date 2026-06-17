@@ -8,9 +8,7 @@ import { Navigate, useNavigate } from 'react-router-dom';
 import Loading from '@/components/Loading/BrandTextLoading';
 import ModeSwitch from '@/features/Onboarding/components/ModeSwitch';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { useOnboardingAgentTemplates } from '@/hooks/useOnboardingAgentTemplates';
 import OnboardingContainer from '@/routes/onboarding/_layout';
-import AgentPickerStep from '@/routes/onboarding/features/AgentPickerStep';
 import FullNameStep from '@/routes/onboarding/features/FullNameStep';
 import InterestsStep from '@/routes/onboarding/features/InterestsStep';
 import ProSettingsStep from '@/routes/onboarding/features/ProSettingsStep';
@@ -30,7 +28,6 @@ const CLASSIC_STEP_TRACKING = {
   1: { flow: 'classic', step: 'fullname', stepIndex: 1 },
   [INTERESTS_STEP]: { flow: 'classic', step: 'interests', stepIndex: 2 },
   [PRO_SETTINGS_STEP]: { flow: 'classic', step: 'prosettings', stepIndex: 3 },
-  [MAX_ONBOARDING_STEPS]: { flow: 'classic', step: 'agentpicker', stepIndex: 4 },
 } as const;
 
 const getClassicStepTrackingPayload = (step: number) =>
@@ -39,27 +36,45 @@ const getClassicStepTrackingPayload = (step: number) =>
 const ClassicOnboardingPage = memo(() => {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
-  const [isUserStateInit, commonStepsCompleted, currentStep, goToNextStep, goToPreviousStep] =
-    useUserStore((s) => [
-      s.isUserStateInit,
-      onboardingSelectors.commonStepsCompleted(s),
-      onboardingSelectors.currentStep(s),
-      s.goToNextStep,
-      s.goToPreviousStep,
-    ]);
+  const [
+    isUserStateInit,
+    commonStepsCompleted,
+    currentStep,
+    finishOnboarding,
+    goToNextStep,
+    goToPreviousStep,
+  ] = useUserStore((s) => [
+    s.isUserStateInit,
+    onboardingSelectors.commonStepsCompleted(s),
+    onboardingSelectors.currentStep(s),
+    s.finishOnboarding,
+    s.goToNextStep,
+    s.goToPreviousStep,
+  ]);
   const enableKlavis = useServerConfigStore(serverConfigSelectors.enableKlavis);
   const serverConfigInit = useServerConfigStore((s) => s.serverConfigInit);
   const shouldSkipProSettingsStep = serverConfigInit && !enableKlavis;
   const autoSkippedStepKeysRef = useRef<Set<string>>(new Set());
+  const finishingRef = useRef(false);
   const viewedStepKeysRef = useRef<Set<string>>(new Set());
-
-  useOnboardingAgentTemplates(isUserStateInit && commonStepsCompleted);
 
   // FullNameStep is the branch's first step, so its back button leaves the
   // branch and re-enters the shared prefix's ResponseLanguageStep (step 2).
   const backToResponseLanguageStep = useCallback(() => {
     navigate('/onboarding?step=2', { replace: true });
   }, [navigate]);
+
+  const completeClassicOnboarding = useCallback(
+    async (payload?: Parameters<typeof trackOnboardingStepCompleted>[0]) => {
+      if (finishingRef.current) return;
+      finishingRef.current = true;
+
+      if (payload) trackOnboardingStepCompleted(payload);
+      await finishOnboarding();
+      navigate('/', { replace: true });
+    },
+    [finishOnboarding, navigate],
+  );
 
   useEffect(() => {
     if (
@@ -82,6 +97,12 @@ const ClassicOnboardingPage = memo(() => {
     });
     goToNextStep();
   }, [commonStepsCompleted, currentStep, goToNextStep, isUserStateInit, shouldSkipProSettingsStep]);
+
+  useEffect(() => {
+    if (!isUserStateInit || !commonStepsCompleted || currentStep !== MAX_ONBOARDING_STEPS) return;
+
+    void completeClassicOnboarding();
+  }, [commonStepsCompleted, completeClassicOnboarding, currentStep, isUserStateInit]);
 
   useEffect(() => {
     if (!isUserStateInit || !commonStepsCompleted) return;
@@ -108,38 +129,21 @@ const ClassicOnboardingPage = memo(() => {
   }, [goToNextStep]);
 
   const goToNextStepFromInterests = useCallback(() => {
-    trackOnboardingStepCompleted(
-      shouldSkipProSettingsStep
-        ? {
-            ...CLASSIC_STEP_TRACKING[INTERESTS_STEP],
-            skippedNextStep: 'prosettings',
-          }
-        : CLASSIC_STEP_TRACKING[INTERESTS_STEP],
-    );
-
     if (shouldSkipProSettingsStep) {
-      goToNextStep();
-      goToNextStep();
+      void completeClassicOnboarding({
+        ...CLASSIC_STEP_TRACKING[INTERESTS_STEP],
+        skippedNextStep: 'prosettings',
+      });
       return;
     }
 
+    trackOnboardingStepCompleted(CLASSIC_STEP_TRACKING[INTERESTS_STEP]);
     goToNextStep();
-  }, [goToNextStep, shouldSkipProSettingsStep]);
+  }, [completeClassicOnboarding, goToNextStep, shouldSkipProSettingsStep]);
 
   const goToNextStepFromProSettings = useCallback(() => {
-    trackOnboardingStepCompleted(CLASSIC_STEP_TRACKING[PRO_SETTINGS_STEP]);
-    goToNextStep();
-  }, [goToNextStep]);
-
-  const goToPreviousStepFromAgentPicker = useCallback(() => {
-    if (shouldSkipProSettingsStep) {
-      goToPreviousStep();
-      goToPreviousStep();
-      return;
-    }
-
-    goToPreviousStep();
-  }, [goToPreviousStep, shouldSkipProSettingsStep]);
+    void completeClassicOnboarding(CLASSIC_STEP_TRACKING[PRO_SETTINGS_STEP]);
+  }, [completeClassicOnboarding]);
 
   if (!isUserStateInit) {
     return <Loading debugId="ClassicOnboarding" />;
@@ -165,23 +169,18 @@ const ClassicOnboardingPage = memo(() => {
 
         return <ProSettingsStep onBack={goToPreviousStep} onNext={goToNextStepFromProSettings} />;
       }
-      case MAX_ONBOARDING_STEPS: {
-        return <AgentPickerStep onBack={goToPreviousStepFromAgentPicker} />;
-      }
       default: {
         return null;
       }
     }
   };
 
-  const contentMaxWidth = currentStep === MAX_ONBOARDING_STEPS ? 780 : 600;
-
   return (
     <OnboardingContainer>
       <Flexbox
         gap={24}
         paddingInline={isMobile ? 16 : 0}
-        style={{ maxWidth: contentMaxWidth, width: '100%' }}
+        style={{ maxWidth: 600, width: '100%' }}
       >
         {isDev && <ModeSwitch />}
         {renderStep()}

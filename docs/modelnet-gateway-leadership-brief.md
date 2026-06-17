@@ -23,9 +23,9 @@ ModelNet Gateway 的定位不是普通 HTTP 代理，而是模型服务的统一
 
 ## 3. 总体技术方案
 
-线上链路可以概括为：LobeHub / SDK / 业务服务 -> LiteLLM -> modelnet-router -> vLLM、llama.cpp、OpenAI-compatible、Ollama 等模型后端。
+线上链路可以概括为：LobeHub / SDK / 业务服务 -> LiteLLM。LiteLLM 对 `modelnet` / `modelnet-auto` 这类聚合或自动路由入口转发到 modelnet-router；对具体后端模型 ID 则按生成配置直接转发到 vLLM、llama.cpp、OpenAI-compatible、Ollama 等模型后端。
 
-`modelnet-router` 位于 LiteLLM 与真实模型后端之间。它对上承接标准聊天请求和 ModelNet Native 协作请求，对下屏蔽不同模型后端的协议差异。核心设计是先把请求转换为统一内部 IR，再进入鉴权、能力匹配、路由评分、后端适配和结果输出流程。
+`modelnet-router` 位于 LiteLLM 的聚合/自动路由入口与真实模型后端之间。它对上承接标准聊天请求和 ModelNet Native 协作请求，对下屏蔽不同模型后端的协议差异。核心设计是先把请求转换为统一内部 IR，再进入鉴权、能力匹配、路由评分、后端适配和结果输出流程。
 
 ## 4. 核心能力分层
 

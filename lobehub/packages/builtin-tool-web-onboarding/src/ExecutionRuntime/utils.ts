@@ -33,7 +33,7 @@ const PHASE_GUIDANCE: Record<string, string> = {
   discovery:
     'Phase: Discovery. User identity is established. Ask one focused question — what the user does for work (their profession, role, or main occupation) — and record it in the persona document. Do NOT explore pain points, tools, goals, or interests, and do NOT call saveUserQuestion with interests. Once you have their profession, move to summary.',
   summary:
-    "Phase: Summary. All structured fields and documents are in good shape. Two-step wrap up: (1) THIS or the current summary turn, present a natural summary of what you learned and call `showAgentMarketplace` exactly once with `{ requestId, categoryHints, prompt }` (1–3 MarketplaceCategory slugs picked from the user's profession and anything else they shared). Do not call `submitAgentPick` / `skipAgentPick` / `cancelAgentPick` yourself. (2) On the NEXT turn, briefly acknowledge whatever the user said, send a warm closing, and call `finishOnboarding`. Treat the user's text reply on that next turn as the resolution signal even if the picker is still in `pending` state — do not stall waiting for a UI event. Do not call `showAgentMarketplace` more than once.",
+    'Phase: Summary. All structured fields and documents are in good shape. Present a natural summary of what you learned, persist any final unsaved details, send a brief warm closing, and call `finishOnboarding`. Template selection has been removed from onboarding.',
   user_identity:
     'Phase: User Identity. The agent has an identity. Now learn who the user is — their name, role, and what they do. Save fullName via saveUserQuestion when learned. Start building the persona document.',
 };

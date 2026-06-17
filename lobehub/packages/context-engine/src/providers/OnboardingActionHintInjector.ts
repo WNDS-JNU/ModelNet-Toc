@@ -57,36 +57,12 @@ export class OnboardingActionHintInjector extends BaseVirtualLastUserContentProv
     return false;
   }
 
-  protected buildContent(context: PipelineContext): string | null {
+  protected buildContent(_context: PipelineContext): string | null {
     const ctx = this.config.onboardingContext;
     if (!ctx) return null;
 
     const hints: string[] = [];
     const phase = ctx.phaseGuidance;
-    // Detect prior showAgentMarketplace calls. NOTE: this provider runs in pipeline phase 4.5
-    // (virtual tail guidance) BEFORE ToolCallProcessor converts the DB-shape `tools` array
-    // into OpenAI-shape `tool_calls`. So at injection time, assistant messages still carry
-    // `tools: [{ identifier, apiName, ... }]`, not `tool_calls`. Match on apiName here, with
-    // a `tool_calls` fallback in case ordering changes.
-    const isMarketplaceShowCall = (msg: any): boolean => {
-      if (msg?.role !== 'assistant') return false;
-      if (
-        Array.isArray(msg.tools) &&
-        msg.tools.some((t: any) => t?.apiName === 'showAgentMarketplace')
-      ) {
-        return true;
-      }
-      if (Array.isArray(msg.tool_calls)) {
-        return msg.tool_calls.some(
-          (tc: any) =>
-            typeof tc?.function?.name === 'string' &&
-            tc.function.name.includes('showAgentMarketplace'),
-        );
-      }
-      return false;
-    };
-    const marketplaceAlreadyOpened = context.messages.some((msg) => isMarketplaceShowCall(msg));
-
     if (phase.includes('Discovery')) {
       const reminder = buildDiscoveryTurnReminder(
         ctx.discoveryUserMessageCount,
@@ -145,18 +121,12 @@ export class OnboardingActionHintInjector extends BaseVirtualLastUserContentProv
         'When the user tells you their profession, record it with updateDocument(type="persona"). Preferred shape: `{ mode: "insertAt", line: <line shown in <current_user_persona>>, content: "- new fact" }`. Use writeDocument(type="persona") only if the document is still empty. Do NOT call saveUserQuestion with interests or customInterests — interest collection has been removed from onboarding. The preferred reply language is configured before onboarding starts and is already injected into your system prompt — do not ask about it or pass a responseLanguage field to saveUserQuestion.',
       );
       hints.push(
-        'EARLY EXIT: A true early-exit signal is the user explicitly wanting to END onboarding (e.g., "I\'m tired", "I have to go", "let\'s chat next time", "no time right now", "let\'s stop for now", "let\'s wrap it up", "that\'s enough"; recognize equivalent phrasing in any language). Short affirmations like "ok" / "sure" / "alright" / "yes" / "got it" are NOT early-exit signals — they confirm what you just said and you should continue the current phase normally. When you see a real exit signal: stop asking questions, persist any unsaved fields best-effort (call saveUserQuestion with whatever you have), persist the persona via updateDocument (or writeDocument if it is still empty) — do NOT retry on failure — send a short warm farewell (1–2 sentences), then call `finishOnboarding`. Do NOT call `showAgentMarketplace` on early exit — that handoff is for normal completion only.',
+        'EARLY EXIT: A true early-exit signal is the user explicitly wanting to END onboarding (e.g., "I\'m tired", "I have to go", "let\'s chat next time", "no time right now", "let\'s stop for now", "let\'s wrap it up", "that\'s enough"; recognize equivalent phrasing in any language). Short affirmations like "ok" / "sure" / "alright" / "yes" / "got it" are NOT early-exit signals — they confirm what you just said and you should continue the current phase normally. When you see a real exit signal: stop asking questions, persist any unsaved fields best-effort (call saveUserQuestion with whatever you have), persist the persona via updateDocument (or writeDocument if it is still empty) — do NOT retry on failure — send a short warm farewell (1–2 sentences), then call `finishOnboarding`.',
       );
     } else if (phase.includes('Summary')) {
-      if (!marketplaceAlreadyOpened) {
-        hints.push(
-          'Present a summary, then THIS TURN call `showAgentMarketplace` exactly once with `{ requestId, categoryHints, prompt }` — pick 1–3 MarketplaceCategory slugs from what you learned in discovery. The picker is the required handoff that lets the user choose recommended assistants; do NOT skip it on normal completion. After the showAgentMarketplace tool result comes back, **STOP this turn** — no more tool calls and no closing text yet. The picker resolves directly via the tool result UI (the user will pick / skip in place); when it resolves, the runtime will start a NEW assistant turn whose tool result describes what was picked. The closing + `finishOnboarding` belong to that next turn. EXCEPTION: if the user has just signaled true early exit (e.g., "I have to go", "let\'s chat next time", "I\'m tired"; equivalents in any language) in this same turn, skip the marketplace entirely. Instead: persist any unsaved fields (best-effort), send a brief warm farewell, then call `finishOnboarding`. The marketplace handoff is mandatory for normal completion only — never on early exit.',
-        );
-      } else {
-        hints.push(
-          'You have ALREADY opened the marketplace picker this conversation, and the user has just resolved it through the picker UI — the latest tool result describes what was picked (look for `installedAgentIds` / `selectedTemplateIds`, or a `skipped`/`cancelled` status). Do NOT call `showAgentMarketplace` again, do NOT claim you just opened the list, and do NOT wait for another user message. THIS TURN: (1) briefly acknowledge the picks (or the skip/cancel) in 1–2 sentences; (2) call `updateDocument(type="persona")` with `insertAt` mode to record the picks (categories/use cases) so future sessions remember; (3) call `finishOnboarding`. If the tool result indicates skip/cancel, skip step 2 and just close + `finishOnboarding`.',
-        );
-      }
+      hints.push(
+        'Present a concise summary, persist any final unsaved details with the appropriate persistence tools, send a brief warm closing, then THIS TURN call `finishOnboarding`. Template selection has been removed from onboarding; do not wait for a picker or another user message before finishing.',
+      );
     }
 
     hints.push(
@@ -166,7 +136,7 @@ export class OnboardingActionHintInjector extends BaseVirtualLastUserContentProv
       'TURN ORDER: A message that contains a tool call does NOT yield the turn to the user — the agent loop continues after the tool result. So never put a user-facing question in the same message as a tool call. When you need to both persist something and ask the user a question, use two messages: first emit the tool call(s) with no question text (a brief acknowledgement or no text is fine), then — after the tool results return — ask your question in a separate message with NO tool call. Bundling a question with a tool call strands the question and forces a confused "waiting for your reply" filler.',
     );
     hints.push(
-      'CONFIRMATION vs EARLY EXIT: Short replies like "ok" / "sure" / "alright" / "yes" / "got it" (and equivalents in any language) are CONFIRMATIONS, not early-exit signals. Continue the current phase normally — in Summary that means calling `showAgentMarketplace` next, NOT `finishOnboarding` directly.',
+      'CONFIRMATION vs EARLY EXIT: Short replies like "ok" / "sure" / "alright" / "yes" / "got it" (and equivalents in any language) are CONFIRMATIONS, not early-exit signals. Continue the current phase normally — in Summary that means closing and calling `finishOnboarding` directly.',
     );
     if (
       phase.includes('Agent Identity') ||
@@ -174,7 +144,7 @@ export class OnboardingActionHintInjector extends BaseVirtualLastUserContentProv
       phase.includes('Discovery')
     ) {
       hints.push(
-        'EARLY EXIT REMINDER: A true early-exit signal means the user explicitly wants the onboarding to END — examples: "I\'m tired", "I have to go", "let\'s chat next time", "no time right now", "let\'s stop for now", "let\'s wrap it up", "that\'s enough"; recognize equivalent phrasing in any language. When you see one (and only then), persist any unsaved fields, persist SOUL.md and the user persona via updateDocument (or writeDocument if either is still empty) — best-effort; do NOT retry on failure — send a brief warm farewell, then call `finishOnboarding`. Do NOT call `showAgentMarketplace` on early exit — that handoff is for normal completion only.',
+        'EARLY EXIT REMINDER: A true early-exit signal means the user explicitly wants the onboarding to END — examples: "I\'m tired", "I have to go", "let\'s chat next time", "no time right now", "let\'s stop for now", "let\'s wrap it up", "that\'s enough"; recognize equivalent phrasing in any language. When you see one (and only then), persist any unsaved fields, persist SOUL.md and the user persona via updateDocument (or writeDocument if either is still empty) — best-effort; do NOT retry on failure — send a brief warm farewell, then call `finishOnboarding`.',
       );
     }
 

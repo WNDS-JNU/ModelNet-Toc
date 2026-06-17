@@ -17,7 +17,6 @@ import { ONBOARDING_PRODUCTION_DEFAULT_MODEL } from '@/const/onboarding';
 import { type ConversationHooks } from '@/features/Conversation/types';
 import { mergeConversationHooks } from '@/features/Conversation/utils/mergeConversationHooks';
 import ModeSwitch from '@/features/Onboarding/components/ModeSwitch';
-import { useOnboardingAgentTemplates } from '@/hooks/useOnboardingAgentTemplates';
 import { useClientDataSWR, useOnlyFetchOnceSWR } from '@/libs/swr';
 import OnboardingContainer from '@/routes/onboarding/_layout';
 import { fetchOnboardingAgentTemplates } from '@/services/agentMarketplace';
@@ -127,8 +126,6 @@ const AgentOnboardingPage = memo(() => {
 
   const viewingHistoricalTopic =
     !!activeTopicId && !!effectiveTopicId && effectiveTopicId !== activeTopicId;
-
-  useOnboardingAgentTemplates(!onboardingFinished && !viewingHistoricalTopic);
 
   const conversationViewedRef = useRef(false);
   useEffect(() => {

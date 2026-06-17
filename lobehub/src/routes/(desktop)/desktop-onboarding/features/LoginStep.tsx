@@ -207,9 +207,13 @@ const LoginStep = memo<LoginStepProps>(({ onBack, onNext }) => {
   }, [isCloudAuthed, isSelfHostAuthed]);
 
   useEffect(() => {
-    if (!isSelfHostAuthed || endpoint.trim()) return;
-    setEndpoint(dataSyncConfig?.remoteServerUrl ?? '');
-  }, [dataSyncConfig?.remoteServerUrl, endpoint, isSelfHostAuthed]);
+    if (endpoint.trim()) return;
+    if (dataSyncConfig?.storageMode !== 'selfHost') return;
+    const defaultEndpoint = dataSyncConfig.remoteServerUrl?.trim();
+    if (!defaultEndpoint) return;
+    setEndpoint(defaultEndpoint);
+    setShowEndpoint(true);
+  }, [dataSyncConfig?.remoteServerUrl, dataSyncConfig?.storageMode, endpoint]);
 
   // If user changes self-host endpoint after success, require re-authorization.
   useEffect(() => {

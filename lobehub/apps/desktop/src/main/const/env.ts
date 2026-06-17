@@ -7,6 +7,8 @@ import { getDesktopEnv } from '@/env';
 export const isDev = electronIs.dev();
 
 export const OFFICIAL_CLOUD_SERVER = getDesktopEnv().OFFICIAL_CLOUD_SERVER;
+export const IS_MODELNET_DESKTOP = getDesktopEnv().MODELNET_DESKTOP;
+export const MODELNET_DESKTOP_SERVER_URL = getDesktopEnv().MODELNET_DESKTOP_SERVER_URL;
 
 export const isMac = electronIs.macOS();
 export const isWindows = electronIs.windows();

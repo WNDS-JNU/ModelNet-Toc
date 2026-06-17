@@ -1815,6 +1815,29 @@ describe('ChatService', () => {
       });
     });
 
+    it('should keep concrete ModelNet backend aliases on chat completions', async () => {
+      useAiInfraStore.setState({
+        aiProviderRuntimeState: {
+          openai: { enabled: true, supportResponsesApi: true },
+        },
+      } as any);
+
+      await chatService.getChatCompletion(
+        {
+          messages: [],
+          model: 'llama-cpp-deploy-jetson-64g-3-qwen3-8b-bf16',
+          provider: ModelProvider.OpenAI,
+        } as any,
+        {},
+      );
+
+      const payload = JSON.parse(mockFetchSSE.mock.calls[0][1].body);
+
+      expect(payload.model).toBe('llama-cpp-deploy-jetson-64g-3-qwen3-8b-bf16');
+      expect(payload.apiMode).toBe('chatCompletion');
+      expect(payload).not.toHaveProperty('modelnet');
+    });
+
     it('should request visible flow events for ModelNet parallel responses', async () => {
       await chatService.getChatCompletion(
         {
@@ -1841,7 +1864,6 @@ describe('ChatService', () => {
           runner: 'response.parallel',
           runner_config: {
             allow_degraded: false,
-            response_synthesizer_model: 'inference-qwen3',
             show_parallel_flow: true,
           },
         },

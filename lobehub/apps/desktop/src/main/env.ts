@@ -83,6 +83,11 @@ export const getDesktopEnv = memoize(() =>
       // cloud server url (can be overridden for selfhost/dev)
       OFFICIAL_CLOUD_SERVER: z.string().optional().default('https://app.lobehub.com'),
 
+      // ModelNet downstream build preset. The desktop app remains a client shell; this only
+      // changes first-run defaults and package branding when enabled in build/runtime env.
+      MODELNET_DESKTOP: envBoolean(false),
+      MODELNET_DESKTOP_SERVER_URL: z.string().optional().default('http://123.56.135.150'),
+
       // updater
       // process.env.xxx will replace in build stage
       UPDATE_CHANNEL: z.string().optional().default(process.env.UPDATE_CHANNEL),
