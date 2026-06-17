@@ -167,12 +167,40 @@ export const MessageSignalSchema = z.object({
   type: z.enum(['tool-stdout', 'tool-callback', 'task-completion']),
 });
 
+export const ModelNetParallelSourceSchema = z
+  .object({
+    backend: z.record(z.any()).optional(),
+    completedAt: z.number().optional(),
+    error: z.string().optional(),
+    latencyMs: z.number().optional(),
+    metadata: z.record(z.any()).optional(),
+    model: z.string(),
+    sourceId: z.string(),
+    startedAt: z.number().optional(),
+    status: z.enum(['pending', 'running', 'completed', 'failed', 'summarized']),
+    summarized: z.boolean().optional(),
+    summary: z.string().optional(),
+    text: z.string(),
+    updatedAt: z.number(),
+  })
+  .passthrough();
+
+export const ModelNetParallelMetadataSchema = z
+  .object({
+    sourceOrder: z.array(z.string()).optional(),
+    sources: z.record(ModelNetParallelSourceSchema).optional(),
+    synthesis: z.record(z.any()).optional(),
+    updatedAt: z.number().optional(),
+  })
+  .passthrough();
+
 export const MessageMetadataSchema = ModelUsageSchema.merge(ModelPerformanceSchema).extend({
   collapsed: z.boolean().optional(),
   inspectExpanded: z.boolean().optional(),
   isMultimodal: z.boolean().optional(),
   isSupervisor: z.boolean().optional(),
   localSystemToolSnapshots: z.array(LocalSystemToolSnapshotSchema).optional(),
+  modelnetParallel: ModelNetParallelMetadataSchema.optional(),
   pageSelections: z.array(PageSelectionSchema).optional(),
   // Canonical nested shape — flat fields above are deprecated. Must be listed
   // here so zod doesn't strip them from writes going through UpdateMessageParamsSchema
@@ -212,6 +240,29 @@ export interface ModelPerformance {
    * time to first token (ms)
    */
   ttft?: number;
+}
+
+export interface ModelNetParallelSourceState {
+  backend?: Record<string, any>;
+  completedAt?: number;
+  error?: string;
+  latencyMs?: number;
+  metadata?: Record<string, any>;
+  model: string;
+  sourceId: string;
+  startedAt?: number;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'summarized';
+  summarized?: boolean;
+  summary?: string;
+  text: string;
+  updatedAt: number;
+}
+
+export interface ModelNetParallelMetadata {
+  sourceOrder?: string[];
+  sources?: Record<string, ModelNetParallelSourceState>;
+  synthesis?: Record<string, any>;
+  updatedAt?: number;
 }
 
 export interface MessageMetadata {
@@ -289,6 +340,7 @@ export interface MessageMetadata {
    * Local-system tool snapshots materialized when the user sent @file mentions.
    */
   localSystemToolSnapshots?: LocalSystemToolSnapshot[];
+  modelnetParallel?: ModelNetParallelMetadata;
   /** @deprecated use `metadata.usage` instead */
   outputAudioTokens?: number;
   /** @deprecated use `metadata.usage` instead */

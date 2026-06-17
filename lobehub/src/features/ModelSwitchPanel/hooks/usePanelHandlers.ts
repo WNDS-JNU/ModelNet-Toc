@@ -3,8 +3,11 @@ import { useCallback } from 'react';
 import {
   getModelNetParallelCandidates,
   isModelNetParallelModel,
+  isModelNetSerialModel,
   MIN_MODELNET_PARALLEL_MODELS,
+  MIN_MODELNET_SERIAL_MODELS,
   normalizeModelNetParallelModelIds,
+  normalizeModelNetSerialTopology,
 } from '@/features/ModelNetParallel';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors } from '@/store/agent/selectors';
@@ -42,6 +45,18 @@ export const usePanelHandlers = ({
 
           if (modelnetParallelModelIds.length >= MIN_MODELNET_PARALLEL_MODELS) {
             params.params = { ...currentAgentParams, modelnetParallelModelIds };
+          }
+        }
+
+        if (isModelNetSerialModel(providerId, modelId)) {
+          const candidates = getModelNetParallelCandidates(enabledList, providerId);
+          const modelnetSerialTopology = normalizeModelNetSerialTopology(
+            currentAgentParams?.modelnetSerialTopology,
+            candidates,
+          );
+
+          if (modelnetSerialTopology.nodes.length >= MIN_MODELNET_SERIAL_MODELS) {
+            params.params = { ...currentAgentParams, modelnetSerialTopology };
           }
         }
 

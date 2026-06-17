@@ -118,11 +118,15 @@ def build_config(models: list[dict[str, Any]]) -> tuple[str, list[str]]:
         f"      model: {yaml_quote('openai/' + AGGREGATE_MODEL_NAME)}",
         f"      api_base: {yaml_quote(AGGREGATE_API_BASE)}",
         "      api_key: 'os.environ/MODELNET_BACKEND_API_KEY'",
+        "      allowed_openai_params:",
+        f"        - {yaml_quote('modelnet')}",
         f"  - model_name: {yaml_quote(AUTO_MODEL_NAME)}",
         "    litellm_params:",
         f"      model: {yaml_quote('openai/' + AUTO_MODEL_NAME)}",
         f"      api_base: {yaml_quote(AGGREGATE_API_BASE)}",
         "      api_key: 'os.environ/MODELNET_BACKEND_API_KEY'",
+        "      allowed_openai_params:",
+        f"        - {yaml_quote('modelnet')}",
     ]
     for model in chat_models:
         lines.extend(
@@ -164,7 +168,8 @@ def main() -> int:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(config, encoding="utf-8")
-    print(f"Wrote {args.output} with aggregate/auto models plus {len(model_names) - 2} backend models")
+    backend_count = max(0, len(model_names) - 2)
+    print(f"Wrote {args.output} with aggregate/auto entries plus {backend_count} backend models")
     for name in model_names[:6]:
         print(f"- {name}")
     if len(model_names) > 6:

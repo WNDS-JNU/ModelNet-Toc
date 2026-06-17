@@ -39,7 +39,7 @@ flowchart LR
 
 两条北向路径的区别：
 
-- `/v1/chat/completions` 面向 OpenAI-compatible 客户端。普通请求默认走 `route.once` 自动选一个后端；当请求模型为 `modelnet-auto` 时进入自动组网。
+- `/v1/chat/completions` 面向 OpenAI-compatible 客户端。`modelnet-auto` 是正式自动组网入口；具体后端模型 ID 仍可直接请求以走普通 `route.once`。退休的 `modelnet` 会返回 410。
 - `/v1/runs/stream` 面向 ModelNet Native 客户端。它直接承载 `ModelNetRunRequest`，支持 runner、aggregator、sources、diagnostics 和统一 `ModelNetEvent` SSE。
 
 ## 2. `modelnet_gateway/schemas.py`: 内部数据契约
@@ -663,13 +663,13 @@ Claim Memory 是一个可选 SQLite 记忆库，用于给自动组网和 Claim G
   - 返回网关基本健康状态、模型数量、registry、K8s/Prometheus 错误和后端统计。
 - `GET /v1/models`
   - 返回 tenant 可见模型。
-  - 额外包含 public model 名称 `modelnet` 和 auto model 名称 `modelnet-auto`。
+  - 额外包含正式 auto model 名称 `modelnet-auto`；不再暴露退休的 `modelnet`。
 - `GET /v1/capabilities`
   - 返回 runner、aggregator、backend_adapters 和模型能力矩阵。
 - `POST /v1/chat/completions`
   - OpenAI-compatible 主入口。
   - `openai_chat_to_ir` 转 IR。
-  - 如果是 auto 请求，进入 `openai_auto_chat_response`。
+  - 如果是 auto 请求，进入 `openai_ensemble_chat_response`。
   - 普通请求用 `pick_candidate` 选后端。
   - stream 模式用 `stream_backend` 原样透传后端 SSE。
   - 非 stream 模式用 `backend_chat_response` 返回后端 JSON。
@@ -938,13 +938,14 @@ Claim Memory 是一个可选 SQLite 记忆库，用于给自动组网和 Claim G
 ### OpenAI-compatible 普通聊天
 
 1. Client 调 `POST /v1/chat/completions`。
-2. `openai_chat_to_ir` 生成 IR。
-3. 非 `modelnet-auto`，进入普通 route。
-4. 从 IR 中提取目标 model、candidate_aliases 和 required_capabilities。
-5. `pick_candidate` 按租户、能力、K8s ready、Prometheus 指标、in-flight、失败冷却打分。
-6. stream 请求走 `stream_backend` 透传后端 SSE。
-7. 非 stream 请求走 `backend_chat_response`。
-8. 结束后 `release_candidate`。
+2. `modelnet` 作为退休公开入口会直接返回 410。
+3. `openai_chat_to_ir` 生成 IR。
+4. 具体后端模型 ID 进入普通 route。
+5. 从 IR 中提取目标 model、candidate_aliases 和 required_capabilities。
+6. `pick_candidate` 按租户、能力、K8s ready、Prometheus 指标、in-flight、失败冷却打分。
+7. stream 请求走 `stream_backend` 透传后端 SSE。
+8. 非 stream 请求走 `backend_chat_response`。
+9. 结束后 `release_candidate`。
 
 ### Native 协作流
 
@@ -961,7 +962,7 @@ Claim Memory 是一个可选 SQLite 记忆库，用于给自动组网和 Claim G
 
 1. OpenAI-compatible 请求的 `model` 为 `modelnet-auto`。
 2. `openai_chat_to_ir` 设置 `runner=auto.network`。
-3. `openai_auto_chat_response` 将 Native/ensemble 输出转换为 OpenAI-compatible response。
+3. `openai_ensemble_chat_response` 将 Native/ensemble 输出转换为 OpenAI-compatible response。
 4. `plan_auto_ensemble` 根据任务特征、候选模型、预算和 claim memory 选择拓扑。
 5. 按拓扑进入 route、response.parallel、role_graph、rank_fuse、cascade_verify 或 claim_graph。
 6. 最终输出被包装为 OpenAI 非流式或流式格式。

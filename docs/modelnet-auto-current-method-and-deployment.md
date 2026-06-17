@@ -10,9 +10,10 @@ ModelNet 当前是一个部署在远端 `4A100` 机器上的 multi-model gateway
 
 当前最重要的公开入口是：
 
-- `modelnet`: 普通自动路由入口。
-- `modelnet-auto`: 自动组网入口。
+- `modelnet-auto`: OpenAI-compatible 正式自动组网入口，对应 `auto.network`。
 - `adaptive_sparse_graph`: 当前重点方法，复杂请求默认走 `rank_fuse_v2`。
+
+`modelnet` 作为普通公开入口已退休；北向客户端应改用 `modelnet-auto`。
 
 当前方法的核心思想是：
 
@@ -46,7 +47,7 @@ ModelNet 当前是一个部署在远端 `4A100` 机器上的 multi-model gateway
 | `GET /v1/topology` | 查看 topology 和 backend 可见性 |
 | `POST /v1/registry/refresh` | 刷新 registry |
 
-OpenAI-compatible 请求可以通过 `modelnet` 或 `modelnet-auto` 进入。Native API 主要用于显式 runner、trace 和更细粒度协作控制。
+OpenAI-compatible 自动组网请求应通过 `modelnet-auto` 进入。`modelnet` 作为普通公开入口已退休；Native API 主要用于显式 runner、trace 和更细粒度协作控制。
 
 ### 2.3 当前 backend pool
 

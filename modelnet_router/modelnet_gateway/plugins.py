@@ -30,6 +30,9 @@ RUNNER_ALIASES = {
     "auto": "auto.network",
     "auto_network": "auto.network",
     "auto.network": "auto.network",
+    "role_graph": "auto.role_graph",
+    "auto_role_graph": "auto.role_graph",
+    "auto.role_graph": "auto.role_graph",
     "claim_graph": "auto.claim_graph",
     "auto_claim_graph": "auto.claim_graph",
     "auto.claim_graph": "auto.claim_graph",
@@ -58,6 +61,13 @@ RUNNER_PLUGINS = {
         scope="graph",
         description="Plan a query-conditioned model network, then execute it through an implemented runner.",
         supported_aggregators=("auto",),
+    ),
+    "auto.role_graph": RunnerPlugin(
+        name="auto.role_graph",
+        legacy_name="role_graph",
+        scope="graph",
+        description="Run role-specialized expert responses with optional critic review and synthesis.",
+        supported_aggregators=("synthesize",),
     ),
     "auto.claim_graph": RunnerPlugin(
         name="auto.claim_graph",
@@ -102,10 +112,8 @@ RUNNER_PLUGINS = {
         name="response.serial",
         legacy_name="dynamic_collab_route",
         scope="response",
-        description="Run complete responses in sequence, with later models judging or refining earlier output.",
-        supported_aggregators=("judge_refine", "synthesize"),
-        status="degraded",
-        status_reason="Implemented through the legacy serial-refinement fallback, not a full native v1 runner.",
+        description="Run complete responses in sequence through the gateway, with optional Dify workflow fallback.",
+        supported_aggregators=("dify.dsl", "judge_refine", "synthesize"),
     ),
     "hybrid.graph": RunnerPlugin(
         name="hybrid.graph",
@@ -157,6 +165,11 @@ AGGREGATOR_PLUGINS = {
         scope="response",
         description="Use a selected model to synthesize complete upstream responses.",
     ),
+    "dify.dsl": AggregatorPlugin(
+        name="dify.dsl",
+        scope="response",
+        description="Compile a ModelNet serial topology to Dify Workflow DSL and run it through Dify Runtime.",
+    ),
     "select_best": AggregatorPlugin(
         name="select_best",
         scope="response",
@@ -174,9 +187,7 @@ AGGREGATOR_PLUGINS = {
     "judge_refine": AggregatorPlugin(
         name="judge_refine",
         scope="response",
-        description="Judge and refine a previous response.",
-        status="degraded",
-        status_reason="Only available through the legacy response.serial fallback.",
+        description="Judge and refine a previous response in a gateway-local serial chain.",
     ),
     "load_aware": AggregatorPlugin(
         name="load_aware",

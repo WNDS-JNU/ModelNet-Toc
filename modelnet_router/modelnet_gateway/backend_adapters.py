@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -48,6 +49,14 @@ class BackendChatResponse:
     media_type: str
     status_code: int
     headers: dict[str, str]
+
+
+CONTEXT_LIMIT_PATTERN = re.compile(
+    r"maximum context length is (?P<limit>\d+) tokens.*?"
+    r"requested (?P<requested>\d+) output tokens.*?"
+    r"prompt contains (?P<lower_bound>at least )?(?P<input>\d+) input tokens",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def backend_adapter_info(backend_type: str) -> dict[str, Any]:
@@ -142,6 +151,81 @@ async def stream_chat(
             yield chunk
 
 
+def context_limit_retry_max_tokens(error_text: str, current_max_tokens: Any) -> int | None:
+    match = CONTEXT_LIMIT_PATTERN.search(error_text or "")
+    if not match:
+        return None
+    try:
+        context_limit = int(match.group("limit"))
+        input_tokens = int(match.group("input"))
+        current = int(current_max_tokens)
+    except (TypeError, ValueError):
+        return None
+    if input_tokens >= context_limit:
+        return None
+    lower_bound = bool(match.group("lower_bound"))
+    safety_margin = 512 if lower_bound else 128
+    retry_max_tokens = context_limit - input_tokens - safety_margin
+    if retry_max_tokens <= 0:
+        retry_max_tokens = context_limit - input_tokens - 1
+    if lower_bound:
+        # vLLM reports only the minimum tokenized prefix needed to prove overflow.
+        # Back off aggressively because the real prompt may be much longer.
+        retry_max_tokens = min(retry_max_tokens, max(256, current // 2))
+    if retry_max_tokens <= 0 or retry_max_tokens >= current:
+        return None
+    return max(1, retry_max_tokens)
+
+
+def response_error_detail(response: httpx.Response, limit: int = 800) -> str:
+    try:
+        text = response.text
+    except Exception:  # noqa: BLE001 - best-effort diagnostic text
+        text = ""
+    return (text or "").replace("\n", "\\n")[:limit]
+
+
+def raise_status_with_body(response: httpx.Response) -> None:
+    if response.status_code < 400:
+        return
+    detail = response_error_detail(response)
+    reason = response.reason_phrase or "Error"
+    message = f"{response.status_code} {reason} for {response.request.url}"
+    if detail:
+        message += f": {detail}"
+    raise httpx.HTTPStatusError(message, request=response.request, response=response)
+
+
+async def post_openai_chat_with_context_retry(
+    candidate: Any,
+    body: dict[str, Any],
+    *,
+    http_client: httpx.AsyncClient,
+    headers: dict[str, str],
+) -> tuple[httpx.Response, dict[str, Any]]:
+    request_body = dict(body)
+    retry_metadata: dict[str, Any] = {}
+    for _attempt in range(12):
+        response = await http_client.post(chat_url(candidate), json=request_body, headers=headers)
+        if response.status_code < 400:
+            return response, retry_metadata
+        retry_max_tokens = context_limit_retry_max_tokens(
+            response_error_detail(response, limit=2000),
+            request_body.get("max_tokens"),
+        )
+        if retry_max_tokens is None:
+            raise_status_with_body(response)
+        retry_metadata = {
+            "reason": "context_length",
+            "original_max_tokens": request_body.get("max_tokens"),
+            "retry_max_tokens": retry_max_tokens,
+            "backend_error": response_error_detail(response, limit=500),
+        }
+        request_body["max_tokens"] = retry_max_tokens
+    raise_status_with_body(response)
+    return response, retry_metadata
+
+
 async def generate_text(
     candidate: Any,
     source: Any,
@@ -165,9 +249,12 @@ async def generate_text(
         response.raise_for_status()
         payload = response.json()
         message = payload.get("message") if isinstance(payload, dict) else {}
+        metadata = {"usage": ollama_usage(payload)} if isinstance(payload, dict) else {}
+        if isinstance(payload, dict) and payload.get("done_reason"):
+            metadata["finish_reason"] = str(payload.get("done_reason") or "")
         return {
             "text": str(message.get("content") or "") if isinstance(message, dict) else "",
-            "metadata": {"usage": ollama_usage(payload)} if isinstance(payload, dict) else {},
+            "metadata": metadata,
         }
 
     if candidate.backend_type in OPENAI_CHAT_BACKENDS:
@@ -177,16 +264,25 @@ async def generate_text(
             "stream": False,
             **params,
         }
-        response = await http_client.post(chat_url(candidate), json=body, headers=headers)
-        response.raise_for_status()
+        response, retry_metadata = await post_openai_chat_with_context_retry(
+            candidate,
+            body,
+            http_client=http_client,
+            headers=headers,
+        )
         payload = response.json()
         choice = ((payload.get("choices") or [{}])[0] if isinstance(payload, dict) else {})
         message = choice.get("message") if isinstance(choice, dict) else {}
         metadata = {"usage": payload.get("usage")} if isinstance(payload, dict) else {}
         if isinstance(message, dict):
             reasoning = message.get("reasoning_content") or message.get("reasoning")
+            finish_reason = choice.get("finish_reason") if isinstance(choice, dict) else None
+            if finish_reason:
+                metadata["finish_reason"] = str(finish_reason)
             if reasoning:
                 metadata["reasoning_content"] = str(reasoning)
+            if retry_metadata:
+                metadata["max_tokens_retry"] = retry_metadata
             content = message.get("content", "")
         else:
             content = ""
@@ -210,7 +306,15 @@ async def generate_text(
     text = ""
     if isinstance(payload, dict):
         text = str(payload.get("content") or payload.get("text") or "")
-    return {"text": text, "metadata": {}}
+    metadata: dict[str, Any] = {}
+    if isinstance(payload, dict):
+        if payload.get("stopped_limit"):
+            metadata["finish_reason"] = "length"
+        elif payload.get("stopped_eos") or payload.get("stopped_word") or payload.get("stop"):
+            metadata["finish_reason"] = "stop"
+        if payload.get("tokens_predicted") is not None:
+            metadata["tokens_predicted"] = payload.get("tokens_predicted")
+    return {"text": text, "metadata": metadata}
 
 
 def openai_chat_to_ollama(candidate: Any, body: dict[str, Any]) -> dict[str, Any]:

@@ -36,7 +36,7 @@ const MainChatInput = memo(() => {
     ? promptTransformRightActions
     : contextWindowRightActions;
 
-  const leftActions: ActionKeys[] = useMemo(() => ['model', 'modelnetParallel', 'plus'], []);
+  const leftActions: ActionKeys[] = useMemo(() => ['model', 'modelnetParallel', 'modelnetSerial', 'plus'], []);
 
   return (
     <ChatInput

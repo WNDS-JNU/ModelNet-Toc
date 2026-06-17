@@ -23,9 +23,13 @@ import { ModelProvider } from 'model-bank';
 
 import { DEFAULT_AGENT_CONFIG } from '@/const/settings';
 import {
+  MODELNET_AUTO_MODEL_ID,
   isModelNetParallelModel,
+  isModelNetSerialModel,
   MAX_MODELNET_PARALLEL_MODELS,
+  MAX_MODELNET_SERIAL_MODELS,
   MIN_MODELNET_PARALLEL_MODELS,
+  MIN_MODELNET_SERIAL_MODELS,
 } from '@/features/ModelNetParallel';
 import { getSearchConfig } from '@/helpers/getSearchConfig';
 import { getAgentStoreState } from '@/store/agent';
@@ -65,6 +69,30 @@ import {
 import { type FetchOptions } from './types';
 
 const defaultProvider = ModelProvider.OpenAI;
+const modelNetResponseSynthesizerScore = (modelId: string) => {
+  const id = modelId.toLowerCase();
+  const sizes = [...id.matchAll(/(\d+(?:\.\d+)?)b/g)].map((match) => Number(match[1]));
+  const largestSize = sizes.length > 0 ? Math.max(...sizes) : 0;
+  const familyScore = id.includes('qwen')
+    ? 300
+    : id.includes('deepseek') || id.includes('glm') || id.includes('hunyuan')
+      ? 240
+      : id.includes('yi') || id.includes('internlm') || id.includes('baichuan')
+        ? 180
+        : 0;
+  const reasoningScore = id.includes('think') || id.includes('reason') || id.includes('r1') ? 40 : 0;
+
+  return familyScore + reasoningScore + largestSize;
+};
+
+const pickModelNetResponseSynthesizerModel = (modelIds: string[]) => {
+  return [...modelIds].sort((left, right) => {
+    const scoreDiff = modelNetResponseSynthesizerScore(right) - modelNetResponseSynthesizerScore(left);
+
+    return scoreDiff || left.localeCompare(right);
+  })[0];
+};
+
 const providersWithDeploymentName = new Set<string>([
   ModelProvider.Azure,
   ModelProvider.AzureAI,
@@ -373,12 +401,15 @@ class ChatService {
         ]
       : [];
     delete (res as any).modelnetParallelModelIds;
+    const modelnetSerialTopology = (res as any).modelnetSerialTopology;
+    delete (res as any).modelnetSerialTopology;
     delete (res as any).modelnet;
 
     // =================== process model =================== //
     // ===================================================== //
     let model = res.model || DEFAULT_AGENT_CONFIG.model;
     const isModelNetParallel = isModelNetParallelModel(provider, model);
+    const isModelNetSerial = isModelNetSerialModel(provider, model);
     const deploymentName = providersWithDeploymentName.has(provider)
       ? findDeploymentName(model, provider)
       : undefined;
@@ -394,11 +425,15 @@ class ChatService {
     // This ensures the user's preference takes priority over provider's useResponseModels config
     // When user enables Responses API, set to 'responses' to force use Responses API
     const normalizedModel = model.toLowerCase();
+    const isModelNetAuto =
+      provider === ModelProvider.OpenAI && normalizedModel === MODELNET_AUTO_MODEL_ID;
     const forceChatCompletions =
       isModelNetParallel ||
+      isModelNetSerial ||
+      isModelNetAuto ||
       (provider === ModelProvider.OpenAI &&
         (normalizedModel === 'modelnet' || normalizedModel === 'modelnet/modelnet'));
-    if (forceChatCompletions) {
+    if (forceChatCompletions && !isModelNetAuto) {
       model = 'modelnet';
     }
     const apiMode: 'responses' | 'chatCompletion' =
@@ -436,6 +471,7 @@ class ChatService {
     if (payload.presence_penalty === null) payload.presence_penalty = undefined;
     if (payload.frequency_penalty === null) payload.frequency_penalty = undefined;
     delete (payload as any).modelnetParallelModelIds;
+    delete (payload as any).modelnetSerialTopology;
 
     if (isModelNetParallel) {
       if (
@@ -447,14 +483,69 @@ class ChatService {
         );
       }
 
+      const responseSynthesizerModel = pickModelNetResponseSynthesizerModel(modelnetParallelModelIds);
+
       payload.model = 'modelnet';
       payload.modelnet = {
+        stream_options: {
+          include_trace: true,
+        },
         collaboration_plan: {
           aggregator: 'synthesize',
           models: modelnetParallelModelIds,
           runner: 'response.parallel',
           runner_config: {
             allow_degraded: false,
+            response_synthesizer_model: responseSynthesizerModel,
+            show_parallel_flow: true,
+          },
+        },
+      };
+    }
+
+    if (isModelNetAuto) {
+      payload.modelnet = {
+        stream_options: {
+          include_trace: true,
+        },
+        collaboration_plan: {
+          aggregator: 'auto',
+          runner: 'auto.network',
+          runner_config: {
+            show_auto_flow: true,
+          },
+        },
+      };
+    }
+
+    if (isModelNetSerial) {
+      const serialTopology = modelnetSerialTopology as
+        | { edges?: unknown[]; nodes?: { id?: unknown; modelId?: unknown }[]; version?: unknown }
+        | undefined;
+      const nodeCount = Array.isArray(serialTopology?.nodes) ? serialTopology.nodes.length : 0;
+
+      if (nodeCount < MIN_MODELNET_SERIAL_MODELS || nodeCount > MAX_MODELNET_SERIAL_MODELS) {
+        throw new Error(
+          `ModelNet \u4e32\u8054\u9700\u8981\u9009\u62e9 ${MIN_MODELNET_SERIAL_MODELS}-${MAX_MODELNET_SERIAL_MODELS} \u4e2a\u6a21\u578b`,
+        );
+      }
+
+      payload.model = 'modelnet';
+      payload.modelnet = {
+        stream_options: {
+          include_trace: true,
+        },
+        collaboration_plan: {
+          aggregator: 'judge_refine',
+          runner: 'response.serial',
+          runner_config: {
+            allow_degraded: false,
+            serial_topology: {
+              version: 'modelnet.serial.v1',
+              nodes: serialTopology?.nodes,
+              edges: serialTopology?.edges,
+            },
+            show_serial_flow: true,
           },
         },
       };

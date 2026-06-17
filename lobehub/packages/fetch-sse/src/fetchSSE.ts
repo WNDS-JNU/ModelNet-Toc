@@ -48,6 +48,12 @@ export interface MessageTextChunk {
   text: string;
   type: 'text';
 }
+
+export interface MessageModelNetSourceChunk {
+  source: Record<string, any>;
+  type: 'modelnet_source';
+}
+
 export interface MessageStopChunk {
   reason: string;
   type: 'stop';
@@ -115,6 +121,7 @@ export interface FetchSSEOptions {
       | MessageGroundingChunk
       | MessageUsageChunk
       | MessageBase64ImageChunk
+      | MessageModelNetSourceChunk
       | MessageSpeedChunk
       | MessageStopChunk,
   ) => void;
@@ -422,6 +429,11 @@ export const fetchSSE = async (url: string, options: RequestInit & FetchSSEOptio
         case 'speed': {
           speed = data;
           options.onMessageHandle?.({ speed: data, type: 'speed' });
+          break;
+        }
+
+        case 'modelnet_source': {
+          options.onMessageHandle?.({ source: data, type: 'modelnet_source' });
           break;
         }
 

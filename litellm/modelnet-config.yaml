@@ -6,11 +6,15 @@ model_list:
       model: 'openai/modelnet'
       api_base: 'http://modelnet-router:8000/v1'
       api_key: 'os.environ/MODELNET_BACKEND_API_KEY'
+      allowed_openai_params:
+        - 'modelnet'
   - model_name: 'modelnet-auto'
     litellm_params:
       model: 'openai/modelnet-auto'
       api_base: 'http://modelnet-router:8000/v1'
       api_key: 'os.environ/MODELNET_BACKEND_API_KEY'
+      allowed_openai_params:
+        - 'modelnet'
   - model_name: 'inference-cyankiwi-granite-4-0-h-micro-awq-4bit'
     litellm_params:
       model: 'openai/cyankiwi/granite-4.0-h-micro-AWQ-4bit'

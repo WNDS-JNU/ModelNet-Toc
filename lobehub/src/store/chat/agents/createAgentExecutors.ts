@@ -71,6 +71,141 @@ const isAbortError = (error: unknown, abortController?: AbortController) =>
 const createAbortError = () =>
   Object.assign(new Error('Compression cancelled'), { name: 'AbortError' });
 
+interface ModelNetSourceStreamEvent {
+  backend?: Record<string, any>;
+  delta?: string;
+  error?: string;
+  latencyMs?: number;
+  latency_ms?: number;
+  metadata?: Record<string, any>;
+  model?: string;
+  reason?: string;
+  sourceId?: string;
+  source_id?: string;
+  sourceCount?: number;
+  text?: string;
+  type?: string;
+}
+
+interface ModelNetParallelSourceState {
+  backend?: Record<string, any>;
+  completedAt?: number;
+  error?: string;
+  latencyMs?: number;
+  metadata?: Record<string, any>;
+  model: string;
+  sourceId: string;
+  startedAt?: number;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'summarized';
+  summarized?: boolean;
+  summary?: string;
+  text: string;
+  updatedAt: number;
+}
+
+const mergeModelNetParallelEvent = (
+  metadata: MessageMetadata | undefined | null,
+  event: ModelNetSourceStreamEvent,
+): MessageMetadata => {
+  const now = Date.now();
+  const currentMetadata = (metadata ?? {}) as MessageMetadata & { modelnetParallel?: any };
+  const currentParallel = currentMetadata.modelnetParallel ?? {};
+
+  if (event.type?.startsWith('synthesis.')) {
+    return {
+      ...currentMetadata,
+      modelnetParallel: {
+        ...currentParallel,
+        synthesis: {
+          ...(currentParallel.synthesis ?? {}),
+          error: event.error,
+          reason: event.reason,
+          sourceCount: event.sourceCount,
+          status:
+            event.type === 'synthesis.summary.started'
+              ? 'summarizing'
+              : event.type === 'synthesis.summary.completed'
+                ? 'summarized'
+                : currentParallel.synthesis?.status,
+          updatedAt: now,
+        },
+        updatedAt: now,
+      },
+    } as MessageMetadata;
+  }
+
+  const sourceId = event.sourceId || event.source_id || event.model;
+  if (!sourceId) return currentMetadata;
+
+  const sources: Record<string, ModelNetParallelSourceState> = {
+    ...(currentParallel.sources ?? {}),
+  };
+  const existing = sources[sourceId] ?? {
+    model: event.model || sourceId,
+    sourceId,
+    status: 'pending',
+    text: '',
+    updatedAt: now,
+  };
+  const next: ModelNetParallelSourceState = {
+    ...existing,
+    backend: event.backend ?? existing.backend,
+    error: event.error ?? existing.error,
+    latencyMs: event.latencyMs ?? event.latency_ms ?? existing.latencyMs,
+    metadata: event.metadata ? { ...(existing.metadata ?? {}), ...event.metadata } : existing.metadata,
+    model: event.model || existing.model || sourceId,
+    updatedAt: now,
+  };
+
+  switch (event.type) {
+    case 'source.started': {
+      next.status = 'running';
+      next.startedAt = existing.startedAt ?? now;
+      break;
+    }
+
+    case 'source.delta': {
+      next.status = 'running';
+      next.text = event.text ?? `${existing.text || ''}${event.delta || ''}`;
+      break;
+    }
+
+    case 'source.completed': {
+      next.status = 'completed';
+      next.text = event.text ?? existing.text;
+      next.completedAt = now;
+      break;
+    }
+
+    case 'source.failed': {
+      next.status = 'failed';
+      next.completedAt = now;
+      break;
+    }
+
+    case 'source.summarized': {
+      next.status = existing.status === 'failed' ? 'failed' : 'summarized';
+      next.summarized = true;
+      next.summary = event.text ?? existing.summary;
+      break;
+    }
+  }
+
+  sources[sourceId] = next;
+  const sourceOrder = [...(currentParallel.sourceOrder ?? [])];
+  if (!sourceOrder.includes(sourceId)) sourceOrder.push(sourceId);
+
+  return {
+    ...currentMetadata,
+    modelnetParallel: {
+      ...currentParallel,
+      sourceOrder,
+      sources,
+      updatedAt: now,
+    },
+  } as MessageMetadata;
+};
+
 const getGoogleBlockedReason = (error: ChatMessageError): string | undefined => {
   const body = error.body as
     | {
@@ -547,6 +682,23 @@ export const createAgentExecutors = (context: {
           );
         },
         onMessageHandle: async (chunk) => {
+          if (chunk.type === 'modelnet_source') {
+            const latestMessages = context.get().dbMessagesMap[context.messageKey] || [];
+            const assistantMessage = latestMessages.find((m) => m.id === assistantMessageId);
+            const metadata = mergeModelNetParallelEvent(
+              assistantMessage?.metadata,
+              chunk.source as ModelNetSourceStreamEvent,
+            );
+            internal_dispatchMessage(
+              {
+                id: assistantMessageId,
+                type: 'updateMessage',
+                value: { metadata },
+              },
+              { operationId: context.operationId },
+            );
+            return;
+          }
           handler.handleChunk(chunk as StreamChunk);
         },
       });

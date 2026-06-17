@@ -8,21 +8,38 @@ export const MODELNET_PROVIDER_IDS = [
   MODELNET_OPENAI_PROVIDER_ID,
   MODELNET_LEGACY_PROVIDER_ID,
 ] as const;
+export const MODELNET_AUTO_MODEL_ID = 'modelnet-auto';
 export const MODELNET_PARALLEL_MODEL_ID = 'modelnet-parallel';
 export const MODELNET_PARALLEL_DISPLAY_NAME = 'ModelNet \u5e76\u8054';
 export const MIN_MODELNET_PARALLEL_MODELS = 2;
 export const MAX_MODELNET_PARALLEL_MODELS = 16;
+export const MODELNET_SERIAL_MODEL_ID = 'modelnet-serial';
+export const MODELNET_SERIAL_DISPLAY_NAME = 'ModelNet \u4e32\u8054';
+export const MIN_MODELNET_SERIAL_MODELS = 2;
+export const MAX_MODELNET_SERIAL_MODELS = 8;
+
+export interface ModelNetSerialTopology {
+  edges: { source: string; target: string }[];
+  nodes: { id: string; modelId: string }[];
+  version: 'modelnet.serial.v1';
+}
 
 const MODELNET_SYSTEM_MODEL_IDS = new Set([
   'modelnet',
-  'modelnet-auto',
+  MODELNET_AUTO_MODEL_ID,
   MODELNET_PARALLEL_MODEL_ID,
+  MODELNET_SERIAL_MODEL_ID,
 ]);
 
 export const isModelNetParallelModel = (provider?: string, model?: string) =>
   !!provider &&
   MODELNET_PROVIDER_IDS.includes(provider as (typeof MODELNET_PROVIDER_IDS)[number]) &&
   model === MODELNET_PARALLEL_MODEL_ID;
+
+export const isModelNetSerialModel = (provider?: string, model?: string) =>
+  !!provider &&
+  MODELNET_PROVIDER_IDS.includes(provider as (typeof MODELNET_PROVIDER_IDS)[number]) &&
+  model === MODELNET_SERIAL_MODEL_ID;
 
 const isModelNetDisplayName = (displayName?: string) =>
   displayName?.trim().toLowerCase().startsWith('modelnet/') ?? false;
@@ -94,6 +111,49 @@ export const normalizeModelNetParallelModelIds = (
   return getDefaultModelNetParallelModelIds(candidates);
 };
 
+export const modelIdsToModelNetSerialTopology = (
+  modelIds: string[],
+): ModelNetSerialTopology => {
+  const nodes = modelIds.map((modelId, index) => ({
+    id: `step-${index + 1}`,
+    modelId,
+  }));
+
+  const edges: ModelNetSerialTopology['edges'] = [];
+  for (let index = 0; index < nodes.length - 1; index += 1) {
+    const source = nodes[index];
+    const target = nodes[index + 1];
+
+    if (source && target) edges.push({ source: source.id, target: target.id });
+  }
+
+  return {
+    version: 'modelnet.serial.v1',
+    nodes,
+    edges,
+  };
+};
+
+export const getDefaultModelNetSerialTopology = (candidates: AiModelForSelect[]) =>
+  modelIdsToModelNetSerialTopology(
+    candidates.slice(0, MIN_MODELNET_SERIAL_MODELS).map((model) => model.id),
+  );
+
+export const normalizeModelNetSerialTopology = (
+  topology: ModelNetSerialTopology | undefined,
+  candidates: AiModelForSelect[],
+) => {
+  const candidateIds = new Set(candidates.map((model) => model.id));
+  const modelIds = topology?.nodes.map((node) => node.modelId) ?? [];
+  const uniqueIds = [...new Set(modelIds)].filter((id) => candidateIds.has(id));
+
+  if (uniqueIds.length >= MIN_MODELNET_SERIAL_MODELS && uniqueIds.length <= MAX_MODELNET_SERIAL_MODELS) {
+    return modelIdsToModelNetSerialTopology(uniqueIds);
+  }
+
+  return getDefaultModelNetSerialTopology(candidates);
+};
+
 const parallelModel: AiModelForSelect = {
   abilities: {},
   description: 'Run selected ModelNet models in parallel and synthesize one answer.',
@@ -101,12 +161,21 @@ const parallelModel: AiModelForSelect = {
   id: MODELNET_PARALLEL_MODEL_ID,
 };
 
+const serialModel: AiModelForSelect = {
+  abilities: {},
+  description: 'Run selected ModelNet models in a gateway-managed serial chain.',
+  displayName: MODELNET_SERIAL_DISPLAY_NAME,
+  id: MODELNET_SERIAL_MODEL_ID,
+};
+
 export const withModelNetParallelModel = (
   enabledList: EnabledProviderWithModels[],
 ): EnabledProviderWithModels[] => {
   const normalizedList = enabledList.map((provider) => ({
     ...provider,
-    children: provider.children.filter((model) => model.id !== MODELNET_PARALLEL_MODEL_ID),
+    children: provider.children.filter(
+      (model) => model.id !== MODELNET_PARALLEL_MODEL_ID && model.id !== MODELNET_SERIAL_MODEL_ID,
+    ),
   }));
   const modelNetProvider = getModelNetParallelProvider(normalizedList);
   const candidates = modelNetProvider
@@ -119,7 +188,7 @@ export const withModelNetParallelModel = (
 
     return {
       ...provider,
-      children: [parallelModel, ...provider.children],
+      children: [parallelModel, serialModel, ...provider.children],
     };
   });
 };

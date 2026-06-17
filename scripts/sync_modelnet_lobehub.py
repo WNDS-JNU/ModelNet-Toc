@@ -16,6 +16,7 @@ DEFAULT_OUTPUT = REPO_ROOT / ".env.modelnet"
 CHAT_BACKENDS = {"vllm_chat", "llama_cpp"}
 AGGREGATE_MODEL_NAME = "modelnet"
 AUTO_MODEL_NAME = "modelnet-auto"
+MODEL_FILE_SUFFIXES = (".gguf", ".safetensors", ".bin")
 
 
 def parse_scalar(value: str) -> Any:
@@ -82,10 +83,23 @@ def is_non_chat_model(model: dict[str, Any]) -> bool:
     return any(term in haystack for term in non_chat_terms)
 
 
+def model_display_name(model: dict[str, Any]) -> str:
+    backend_model = str(model.get("model_name", "")).strip()
+    source_name = backend_model or str(model.get("id", "")).strip()
+    display_name = source_name.rsplit("/", 1)[-1].strip()
+    lowered = display_name.lower()
+
+    for suffix in MODEL_FILE_SUFFIXES:
+        if lowered.endswith(suffix):
+            return display_name[: -len(suffix)]
+
+    return display_name
+
+
 def build_model_list(models: list[dict[str, Any]]) -> list[str]:
     entries = [
-        f"+{AGGREGATE_MODEL_NAME}=ModelNet/ModelNet",
-        f"+{AUTO_MODEL_NAME}=ModelNet/Auto Network",
+        f"+{AGGREGATE_MODEL_NAME}=ModelNet",
+        f"+{AUTO_MODEL_NAME}=Auto Network",
     ]
     for model in models:
         if str(model.get("backend", "")) not in CHAT_BACKENDS:
@@ -95,7 +109,7 @@ def build_model_list(models: list[dict[str, Any]]) -> list[str]:
         model_id = str(model.get("id", "")).strip()
         if not model_id:
             continue
-        entries.append(f"+{model_id}=ModelNet/{model_id}")
+        entries.append(f"+{model_id}={model_display_name(model)}")
     return entries
 
 
@@ -131,7 +145,7 @@ def main() -> int:
     args.output.write_text(content, encoding="utf-8")
     print(f"Wrote {args.output} with aggregate/auto models plus {len(entries) - 2} backend models")
     for entry in entries[:6]:
-        print("- " + entry.split("=", 1)[0][1:])
+        print("- " + entry.split("=", 1)[1])
     if len(entries) > 6:
         print(f"- ... {len(entries) - 6} more")
     return 0
