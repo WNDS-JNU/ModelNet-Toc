@@ -13,7 +13,7 @@ Self-hosted LobeHub ToC deployment for ModelNet, with:
 - Public ToC entry: `http://<server>:3081/`
 - Embedded leaderboard: `http://<server>:3081/leaderboard`
 - HAProxy service: `toc-lb`
-- LobeHub replicas: `lobe`, scaled by `LOBE_REPLICAS`
+- LobeHub app service: `lobe`, pinned to a single container
 - Leaderboard API: `GET /api/modelnet/leaderboard`, served by the custom LobeHub image
 - Model gateway services: `modelnet-litellm` and `modelnet-router`, owned by this compose project
 - The public automatic networking model is `modelnet-auto`; the old `modelnet` entrypoint is retired.
@@ -44,7 +44,7 @@ Start the stack:
 
 ```bash
 docker compose build lobe
-docker compose up -d --scale lobe=${LOBE_REPLICAS:-2}
+docker compose up -d --scale lobe=1
 ```
 
 `docker-compose.yml` tags the custom image as `modelnet/lobehub-toc:2.2.0-modelnet` by
@@ -122,7 +122,7 @@ scripts/reload_modelnet.sh
 ```
 
 This regenerates LiteLLM config, `.env.modelnet`, and `leaderboard/data/opencompass-leaderboard.json`,
-then recreates `modelnet-router`, `modelnet-litellm`, and the LobeHub replicas behind HAProxy.
+then recreates `modelnet-router`, `modelnet-litellm`, and the single LobeHub container behind HAProxy.
 
 ## Verify
 
@@ -138,7 +138,7 @@ curl -s -o /tmp/rustfs-health.txt -w "%{http_code}\n" http://<server>:9100/healt
 Expected:
 
 - `toc-lb` is running
-- two `lobe` replicas are healthy
+- one `lobe` container is healthy
 - `modelnet-router` is healthy and `modelnet-litellm` is running
 - ToC entry returns `200`
 - leaderboard HTML and JSON return `200` for a logged-in session

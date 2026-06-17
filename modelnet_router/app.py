@@ -4236,10 +4236,25 @@ async def stream_openai_responses_response(
         },
     )
     show_parallel_flow = openai_parallel_flow_enabled(request)
+    show_auto_flow = openai_auto_flow_enabled(request)
     async for chunk in run_ensemble_stream(request, tenant):
         event, data = parse_sse_chunk(chunk)
         if show_parallel_flow:
             flow_delta = openai_parallel_flow_delta(event, data)
+            if flow_delta:
+                text += flow_delta
+                yield openai_responses_stream_payload(
+                    event="response.output_text.delta",
+                    data={
+                        "type": "response.output_text.delta",
+                        "item_id": message_id,
+                        "output_index": 0,
+                        "content_index": 0,
+                        "delta": flow_delta,
+                    },
+                )
+        if show_auto_flow:
+            flow_delta = openai_auto_flow_delta(event, data)
             if flow_delta:
                 text += flow_delta
                 yield openai_responses_stream_payload(
@@ -4384,6 +4399,34 @@ def openai_parallel_flow_enabled(request: EnsembleRequest) -> bool:
     )
 
 
+def openai_serial_flow_enabled(request: EnsembleRequest) -> bool:
+    native_runner = canonical_runner(str(request.runner_config.get("native_runner") or request.runner))
+    return (
+        native_runner == "response.serial"
+        and not serial_dify_engine_enabled(request)
+        and (
+            coerce_bool(request.runner_config.get("show_serial_flow"), default=False)
+            or coerce_bool(request.runner_config.get("display_serial_flow"), default=False)
+            or (
+                request.diagnostics.enable_trace_stream
+                and coerce_bool(request.runner_config.get("show_trace_in_answer"), default=False)
+            )
+        )
+    )
+
+
+def openai_auto_flow_enabled(request: EnsembleRequest) -> bool:
+    native_runner = canonical_runner(str(request.runner_config.get("native_runner") or request.runner))
+    return native_runner == "auto.network" and (
+        coerce_bool(request.runner_config.get("show_auto_flow"), default=False)
+        or coerce_bool(request.runner_config.get("display_auto_flow"), default=False)
+        or (
+            request.diagnostics.enable_trace_stream
+            and coerce_bool(request.runner_config.get("show_trace_in_answer"), default=True)
+        )
+    )
+
+
 def markdown_code(value: Any, fallback: str = "unknown") -> str:
     text = str(value or "").strip() or fallback
     return "`" + text.replace("`", "\\`") + "`"
@@ -4415,6 +4458,13 @@ def flow_sources_summary(sources: Any) -> str:
             label += f"({markdown_code(model_alias)})"
         items.append(label)
     return "、".join(items)
+
+
+def flow_model_sequence(model_ids: Any) -> str:
+    if not isinstance(model_ids, list):
+        return ""
+    labels = [markdown_code(model_id) for model_id in model_ids if str(model_id or "").strip()]
+    return " -> ".join(labels)
 
 
 def openai_parallel_flow_delta(event: str, data: dict[str, Any]) -> str:
@@ -4461,6 +4511,155 @@ def openai_parallel_flow_delta(event: str, data: dict[str, Any]) -> str:
         return "- source summaries are ready; retrying synthesis with summarized inputs.\n"
     if stage == "synthesis.completed":
         return ""
+    return ""
+
+
+def openai_serial_flow_delta(event: str, data: dict[str, Any]) -> str:
+    if event == "run_started":
+        runner = data.get("native_runner") or data.get("runner") or "response.serial"
+        aggregator = data.get("aggregator") or "judge_refine"
+        return (
+            "**ModelNet 串联流程**\n\n"
+            f"- 已启动串联运行：runner {markdown_code(runner)}，聚合器 {markdown_code(aggregator)}。\n"
+        )
+
+    if event == "source_selected" and data.get("role") == "serial_step":
+        step = data.get("step")
+        source_id = data.get("source_id")
+        backend = backend_label(data.get("backend"))
+        return f"- 第 {step} 步选中模型 {markdown_code(backend)}（节点 {markdown_code(source_id)}）。\n"
+
+    if event != "trace_step":
+        return ""
+
+    stage = str(data.get("stage") or "")
+    step = data.get("step")
+    source_id = data.get("source_id")
+    if stage == "serial.gateway.started":
+        total_steps = data.get("total_steps")
+        sequence = flow_model_sequence(data.get("model_ids"))
+        suffix = f"：{sequence}" if sequence else ""
+        return f"- 串联拓扑已就绪：共 {total_steps} 步{suffix}。\n"
+    if stage == "serial.summary.completed":
+        before_tokens = data.get("prompt_tokens_before")
+        after_tokens = data.get("prompt_tokens_after")
+        token_note = ""
+        if before_tokens is not None and after_tokens is not None:
+            token_note = f"，上下文约 {before_tokens} -> {after_tokens} tokens"
+        return f"- 第 {step} 步上下文已压缩（节点 {markdown_code(source_id)}{token_note}）。\n"
+    if stage == "serial.visible_answer_recovered":
+        reason = data.get("reason")
+        recovered = "成功" if data.get("recovered") else "已尝试"
+        return (
+            f"- 第 {step} 步触发可见答案恢复（节点 {markdown_code(source_id)}，"
+            f"原因 {markdown_code(reason)}，{recovered}）。\n"
+        )
+    if stage == "serial.step.completed":
+        backend = backend_label(data.get("backend"))
+        latency_ms = data.get("latency_ms")
+        text_chars = data.get("text_chars")
+        return (
+            f"- 第 {step} 步完成（节点 {markdown_code(source_id)}，模型 {markdown_code(backend)}）："
+            f"耗时 {latency_ms} ms，输出 {text_chars} 字符。\n"
+        )
+    return ""
+
+
+def auto_plan_source_summary(plan: dict[str, Any]) -> str:
+    selected_sources = plan.get("selected_sources")
+    if not isinstance(selected_sources, list):
+        return ""
+    items: list[str] = []
+    for item in selected_sources:
+        if not isinstance(item, dict):
+            continue
+        source_id = item.get("source_id")
+        backend = item.get("backend") if isinstance(item.get("backend"), dict) else {}
+        model_id = backend.get("id") or item.get("model") or item.get("model_alias")
+        if not source_id and not model_id:
+            continue
+        label = markdown_code(source_id or model_id)
+        if model_id and model_id != source_id:
+            label += f"({markdown_code(model_id)})"
+        items.append(label)
+    return "、".join(items)
+
+
+def auto_plan_stage_summary(plan: dict[str, Any]) -> str:
+    stages = plan.get("stages")
+    if not isinstance(stages, list):
+        return ""
+    labels = [markdown_code(stage) for stage in stages if str(stage or "").strip()]
+    return " -> ".join(labels)
+
+
+def confidence_label(value: Any) -> str:
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return "unknown"
+
+
+def openai_auto_flow_delta(event: str, data: dict[str, Any]) -> str:
+    if event == "run_started":
+        return (
+            "**ModelNet 自动组网流程**\n\n"
+            "- 已进入自动组网：根据问题特征、候选模型、置信度和运行预算选择拓扑。\n"
+        )
+    if event == "auto_plan":
+        strategy = data.get("strategy") or "adaptive"
+        runner = data.get("runner") or "auto.network"
+        aggregator = data.get("aggregator") or "auto"
+        source_count = data.get("source_count")
+        confidence = confidence_label(data.get("confidence_score"))
+        reason = data.get("escalation_reason")
+        lines = [
+            (
+                f"- 规划完成：策略 {markdown_code(strategy)}，runner {markdown_code(runner)}，"
+                f"聚合器 {markdown_code(aggregator)}，计划调用 {source_count or '?'} 个节点，"
+                f"置信度 {markdown_code(confidence)}。\n"
+            )
+        ]
+        stages = auto_plan_stage_summary(data)
+        if stages:
+            lines.append(f"- 拓扑阶段：{stages}。\n")
+        sources = auto_plan_source_summary(data)
+        if sources:
+            lines.append(f"- 已选择模型节点：{sources}。\n")
+        if reason:
+            lines.append(f"- 升级/路由原因：{markdown_code(reason)}。\n")
+        return "".join(lines)
+    if event == "source_selected":
+        source_id = data.get("source_id")
+        backend = backend_label(data.get("backend"))
+        role = data.get("role")
+        stage = data.get("stage")
+        suffix_parts = []
+        if role:
+            suffix_parts.append(f"角色 {markdown_code(role)}")
+        if stage:
+            suffix_parts.append(f"阶段 {markdown_code(stage)}")
+        suffix = f"（{'，'.join(suffix_parts)}）" if suffix_parts else ""
+        return f"- 节点 {markdown_code(source_id)} 绑定模型 {markdown_code(backend)}{suffix}。\n"
+    if event == "trace_step":
+        parallel_delta = openai_parallel_flow_delta(event, data)
+        if parallel_delta:
+            return parallel_delta
+        stage = data.get("stage")
+        if stage:
+            return f"- 阶段 {markdown_code(stage)} 已更新。\n"
+    if event == "done":
+        metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        plan = metadata.get("auto_plan") if isinstance(metadata.get("auto_plan"), dict) else {}
+        call_count = plan.get("internal_call_count") or metadata.get("internal_call_count")
+        total_tokens = plan.get("internal_total_tokens") or metadata.get("internal_total_tokens")
+        details = []
+        if call_count is not None:
+            details.append(f"内部调用 {call_count} 次")
+        if total_tokens is not None:
+            details.append(f"内部 tokens {total_tokens}")
+        suffix = "，" + "，".join(details) if details else ""
+        return f"- 自动组网执行完成{suffix}。\n"
     return ""
 
 
@@ -4724,7 +4923,8 @@ async def stream_openai_ensemble_response(
 ) -> AsyncIterator[bytes]:
     yield openai_stream_payload(request_id=request_id, model=model, delta={"role": "assistant"})
     show_parallel_flow = openai_parallel_flow_enabled(request)
-    final_answer_started = False
+    show_serial_flow = openai_serial_flow_enabled(request)
+    show_auto_flow = openai_auto_flow_enabled(request)
     async for chunk in run_ensemble_stream(request, tenant):
         event, data = parse_sse_chunk(chunk)
         if event == "modelnet_event":
@@ -4734,27 +4934,44 @@ async def stream_openai_ensemble_response(
                 request_id=request_id,
                 model=model,
                 modelnet_event=modelnet_event,
-                include_content_marker=show_parallel_flow,
             )
             continue
+        if event == "reasoning":
+            delta = str(data.get("delta") or "")
+            if delta:
+                yield openai_stream_payload(
+                    request_id=request_id,
+                    model=model,
+                    delta={"reasoning_content": delta},
+                )
+            continue
+        if show_serial_flow:
+            flow_delta = openai_serial_flow_delta(event, data)
+            if flow_delta:
+                yield openai_stream_payload(
+                    request_id=request_id,
+                    model=model,
+                    delta={"reasoning_content": flow_delta},
+                )
+        if show_auto_flow:
+            flow_delta = openai_auto_flow_delta(event, data)
+            if flow_delta:
+                yield openai_stream_payload(
+                    request_id=request_id,
+                    model=model,
+                    delta={"reasoning_content": flow_delta},
+                )
         if show_parallel_flow:
             flow_delta = openai_parallel_flow_delta(event, data)
             if flow_delta:
                 yield openai_stream_payload(
                     request_id=request_id,
                     model=model,
-                    delta={"content": flow_delta},
+                    delta={"reasoning_content": flow_delta},
                 )
         if event == "token":
             delta = str(data.get("delta") or "")
             if delta:
-                if show_parallel_flow and not final_answer_started:
-                    final_answer_started = True
-                    yield openai_stream_payload(
-                        request_id=request_id,
-                        model=model,
-                        delta={"content": "\n---\n\n**Final answer**\n\n**最终回答**\n\n"},
-                    )
                 yield openai_stream_payload(request_id=request_id, model=model, delta={"content": delta})
         elif event == "error":
             payload = {"error": data}
@@ -6658,9 +6875,7 @@ async def stream_response_source(
         }
         assert http_client is not None
         buffer = b""
-        visible_filter = ResponseVisibleTextStreamFilter(
-            in_think_block=think_stop_marker(candidate) is not None
-        )
+        visible_filter = ResponseVisibleTextStreamFilter()
         async for chunk in backend_stream_chat(
             candidate,
             body,
@@ -6676,7 +6891,9 @@ async def stream_response_source(
                 metadata.update(chunk_metadata)
                 if reasoning_delta:
                     reasoning_parts.append(reasoning_delta)
-                visible_delta = visible_filter.feed(content_delta)
+                visible_delta, content_reasoning_delta = visible_filter.feed(content_delta)
+                if content_reasoning_delta:
+                    reasoning_parts.append(content_reasoning_delta)
                 if visible_delta:
                     text_parts.append(visible_delta)
                     yield {
@@ -6695,7 +6912,9 @@ async def stream_response_source(
                 metadata.update(chunk_metadata)
                 if reasoning_delta:
                     reasoning_parts.append(reasoning_delta)
-                visible_delta = visible_filter.feed(content_delta)
+                visible_delta, content_reasoning_delta = visible_filter.feed(content_delta)
+                if content_reasoning_delta:
+                    reasoning_parts.append(content_reasoning_delta)
                 if visible_delta:
                     text_parts.append(visible_delta)
                     yield {
@@ -6707,7 +6926,9 @@ async def stream_response_source(
                         "text": "".join(text_parts),
                     }
 
-        tail = visible_filter.flush()
+        tail, tail_reasoning = visible_filter.flush()
+        if tail_reasoning:
+            reasoning_parts.append(tail_reasoning)
         if tail:
             text_parts.append(tail)
             yield {
@@ -7004,17 +7225,14 @@ async def summarize_responses_for_synthesis(
 
 def response_synthesis_fallback_text(responses: list[dict[str, Any]], error: str | None = None) -> str:
     lines = [
-        "The response synthesizer could not complete, so ModelNet returned a degraded result from the source responses.",
+        "合成器未返回可见最终答案，ModelNet 已改用成功的源模型回答生成降级摘要。",
     ]
-    if error:
-        error_text = truncate_text_for_fallback_summary(str(error), 240)
-        lines.extend(["", f"Synthesis error: {error_text}"])
     lines.append("")
     for index, response in enumerate(responses, start=1):
         source_id = str(response.get("source_id") or f"source-{index}")
         text = deterministic_response_summary(response)
         lines.extend([f"## {source_id}", text, ""])
-    lines.append("These stable source summaries are the degraded final answer for this request.")
+    lines.append("以上为可用源回答的降级摘要。")
     return "\n".join(lines).strip()
 
 
@@ -7060,51 +7278,64 @@ class ResponseVisibleTextStreamFilter:
     in_think_block: bool = False
     removed_hidden_reasoning: bool = False
 
-    def feed(self, delta: str) -> str:
+    def feed(self, delta: str) -> tuple[str, str]:
         if not delta:
-            return ""
+            return "", ""
         self.pending += delta
         visible: list[str] = []
+        reasoning: list[str] = []
         while self.pending:
             if self.in_think_block:
                 close_match = re.search(r"</think\s*>", self.pending, flags=re.IGNORECASE)
                 if close_match is None:
-                    self.pending = self.pending[-32:]
+                    keep_from = self._pending_tag_prefix_start(("</think",))
+                    reasoning.append(self.pending[:keep_from])
+                    self.pending = self.pending[keep_from:]
                     self.removed_hidden_reasoning = True
                     break
+                reasoning.append(self.pending[: close_match.start()])
                 self.pending = self.pending[close_match.end() :]
                 self.in_think_block = False
                 self.removed_hidden_reasoning = True
                 continue
 
             open_match = re.search(r"<think\b[^>]*>", self.pending, flags=re.IGNORECASE)
-            if open_match is not None:
+            close_match = re.search(r"</think\s*>", self.pending, flags=re.IGNORECASE)
+            if open_match is not None and (
+                close_match is None or open_match.start() <= close_match.start()
+            ):
                 visible.append(self.pending[: open_match.start()])
                 self.pending = self.pending[open_match.end() :]
                 self.in_think_block = True
                 self.removed_hidden_reasoning = True
                 continue
+            if close_match is not None:
+                reasoning.append(self.pending[: close_match.start()])
+                self.pending = self.pending[close_match.end() :]
+                self.removed_hidden_reasoning = True
+                continue
 
-            keep_from = self._pending_think_prefix_start()
+            keep_from = self._pending_tag_prefix_start(("<think", "</think"))
             visible.append(self.pending[:keep_from])
             self.pending = self.pending[keep_from:]
             break
-        return "".join(part for part in visible if part)
+        return "".join(part for part in visible if part), "".join(part for part in reasoning if part)
 
-    def flush(self) -> str:
-        if self.in_think_block:
-            self.pending = ""
-            self.removed_hidden_reasoning = True
-            return ""
-        visible = self.pending
+    def flush(self) -> tuple[str, str]:
+        pending = self.pending
         self.pending = ""
-        return visible
+        if self.in_think_block:
+            self.in_think_block = False
+            self.removed_hidden_reasoning = True
+            return "", pending
+        return pending, ""
 
-    def _pending_think_prefix_start(self) -> int:
+    def _pending_tag_prefix_start(self, prefixes: tuple[str, ...]) -> int:
         lowered = self.pending.lower()
-        for index in range(max(0, len(lowered) - 16), len(lowered)):
+        max_prefix = max(len(prefix) for prefix in prefixes)
+        for index in range(max(0, len(lowered) - max_prefix + 1), len(lowered)):
             suffix = lowered[index:]
-            if "<think".startswith(suffix) or suffix.startswith("<think"):
+            if any(prefix.startswith(suffix) for prefix in prefixes):
                 return index
         return len(self.pending)
 
@@ -7159,7 +7390,7 @@ async def stream_response_synthesis_attempt(
         **source.sampling_params,
     }
     buffer = b""
-    visible_filter = ResponseVisibleTextStreamFilter(in_think_block=think_stop_marker(candidate) is not None)
+    visible_filter = ResponseVisibleTextStreamFilter()
     text_parts: list[str] = []
     reasoning_parts: list[str] = []
     metadata: dict[str, Any] = {}
@@ -7179,7 +7410,11 @@ async def stream_response_synthesis_attempt(
             metadata.update(chunk_metadata)
             if reasoning_delta:
                 reasoning_parts.append(reasoning_delta)
-            visible_delta = visible_filter.feed(content_delta)
+                yield {"event": "reasoning", "delta": reasoning_delta}
+            visible_delta, content_reasoning_delta = visible_filter.feed(content_delta)
+            if content_reasoning_delta:
+                reasoning_parts.append(content_reasoning_delta)
+                yield {"event": "reasoning", "delta": content_reasoning_delta}
             if visible_delta:
                 text_parts.append(visible_delta)
                 yield {"event": "token", "delta": visible_delta}
@@ -7191,12 +7426,19 @@ async def stream_response_synthesis_attempt(
             metadata.update(chunk_metadata)
             if reasoning_delta:
                 reasoning_parts.append(reasoning_delta)
-            visible_delta = visible_filter.feed(content_delta)
+                yield {"event": "reasoning", "delta": reasoning_delta}
+            visible_delta, content_reasoning_delta = visible_filter.feed(content_delta)
+            if content_reasoning_delta:
+                reasoning_parts.append(content_reasoning_delta)
+                yield {"event": "reasoning", "delta": content_reasoning_delta}
             if visible_delta:
                 text_parts.append(visible_delta)
                 yield {"event": "token", "delta": visible_delta}
 
-    tail = visible_filter.flush()
+    tail, tail_reasoning = visible_filter.flush()
+    if tail_reasoning:
+        reasoning_parts.append(tail_reasoning)
+        yield {"event": "reasoning", "delta": tail_reasoning}
     if tail:
         text_parts.append(tail)
         yield {"event": "token", "delta": tail}
@@ -7287,7 +7529,7 @@ async def stream_response_synthesis(
             try:
                 attempt_result = {}
                 async for item in stream_response_synthesis_attempt(candidate, source):
-                    if item.get("event") == "token":
+                    if item.get("event") in {"token", "reasoning"}:
                         yield item
                     elif item.get("event") == "result":
                         attempt_result = item
@@ -7359,7 +7601,7 @@ async def stream_response_synthesis(
             retry_result: dict[str, Any] = {}
             try:
                 async for item in stream_response_synthesis_attempt(candidate, retry_source):
-                    if item.get("event") == "token":
+                    if item.get("event") in {"token", "reasoning"}:
                         yield item
                     elif item.get("event") == "result":
                         retry_result = item
@@ -7436,7 +7678,9 @@ async def stream_response_synthesis(
             }
             try:
                 async for item in stream_response_synthesis_attempt(candidate, continuation_source):
-                    if item.get("event") == "result":
+                    if item.get("event") == "reasoning":
+                        yield item
+                    elif item.get("event") == "result":
                         continuation_result = item
             except Exception as exc:  # noqa: BLE001
                 event_metadata["error"] = str(exc)[:300]
@@ -8026,6 +8270,10 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
                 if delta:
                     text += delta
                     yield sse("token", {"delta": delta, "text": text})
+            elif event == "reasoning":
+                delta = str(synthesis_event.get("delta") or "")
+                if delta:
+                    yield sse("reasoning", {"delta": delta})
             elif event == "summary_started":
                 if emit_flow:
                     yield sse(
@@ -8263,6 +8511,15 @@ def serial_reserved_output_tokens(request: EnsembleRequest, source: EnsembleSour
     return explicit if explicit is not None else ENSEMBLE_DEFAULT_MAX_TOKENS
 
 
+SERIAL_STEP_SYSTEM_PROMPT = (
+    "You are one step in a ModelNet serial answer chain. "
+    "You may think internally when useful, but you must always emit a visible "
+    "user-facing final answer in normal assistant content. "
+    "Do not stop after internal reasoning. Do not output a critique, rubric, "
+    "strengths/weaknesses list, or process notes."
+)
+
+
 def serial_step_prompt(
     *,
     original_prompt: str,
@@ -8280,7 +8537,8 @@ def serial_step_prompt(
             f"{previous_answer}\n"
             "```\n\n"
             "Use the compressed context to write the best final answer for the user. "
-            "Preserve correctness, fix mistakes, and avoid inventing details."
+            "Preserve correctness, fix mistakes, and avoid inventing details. "
+            "Return only the final answer, not a critique or review."
         )
     return (
         "Original user question:\n"
@@ -8289,14 +8547,16 @@ def serial_step_prompt(
         "```text\n"
         f"{previous_answer}\n"
         "```\n\n"
-        "Review the previous answer. Keep correct parts, fix mistakes, fill gaps, "
-        "and return the improved final answer for the user."
+        "Silently review the previous answer. Keep correct parts, fix mistakes, fill gaps, "
+        "and return only the improved final answer for the user. "
+        "Do not describe strengths, weaknesses, content quality, accuracy, style, or your review process."
     )
 
 
 def serial_step_source(
     base_source: EnsembleSource,
     *,
+    request: EnsembleRequest,
     node: SerialNode,
     index: int,
     original_prompt: str,
@@ -8309,18 +8569,22 @@ def serial_step_source(
         index=index,
         compressed=compressed,
     )
-    messages = (
-        message_list(base_source)
-        if index == 0 and base_source.messages
-        else [{"role": "user", "content": prompt}]
-    )
+    if index == 0 and base_source.messages:
+        messages = [{"role": "system", "content": SERIAL_STEP_SYSTEM_PROMPT}, *message_list(base_source)]
+    else:
+        messages = [
+            {"role": "system", "content": SERIAL_STEP_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+    extra = dict(base_source.extra)
+    extra.update(internal_thinking_extra(request))
     return EnsembleSource(
         source_id=node.id,
         model_alias=node.model_id,
         prompt=prompt,
         messages=messages,
         sampling_params=dict(base_source.sampling_params),
-        extra=dict(base_source.extra),
+        extra=extra,
         weight=base_source.weight,
     )
 
@@ -8441,6 +8705,194 @@ async def summarize_serial_context(
         return fallback, metadata
 
 
+def serial_text_looks_like_meta_review(text: str) -> bool:
+    head = str(text or "").strip().lower()[:900]
+    if not head:
+        return False
+    markers = (
+        "**strengths",
+        "**weaknesses",
+        "*   **strengths",
+        "*   **weaknesses",
+        "**content:**",
+        "**accuracy:**",
+        "**style:**",
+        "the answer is incomplete",
+        "the response is incomplete",
+        "the text is incomplete",
+        "the text cuts",
+        "cuts off mid-sentence",
+        "needs more depth",
+        "lacks a conclusion",
+        "the user wants to",
+        "the user asks",
+        "the previous answer",
+        "previous answer was cut",
+        "previous serial-chain",
+        "用户的问题是",
+        "上一轮模型",
+        "上一轮的分析",
+        "上一轮回答",
+        "我作为这一环节",
+        "需要基于上一轮",
+        "补全并完善回答",
+        "关键点包括",
+    )
+    if any(marker in head for marker in markers):
+        return True
+    meta_label_pattern = r"(?m)^\s*(?:[-*]\s*)+\**(?:content|issue|issues|strengths|weaknesses|accuracy|style)\**\s*:"
+    rubric_review_pattern = (
+        r"(?im)^\s*(?:[-*]\s*)?\**"
+        r"(?:opening|introduction|comparison(?: structure)?|structure|argument|analysis|conclusion|overall|final judgment)"
+        r"\**\s*:\s*"
+        r"(?:good|clear|strong|weak|needs|could|lacks|acknowledges|mentions|states|incomplete|missing|too\b)"
+    )
+    return bool(re.search(meta_label_pattern, head) or re.search(rubric_review_pattern, head))
+
+
+def serial_visible_answer_recovery_prompt(
+    *,
+    original_prompt: str,
+    current_prompt: str,
+    previous_answer: str,
+    partial_answer: str,
+    reasoning_text: str,
+    continue_partial: bool = False,
+) -> str:
+    parts = [
+        "The previous serial-chain attempt did not produce a complete visible answer.",
+        "Write the visible user-facing answer now. Keep it concise, correct, and complete.",
+        "Do not quote or mention internal notes.",
+        "",
+        "Original user question:",
+        original_prompt,
+    ]
+    if previous_answer:
+        parts.extend(["", "Previous visible answer:", previous_answer])
+    if current_prompt and current_prompt != original_prompt:
+        parts.extend(["", "Current step instruction:", current_prompt])
+    if partial_answer:
+        parts.extend(["", "Partial visible answer already produced:", partial_answer])
+        if continue_partial:
+            parts.append("Continue from the exact next sentence without repeating the partial answer.")
+    if reasoning_text:
+        parts.extend(
+            [
+                "",
+                "Internal notes from the previous attempt, for your private use only:",
+                truncate_text_for_fallback_summary(reasoning_text, RESPONSE_SYNTHESIS_SUMMARY_MAX_CHARS),
+            ]
+        )
+    return "\n".join(parts).strip()
+
+
+def serial_recovery_source(
+    source: EnsembleSource,
+    request: EnsembleRequest,
+    *,
+    node: SerialNode,
+    original_prompt: str,
+    previous_answer: str,
+    partial_answer: str,
+    reasoning_text: str,
+    continue_partial: bool = False,
+) -> EnsembleSource:
+    prompt = serial_visible_answer_recovery_prompt(
+        original_prompt=original_prompt,
+        current_prompt=source.prompt,
+        previous_answer=previous_answer,
+        partial_answer=partial_answer,
+        reasoning_text=reasoning_text,
+        continue_partial=continue_partial,
+    )
+    sampling_params = dict(source.sampling_params)
+    default_recovery_tokens = max(1024, generation_max_tokens(source))
+    sampling_params["max_tokens"] = positive_int(
+        request.runner_config.get("serial_recovery_max_tokens"),
+        default_recovery_tokens,
+    )
+    extra = dict(source.extra)
+    chat_template_kwargs = dict(extra.get("chat_template_kwargs") or {})
+    chat_template_kwargs["enable_thinking"] = False
+    extra["chat_template_kwargs"] = chat_template_kwargs
+    return source.model_copy(
+        update={
+            "source_id": f"{node.id}__visible_recovery",
+            "prompt": prompt,
+            "messages": [
+                {"role": "system", "content": SERIAL_STEP_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            "sampling_params": sampling_params,
+            "extra": extra,
+        }
+    )
+
+
+async def recover_serial_visible_answer(
+    candidate: Candidate,
+    request: EnsembleRequest,
+    source: EnsembleSource,
+    *,
+    node: SerialNode,
+    original_prompt: str,
+    previous_answer: str,
+    text: str,
+    metadata: dict[str, Any],
+) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
+    reasoning_text = str(metadata.get("reasoning_content") or "").strip()
+    needs_visible_answer = not text.strip() and bool(reasoning_text)
+    needs_meta_review_rewrite = bool(text.strip()) and serial_text_looks_like_meta_review(text)
+    needs_continuation = False
+    if not needs_visible_answer and not needs_meta_review_rewrite:
+        return text, metadata, None
+
+    recovery_source = serial_recovery_source(
+        source,
+        request,
+        node=node,
+        original_prompt=original_prompt,
+        previous_answer=previous_answer,
+        partial_answer=text,
+        reasoning_text=reasoning_text,
+        continue_partial=needs_continuation,
+    )
+    recovery_metadata: dict[str, Any] = {}
+    recovery_text = ""
+    recovery_error: str | None = None
+    try:
+        recovery_result = await generate_text(candidate, recovery_source)
+        recovery_text = str(recovery_result.get("text") or "").strip()
+        recovery_metadata = dict(recovery_result.get("metadata") or {})
+        recovery_text, removed_hidden_reasoning = strip_response_hidden_reasoning(recovery_text)
+        if removed_hidden_reasoning:
+            recovery_metadata["source_hidden_reasoning_removed"] = True
+    except Exception as exc:  # noqa: BLE001
+        recovery_error = str(exc)[:300]
+
+    final_text = text
+    if recovery_text:
+        final_text = merge_continuation_text(text, recovery_text) if needs_continuation else recovery_text
+    elif not text and previous_answer:
+        final_text = previous_answer
+
+    recovery_event = {
+        "source_id": node.id,
+        "metadata": {
+            "method": "visible_answer_recovery",
+            "reason": "empty_visible_answer" if needs_visible_answer else "meta_review_visible_answer",
+            "recovered": bool(recovery_text),
+            "fallback_to_previous_answer": bool(not recovery_text and not text and previous_answer),
+            "reasoning_chars": len(reasoning_text),
+            "recovery_text_chars": len(recovery_text),
+            "error": recovery_error,
+            "recovery_metadata": recovery_metadata,
+        },
+    }
+    metadata["serial_visible_answer_recovery"] = recovery_event["metadata"]
+    return final_text, metadata, recovery_event
+
+
 async def prepare_serial_step_source(
     request: EnsembleRequest,
     base_source: EnsembleSource,
@@ -8453,6 +8905,7 @@ async def prepare_serial_step_source(
 ) -> tuple[EnsembleSource, dict[str, Any] | None, dict[str, Any]]:
     source = serial_step_source(
         base_source,
+        request=request,
         node=node,
         index=index,
         original_prompt=original_prompt,
@@ -8477,6 +8930,7 @@ async def prepare_serial_step_source(
         )
         source = serial_step_source(
             base_source,
+            request=request,
             node=node,
             index=index,
             original_prompt=original_prompt,
@@ -8496,6 +8950,7 @@ async def prepare_serial_step_source(
             )
             source = serial_step_source(
                 base_source,
+                request=request,
                 node=node,
                 index=index,
                 original_prompt=original_prompt,
@@ -8569,6 +9024,7 @@ async def run_gateway_serial_ensemble(request: EnsembleRequest, tenant: GatewayT
         try:
             seed_source = serial_step_source(
                 base_source,
+                request=request,
                 node=node,
                 index=index,
                 original_prompt=original_prompt,
@@ -8623,6 +9079,26 @@ async def run_gateway_serial_ensemble(request: EnsembleRequest, tenant: GatewayT
             text, removed_hidden_reasoning = strip_response_hidden_reasoning(text)
             if removed_hidden_reasoning:
                 metadata["source_hidden_reasoning_removed"] = True
+            text, metadata, recovery_event = await recover_serial_visible_answer(
+                candidate,
+                request,
+                source,
+                node=node,
+                original_prompt=original_prompt,
+                previous_answer=answer,
+                text=text,
+                metadata=metadata,
+            )
+            if recovery_event is not None and emit_flow:
+                yield sse(
+                    "trace_step",
+                    {
+                        "stage": "serial.visible_answer_recovered",
+                        "source_id": node.id,
+                        "step": index + 1,
+                        **recovery_event["metadata"],
+                    },
+                )
             latency_ms = int((time.perf_counter() - step_started) * 1000)
             step_record = {
                 "source_id": node.id,

@@ -3,6 +3,7 @@ name: lobehub-toc
 services:
   lobe:
     image: ${LOBE_IMAGE:-modelnet/lobehub-toc:2.2.0-modelnet}
+    container_name: lobehub-toc-lobe
     build:
       context: ${LOBEHUB_TOC_SRC:-./lobehub}
     restart: always

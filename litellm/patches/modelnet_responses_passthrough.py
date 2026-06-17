@@ -156,6 +156,38 @@ sync_request_patch = '''        raw_response = None
             )
 '''
 
+sync_stream_anchor = '''        data["stream"] = True
+        data.update(
+            self.get_stream_options(stream_options=stream_options, api_base=api_base)
+        )
+
+        openai_client: OpenAI = self._get_openai_client(  # type: ignore
+'''
+
+sync_stream_patch = '''        data["stream"] = True
+        data.update(
+            self.get_stream_options(stream_options=stream_options, api_base=api_base)
+        )
+        data = self._move_modelnet_to_extra_body(data)
+
+        openai_client: OpenAI = self._get_openai_client(  # type: ignore
+'''
+
+async_stream_anchor = '''        data["stream"] = True
+        data.update(
+            self.get_stream_options(stream_options=stream_options, api_base=api_base)
+        )
+        for _ in range(2):
+'''
+
+async_stream_patch = '''        data["stream"] = True
+        data.update(
+            self.get_stream_options(stream_options=stream_options, api_base=api_base)
+        )
+        data = self._move_modelnet_to_extra_body(data)
+        for _ in range(2):
+'''
+
 
 def patch_response_target(target: Path) -> bool:
     text = target.read_text(encoding="utf-8")
@@ -211,6 +243,18 @@ def patch_chat_target(target: Path) -> bool:
         patched = True
     elif text.count("data = self._move_modelnet_to_extra_body(data)") < 2:
         raise RuntimeError(f"Could not find LiteLLM sync chat request block in {target}")
+
+    if sync_stream_anchor in text:
+        text = text.replace(sync_stream_anchor, sync_stream_patch, 1)
+        patched = True
+    elif sync_stream_patch not in text:
+        raise RuntimeError(f"Could not find LiteLLM sync streaming chat request block in {target}")
+
+    if async_stream_anchor in text:
+        text = text.replace(async_stream_anchor, async_stream_patch, 1)
+        patched = True
+    elif async_stream_patch not in text:
+        raise RuntimeError(f"Could not find LiteLLM async streaming chat request block in {target}")
 
     if patched:
         target.write_text(text, encoding="utf-8")

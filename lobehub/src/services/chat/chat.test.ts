@@ -8,7 +8,11 @@ import { type EnabledAiModel, ModelProvider } from 'model-bank';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_AGENT_CONFIG } from '@/const/settings';
-import { MODELNET_PARALLEL_MODEL_ID, MODELNET_SERIAL_MODEL_ID } from '@/features/ModelNetParallel';
+import {
+  MODELNET_AUTO_MODEL_ID,
+  MODELNET_PARALLEL_MODEL_ID,
+  MODELNET_SERIAL_MODEL_ID,
+} from '@/features/ModelNetParallel';
 import * as toolEngineeringModule from '@/helpers/toolEngineering';
 import { agentDocumentService } from '@/services/agentDocument';
 import { useAgentStore } from '@/store/agent';
@@ -1781,6 +1785,34 @@ describe('ChatService', () => {
           model: 'gpt-5.4',
         }),
       );
+    });
+
+    it('should request visible auto networking flow for ModelNet auto responses', async () => {
+      await chatService.getChatCompletion(
+        {
+          messages: [],
+          model: MODELNET_AUTO_MODEL_ID,
+          provider: ModelProvider.OpenAI,
+        } as any,
+        {},
+      );
+
+      const payload = JSON.parse(mockFetchSSE.mock.calls[0][1].body);
+
+      expect(payload.model).toBe(MODELNET_AUTO_MODEL_ID);
+      expect(payload.apiMode).toBe('chatCompletion');
+      expect(payload.modelnet).toEqual({
+        stream_options: {
+          include_trace: true,
+        },
+        collaboration_plan: {
+          aggregator: 'auto',
+          runner: 'auto.network',
+          runner_config: {
+            show_auto_flow: true,
+          },
+        },
+      });
     });
 
     it('should request visible flow events for ModelNet parallel responses', async () => {

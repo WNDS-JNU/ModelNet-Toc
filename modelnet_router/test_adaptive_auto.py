@@ -167,6 +167,29 @@ async def collect_openai_content_deltas(stream) -> list[str]:
     return deltas
 
 
+async def collect_openai_deltas(stream) -> tuple[list[str], list[str]]:
+    content_deltas: list[str] = []
+    reasoning_deltas: list[str] = []
+    async for chunk in stream:
+        _event, data = router.parse_sse_chunk(chunk)
+        if data.get("raw") == "[DONE]":
+            continue
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            continue
+        choice = choices[0]
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta")
+        if not isinstance(delta, dict):
+            continue
+        if delta.get("content"):
+            content_deltas.append(str(delta.get("content") or ""))
+        if delta.get("reasoning_content"):
+            reasoning_deltas.append(str(delta.get("reasoning_content") or ""))
+    return content_deltas, reasoning_deltas
+
+
 async def collect_openai_content(stream) -> str:
     return "".join(await collect_openai_content_deltas(stream))
 
@@ -1117,8 +1140,9 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         prompt_surfaces.extend(str(message.get("content") or "") for message in source.messages)
         prompt_surfaces.extend(str(message.get("content") or "") for message in retry_source.messages)
         self.assert_no_response_prompt_control_leakage("\n".join(prompt_surfaces))
-        self.assertEqual(source.extra, {})
-        self.assertEqual(retry_source.extra, {})
+        expected_extra = {"chat_template_kwargs": {"enable_thinking": False}}
+        self.assertEqual(source.extra, expected_extra)
+        self.assertEqual(retry_source.extra, expected_extra)
 
         disabled_req = router.EnsembleRequest(
             request_id="response-aggregate-prompts-disable-thinking",
@@ -1192,6 +1216,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                     "source_id": source.source_id,
                     "prompt": source.prompt,
                     "messages": list(source.messages or []),
+                    "extra": dict(source.extra),
                 }
             )
             return {"text": f"answer from {source_candidate.model_id}", "metadata": {}}
@@ -1229,8 +1254,274 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["model"] for item in seen], ["model-a", "model-b"])
         self.assertIn("Question?", seen[1]["prompt"])
         self.assertIn("answer from model-a", seen[1]["prompt"])
+        self.assertEqual(seen[0]["messages"][0]["role"], "system")
+        self.assertIn("visible user-facing final answer", seen[0]["messages"][0]["content"])
+        self.assertNotEqual(
+            seen[0]["extra"].get("chat_template_kwargs"),
+            {"enable_thinking": False},
+        )
+        self.assertNotEqual(
+            seen[1]["extra"].get("chat_template_kwargs"),
+            {"enable_thinking": False},
+        )
         self.assertEqual(done["text"], "answer from model-b")
         self.assertFalse(done["metadata"]["used_summaries"])
+
+    async def test_gateway_serial_recovers_visible_answer_after_reasoning_only_step(self) -> None:
+        seen: list[dict[str, Any]] = []
+
+        async def fake_pick(_tenant, source, required_capabilities=None):
+            return candidate(str(source.model_alias), metadata={"max_model_len": 8192}), 10.0, "ready"
+
+        async def fake_generate(source_candidate, source, **_kwargs):
+            seen.append(
+                {
+                    "model": source_candidate.model_id,
+                    "source_id": source.source_id,
+                    "prompt": source.prompt,
+                    "extra": dict(source.extra),
+                }
+            )
+            if source.source_id == "step-1":
+                return {"text": "first answer", "metadata": {}}
+            if source.source_id == "step-2":
+                return {
+                    "text": "",
+                    "metadata": {
+                        "reasoning_content": "internal comparison notes",
+                        "finish_reason": "length",
+                    },
+                }
+            return {"text": "visible final answer", "metadata": {}}
+
+        router.pick_source_candidate = fake_pick
+        router.generate_text = fake_generate
+        req = router.EnsembleRequest(
+            request_id="serial-visible-recovery",
+            runner="dynamic_collab_route",
+            aggregator="judge_refine",
+            runner_config={
+                "native_runner": "response.serial",
+                "serial_topology": {
+                    "version": "modelnet.serial.v1",
+                    "nodes": [
+                        {"id": "step-1", "modelId": "model-a"},
+                        {"id": "step-2", "modelId": "model-b"},
+                    ],
+                    "edges": [{"source": "step-1", "target": "step-2"}],
+                },
+            },
+            sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
+        )
+
+        events = await collect_events(router.run_gateway_serial_ensemble(req, self.tenant))
+        done = done_payload(events)
+
+        self.assertIn("step-2__visible_recovery", [item["source_id"] for item in seen])
+        recovery_call = [item for item in seen if item["source_id"] == "step-2__visible_recovery"][0]
+        self.assertIn("Internal notes", recovery_call["prompt"])
+        self.assertEqual(
+            recovery_call["extra"].get("chat_template_kwargs"),
+            {"enable_thinking": False},
+        )
+        self.assertEqual(done["text"], "visible final answer")
+        recovery = done["metadata"]["serial_steps"][1]["metadata"]["serial_visible_answer_recovery"]
+        self.assertTrue(recovery["recovered"])
+        self.assertEqual(recovery["reason"], "empty_visible_answer")
+
+    async def test_gateway_serial_rewrites_meta_review_into_visible_answer(self) -> None:
+        seen: list[dict[str, Any]] = []
+
+        async def fake_pick(_tenant, source, required_capabilities=None):
+            return candidate(str(source.model_alias), metadata={"max_model_len": 8192}), 10.0, "ready"
+
+        async def fake_generate(_candidate, source, **_kwargs):
+            seen.append({"source_id": source.source_id, "prompt": source.prompt, "extra": dict(source.extra)})
+            if source.source_id == "step-1":
+                return {"text": "first answer", "metadata": {}}
+            if source.source_id == "step-2":
+                return {
+                    "text": "**\n    *   Content: It introduces useful facts.\n    *   Issue: The text cuts off mid-sentence.",
+                    "metadata": {},
+                }
+            return {"text": "final user-facing answer", "metadata": {}}
+
+        router.pick_source_candidate = fake_pick
+        router.generate_text = fake_generate
+        req = router.EnsembleRequest(
+            request_id="serial-meta-review-rewrite",
+            runner="dynamic_collab_route",
+            aggregator="judge_refine",
+            runner_config={
+                "native_runner": "response.serial",
+                "serial_topology": {
+                    "version": "modelnet.serial.v1",
+                    "nodes": [
+                        {"id": "step-1", "modelId": "model-a"},
+                        {"id": "step-2", "modelId": "model-b"},
+                    ],
+                    "edges": [{"source": "step-1", "target": "step-2"}],
+                },
+            },
+            sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
+        )
+
+        events = await collect_events(router.run_gateway_serial_ensemble(req, self.tenant))
+        done = done_payload(events)
+
+        recovery_call = [item for item in seen if item["source_id"] == "step-2__visible_recovery"][0]
+        self.assertEqual(
+            recovery_call["extra"].get("chat_template_kwargs"),
+            {"enable_thinking": False},
+        )
+        self.assertEqual(done["text"], "final user-facing answer")
+        recovery = done["metadata"]["serial_steps"][1]["metadata"]["serial_visible_answer_recovery"]
+        self.assertTrue(recovery["recovered"])
+        self.assertEqual(recovery["reason"], "meta_review_visible_answer")
+
+    async def test_gateway_serial_rewrites_opening_rubric_into_visible_answer(self) -> None:
+        seen: list[dict[str, Any]] = []
+
+        async def fake_pick(_tenant, source, required_capabilities=None):
+            return candidate(str(source.model_alias), metadata={"max_model_len": 8192}), 10.0, "ready"
+
+        async def fake_generate(_candidate, source, **_kwargs):
+            seen.append({"source_id": source.source_id, "prompt": source.prompt, "extra": dict(source.extra)})
+            if source.source_id == "step-1":
+                return {"text": "李世民善于制度建设和纳谏。", "metadata": {}}
+            if source.source_id == "step-2":
+                return {"text": "朱元璋创业难度极高，但治理方式更严酷。", "metadata": {}}
+            if source.source_id == "step-3":
+                return {
+                    "text": "**\n* Opening: Good, acknowledges both are great rulers, difficult to compare.",
+                    "metadata": {"finish_reason": "length"},
+                }
+            return {"text": "如果看创业难度，朱元璋更厉害；如果看治国成熟度和历史评价，李世民更胜一筹。", "metadata": {}}
+
+        router.pick_source_candidate = fake_pick
+        router.generate_text = fake_generate
+        req = router.EnsembleRequest(
+            request_id="serial-opening-rubric-rewrite",
+            runner="dynamic_collab_route",
+            aggregator="judge_refine",
+            runner_config={
+                "native_runner": "response.serial",
+                "serial_topology": {
+                    "version": "modelnet.serial.v1",
+                    "nodes": [
+                        {"id": "step-1", "modelId": "model-a"},
+                        {"id": "step-2", "modelId": "model-b"},
+                        {"id": "step-3", "modelId": "model-c"},
+                    ],
+                    "edges": [
+                        {"source": "step-1", "target": "step-2"},
+                        {"source": "step-2", "target": "step-3"},
+                    ],
+                },
+            },
+            sources=[router.EnsembleSource(source_id="input", prompt="李世民和朱元璋谁厉害")],
+        )
+
+        events = await collect_events(router.run_gateway_serial_ensemble(req, self.tenant))
+        done = done_payload(events)
+
+        self.assertIn("step-3__visible_recovery", [item["source_id"] for item in seen])
+        recovery_call = [item for item in seen if item["source_id"] == "step-3__visible_recovery"][0]
+        self.assertEqual(
+            recovery_call["extra"].get("chat_template_kwargs"),
+            {"enable_thinking": False},
+        )
+        self.assertEqual(done["text"], "如果看创业难度，朱元璋更厉害；如果看治国成熟度和历史评价，李世民更胜一筹。")
+        self.assertNotIn("Opening: Good", done["text"])
+        recovery = done["metadata"]["serial_steps"][2]["metadata"]["serial_visible_answer_recovery"]
+        self.assertTrue(recovery["recovered"])
+        self.assertEqual(recovery["reason"], "meta_review_visible_answer")
+
+    async def test_gateway_serial_rewrites_internal_process_notes_into_visible_answer(self) -> None:
+        seen: list[dict[str, Any]] = []
+
+        async def fake_pick(_tenant, source, required_capabilities=None):
+            return candidate(str(source.model_alias), metadata={"max_model_len": 8192}), 10.0, "ready"
+
+        async def fake_generate(_candidate, source, **_kwargs):
+            seen.append({"source_id": source.source_id, "prompt": source.prompt, "extra": dict(source.extra)})
+            if source.source_id == "step-1":
+                return {"text": "first answer", "metadata": {}}
+            if source.source_id == "step-2":
+                return {
+                    "text": "用户的问题是“李世民和朱元璋谁厉害”。上一轮模型回答被截断了。我作为这一环节，需要基于上一轮的分析思路，补全并完善回答。关键点包括：",
+                    "metadata": {},
+                }
+            return {"text": "final answer for the user", "metadata": {}}
+
+        router.pick_source_candidate = fake_pick
+        router.generate_text = fake_generate
+        req = router.EnsembleRequest(
+            request_id="serial-internal-note-rewrite",
+            runner="dynamic_collab_route",
+            aggregator="judge_refine",
+            runner_config={
+                "native_runner": "response.serial",
+                "serial_topology": {
+                    "version": "modelnet.serial.v1",
+                    "nodes": [
+                        {"id": "step-1", "modelId": "model-a"},
+                        {"id": "step-2", "modelId": "model-b"},
+                    ],
+                    "edges": [{"source": "step-1", "target": "step-2"}],
+                },
+            },
+            sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
+        )
+
+        events = await collect_events(router.run_gateway_serial_ensemble(req, self.tenant))
+        done = done_payload(events)
+
+        self.assertIn("step-2__visible_recovery", [item["source_id"] for item in seen])
+        self.assertEqual(done["text"], "final answer for the user")
+        recovery = done["metadata"]["serial_steps"][1]["metadata"]["serial_visible_answer_recovery"]
+        self.assertTrue(recovery["recovered"])
+        self.assertEqual(recovery["reason"], "meta_review_visible_answer")
+
+    async def test_gateway_serial_does_not_recover_nonempty_visible_answer(self) -> None:
+        seen: list[str] = []
+
+        async def fake_pick(_tenant, source, required_capabilities=None):
+            return candidate(str(source.model_alias), metadata={"max_model_len": 8192}), 10.0, "ready"
+
+        async def fake_generate(_candidate, source, **_kwargs):
+            seen.append(source.source_id)
+            return {
+                "text": "visible answer without terminal punctuation",
+                "metadata": {"finish_reason": "length"},
+            }
+
+        router.pick_source_candidate = fake_pick
+        router.generate_text = fake_generate
+        req = router.EnsembleRequest(
+            request_id="serial-no-visible-recovery",
+            runner="dynamic_collab_route",
+            aggregator="judge_refine",
+            runner_config={
+                "native_runner": "response.serial",
+                "serial_topology": {
+                    "version": "modelnet.serial.v1",
+                    "nodes": [
+                        {"id": "step-1", "modelId": "model-a"},
+                        {"id": "step-2", "modelId": "model-b"},
+                    ],
+                    "edges": [{"source": "step-1", "target": "step-2"}],
+                },
+            },
+            sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
+        )
+
+        events = await collect_events(router.run_gateway_serial_ensemble(req, self.tenant))
+        done = done_payload(events)
+
+        self.assertNotIn("step-2__visible_recovery", seen)
+        self.assertEqual(done["text"], "visible answer without terminal punctuation")
+        self.assertIsNone(done["metadata"]["serial_steps"][1]["metadata"].get("serial_visible_answer_recovery"))
 
     async def test_gateway_serial_summarizes_when_next_prompt_exceeds_context(self) -> None:
         seen: list[dict[str, Any]] = []
@@ -1531,7 +1822,10 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(router.answer_looks_cut_off(summary))
         self.assertTrue(short_cutoff.endswith("[truncated]."))
         self.assertFalse(router.answer_looks_cut_off(short_cutoff))
-        self.assertTrue(fallback.endswith("final answer for this request."))
+        self.assertTrue(fallback.endswith("以上为可用源回答的降级摘要。"))
+        self.assertNotIn("The response synthesizer could not complete", fallback)
+        self.assertNotIn("Synthesis error", fallback)
+        self.assertNotIn("synthesis returned no visible final answer", fallback)
         self.assertFalse(router.answer_looks_cut_off(fallback))
 
     async def test_response_aggregate_sources_receive_original_payloads(self) -> None:
@@ -1745,6 +2039,363 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(router.response_synthesizer_model_alias(req, responses), "smaller-visible")
 
+    def test_response_stream_filter_splits_think_tags_into_reasoning(self) -> None:
+        stream_filter = router.ResponseVisibleTextStreamFilter()
+        text, reasoning = stream_filter.feed("<think>hidden</think>visible")
+        tail, tail_reasoning = stream_filter.flush()
+
+        self.assertEqual(reasoning, "hidden")
+        self.assertEqual(text + tail, "visible")
+        self.assertEqual(tail_reasoning, "")
+
+        stream_filter = router.ResponseVisibleTextStreamFilter()
+        text, reasoning = stream_filter.feed("implicit hidden</think>visible")
+        tail, tail_reasoning = stream_filter.flush()
+
+        self.assertEqual(reasoning, "implicit hidden")
+        self.assertEqual(text + tail, "visible")
+        self.assertEqual(tail_reasoning, "")
+
+    async def test_response_synthesis_disabled_thinking_keeps_plain_content_from_think_candidate(self) -> None:
+        seen_body: dict[str, Any] = {}
+
+        async def fake_pick_candidate(*, tenant=None, candidate_aliases=None, required_capabilities=None):
+            return candidate(
+                "qwen-think",
+                metadata={"type": "think", "stop_think": "</think>", "max_model_len": 8192},
+            ), 10.0, "ready"
+
+        async def fake_backend_stream_chat(_candidate, body, *, http_client, headers):
+            seen_body.update(body)
+            yield b'data: {"choices":[{"delta":{"content":"visible final answer."}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        router.pick_candidate = fake_pick_candidate
+        router.backend_stream_chat = fake_backend_stream_chat
+        router.http_client = object()
+        req = router.EnsembleRequest(
+            request_id="response-synthesis-thinking-disabled",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            sources=[router.EnsembleSource(source_id="source-1", prompt="Question?")],
+        )
+        responses = [
+            {"source_id": "source-1", "text": "first complete response", "weight": 1.0},
+            {"source_id": "source-2", "text": "second complete response", "weight": 1.0},
+        ]
+
+        events = []
+        async for event in router.stream_response_synthesis(req, self.tenant, responses):
+            events.append(event)
+
+        done = [event for event in events if event.get("event") == "done"][0]
+        self.assertEqual(seen_body["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(done["synthesis"]["text"], "visible final answer.")
+        self.assertNotEqual(done["synthesis"]["metadata"].get("fallback_reason"), "empty_synthesis")
+
+    async def test_response_synthesis_streams_reasoning_content_separately(self) -> None:
+        async def fake_pick_candidate(*, tenant=None, candidate_aliases=None, required_capabilities=None):
+            return candidate("qwen-reasoning", metadata={"max_model_len": 8192}), 10.0, "ready"
+
+        async def fake_backend_stream_chat(_candidate, body, *, http_client, headers):
+            yield b'data: {"choices":[{"delta":{"reasoning_content":"thinking "}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{"content":"final answer."}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        router.pick_candidate = fake_pick_candidate
+        router.backend_stream_chat = fake_backend_stream_chat
+        router.http_client = object()
+        req = router.EnsembleRequest(
+            request_id="response-synthesis-reasoning",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            sources=[router.EnsembleSource(source_id="source-1", prompt="Question?")],
+        )
+        responses = [
+            {"source_id": "source-1", "text": "first complete response", "weight": 1.0},
+            {"source_id": "source-2", "text": "second complete response", "weight": 1.0},
+        ]
+
+        events = []
+        async for event in router.stream_response_synthesis(req, self.tenant, responses):
+            events.append(event)
+
+        self.assertEqual([event["delta"] for event in events if event.get("event") == "reasoning"], ["thinking "])
+        done = [event for event in events if event.get("event") == "done"][0]
+        self.assertEqual(done["synthesis"]["text"], "final answer.")
+        self.assertEqual(done["synthesis"]["metadata"]["reasoning_content"], "thinking ")
+
+    async def test_openai_ensemble_stream_maps_reasoning_event_to_reasoning_content(self) -> None:
+        original_run_ensemble_stream = router.run_ensemble_stream
+
+        async def fake_run_ensemble_stream(_request, _tenant):
+            yield router.sse("reasoning", {"delta": "thinking "})
+            yield router.sse("token", {"delta": "answer", "text": "answer"})
+            yield router.sse("done", {"text": "answer", "metadata": {}})
+
+        router.run_ensemble_stream = fake_run_ensemble_stream
+        try:
+            req = router.EnsembleRequest(
+                request_id="openai-reasoning",
+                runner="response_aggregate",
+                aggregator="synthesize",
+                sources=[router.EnsembleSource(source_id="source-1", prompt="Question?")],
+            )
+            chunks = []
+            async for chunk in router.stream_openai_ensemble_response(
+                req,
+                self.tenant,
+                request_id="req",
+                model="modelnet-parallel",
+            ):
+                _event, data = router.parse_sse_chunk(chunk)
+                if data.get("raw") != "[DONE]":
+                    chunks.append(data)
+        finally:
+            router.run_ensemble_stream = original_run_ensemble_stream
+
+        deltas = [
+            choice.get("delta", {})
+            for data in chunks
+            for choice in data.get("choices", [])
+            if isinstance(choice, dict)
+        ]
+        self.assertIn({"reasoning_content": "thinking "}, deltas)
+        self.assertIn({"content": "answer"}, deltas)
+
+    async def test_openai_stream_renders_serial_flow_as_reasoning_content(self) -> None:
+        original_run_ensemble_stream = router.run_ensemble_stream
+
+        async def fake_run_ensemble_stream(_request, _tenant):
+            yield router.sse(
+                "run_started",
+                {
+                    "runner": "dynamic_collab_route",
+                    "native_runner": "response.serial",
+                    "aggregator": "judge_refine",
+                },
+            )
+            yield router.sse(
+                "trace_step",
+                {
+                    "stage": "serial.gateway.started",
+                    "total_steps": 2,
+                    "model_ids": ["model-a", "model-b"],
+                },
+            )
+            yield router.sse(
+                "source_selected",
+                {
+                    "source_id": "step-1",
+                    "backend": {"id": "model-a"},
+                    "role": "serial_step",
+                    "stage": "serial.step",
+                    "step": 1,
+                },
+            )
+            yield router.sse(
+                "trace_step",
+                {
+                    "stage": "serial.summary.completed",
+                    "source_id": "step-2",
+                    "step": 2,
+                    "prompt_tokens_before": 1200,
+                    "prompt_tokens_after": 500,
+                },
+            )
+            yield router.sse(
+                "trace_step",
+                {
+                    "stage": "serial.visible_answer_recovered",
+                    "source_id": "step-2",
+                    "step": 2,
+                    "reason": "empty_visible_answer",
+                    "recovered": True,
+                },
+            )
+            yield router.sse(
+                "trace_step",
+                {
+                    "stage": "serial.step.completed",
+                    "source_id": "step-2",
+                    "step": 2,
+                    "backend": {"id": "model-b"},
+                    "latency_ms": 42,
+                    "text_chars": 12,
+                    "text": "intermediate answer should not leak",
+                },
+            )
+            yield router.sse("token", {"delta": "final answer", "text": "final answer"})
+            yield router.sse("done", {"text": "final answer", "metadata": {}})
+
+        router.run_ensemble_stream = fake_run_ensemble_stream
+        try:
+            req = router.EnsembleRequest(
+                request_id="openai-serial-flow",
+                runner="dynamic_collab_route",
+                aggregator="judge_refine",
+                runner_config={"native_runner": "response.serial", "show_serial_flow": True},
+                sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
+            )
+            content_deltas, reasoning_deltas = await collect_openai_deltas(
+                router.stream_openai_ensemble_response(
+                    req,
+                    self.tenant,
+                    request_id="openai-serial-flow",
+                    model="modelnet",
+                )
+            )
+        finally:
+            router.run_ensemble_stream = original_run_ensemble_stream
+
+        reasoning_content = "".join(reasoning_deltas)
+        content = "".join(content_deltas)
+        self.assertIn("ModelNet 串联流程", reasoning_content)
+        self.assertIn("串联拓扑已就绪", reasoning_content)
+        self.assertIn("第 1 步选中模型", reasoning_content)
+        self.assertIn("第 2 步上下文已压缩", reasoning_content)
+        self.assertIn("第 2 步触发可见答案恢复", reasoning_content)
+        self.assertIn("第 2 步完成", reasoning_content)
+        self.assertIn("model-a", reasoning_content)
+        self.assertIn("model-b", reasoning_content)
+        self.assertNotIn("intermediate answer should not leak", reasoning_content)
+        self.assertEqual(content, "final answer")
+        self.assertNotIn("ModelNet 串联流程", content)
+
+    async def test_openai_stream_renders_auto_network_flow_when_enabled(self) -> None:
+        original_run_ensemble_stream = router.run_ensemble_stream
+
+        async def fake_run_ensemble_stream(_request, _tenant):
+            yield router.sse(
+                "run_started",
+                {
+                    "request_id": "openai-auto-flow",
+                    "runner": "auto",
+                    "native_runner": "auto.network",
+                    "aggregator": "auto",
+                },
+            )
+            yield router.sse(
+                "auto_plan",
+                {
+                    "strategy": "adaptive_sparse_graph",
+                    "runner": "auto.rank_fuse",
+                    "aggregator": "rank_then_fuse",
+                    "source_count": 2,
+                    "confidence_score": 0.41,
+                    "escalation_reason": "rank_fuse_complex_or_low_confidence",
+                    "stages": ["candidates.parallel", "ranker.select"],
+                    "selected_sources": [
+                        {"source_id": "candidate-1", "backend": {"id": "model-a"}},
+                        {"source_id": "candidate-2", "backend": {"id": "model-b"}},
+                    ],
+                },
+            )
+            yield router.sse(
+                "source_selected",
+                {
+                    "source_id": "candidate-1",
+                    "backend": {"id": "model-a"},
+                    "role": "candidate",
+                    "stage": "candidates.parallel",
+                },
+            )
+            yield router.sse(
+                "trace_step",
+                {
+                    "stage": "source.completed",
+                    "source_id": "candidate-1",
+                    "backend": {"id": "model-a"},
+                    "latency_ms": 17,
+                    "text_chars": 12,
+                },
+            )
+            yield router.sse("token", {"delta": "final answer", "text": "final answer"})
+            yield router.sse(
+                "done",
+                {
+                    "text": "final answer",
+                    "metadata": {
+                        "auto_plan": {
+                            "internal_call_count": 3,
+                            "internal_total_tokens": 456,
+                        }
+                    },
+                },
+            )
+
+        router.run_ensemble_stream = fake_run_ensemble_stream
+        try:
+            req = router.EnsembleRequest(
+                request_id="openai-auto-flow",
+                runner="dynamic_collab_route",
+                aggregator="auto",
+                runner_config={"native_runner": "auto.network", "show_auto_flow": True},
+                sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
+            )
+            content_deltas, reasoning_deltas = await collect_openai_deltas(
+                router.stream_openai_ensemble_response(
+                    req,
+                    self.tenant,
+                    request_id="openai-auto-flow",
+                    model="modelnet-auto",
+                )
+            )
+        finally:
+            router.run_ensemble_stream = original_run_ensemble_stream
+
+        reasoning_content = "".join(reasoning_deltas)
+        content = "".join(content_deltas)
+        self.assertIn("ModelNet 自动组网流程", reasoning_content)
+        self.assertIn("规划完成", reasoning_content)
+        self.assertIn("adaptive_sparse_graph", reasoning_content)
+        self.assertIn("candidates.parallel", reasoning_content)
+        self.assertIn("candidate-1", reasoning_content)
+        self.assertIn("model-a", reasoning_content)
+        self.assertIn("自动组网执行完成", reasoning_content)
+        self.assertEqual(content, "final answer")
+        self.assertNotIn("ModelNet 自动组网流程", content)
+
+    async def test_openai_stream_hides_serial_flow_when_disabled(self) -> None:
+        original_run_ensemble_stream = router.run_ensemble_stream
+
+        async def fake_run_ensemble_stream(_request, _tenant):
+            yield router.sse(
+                "run_started",
+                {"native_runner": "response.serial", "aggregator": "judge_refine"},
+            )
+            yield router.sse(
+                "trace_step",
+                {"stage": "serial.gateway.started", "total_steps": 2, "model_ids": ["model-a", "model-b"]},
+            )
+            yield router.sse("token", {"delta": "final answer", "text": "final answer"})
+            yield router.sse("done", {"text": "final answer", "metadata": {}})
+
+        router.run_ensemble_stream = fake_run_ensemble_stream
+        try:
+            req = router.EnsembleRequest(
+                request_id="openai-serial-flow-hidden",
+                runner="dynamic_collab_route",
+                aggregator="judge_refine",
+                runner_config={"native_runner": "response.serial"},
+                sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
+            )
+            content_deltas, reasoning_deltas = await collect_openai_deltas(
+                router.stream_openai_ensemble_response(
+                    req,
+                    self.tenant,
+                    request_id="openai-serial-flow-hidden",
+                    model="modelnet",
+                )
+            )
+        finally:
+            router.run_ensemble_stream = original_run_ensemble_stream
+
+        self.assertEqual(reasoning_deltas, [])
+        self.assertEqual("".join(content_deltas), "final answer")
+
     async def test_response_synthesis_continues_cut_off_final_answer(self) -> None:
         calls: list[str] = []
 
@@ -1954,7 +2605,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(completed_sources[0], "source-2")
 
-    async def test_openai_stream_renders_parallel_flow_when_enabled(self) -> None:
+    async def test_openai_stream_renders_parallel_flow_as_reasoning_when_enabled(self) -> None:
         async def fake_generate(_tenant, source, **_kwargs):
             return {
                 "source_id": source.source_id,
@@ -2004,7 +2655,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             runner_config={"native_runner": "response.parallel", "show_parallel_flow": True},
             sources=base_sources,
         )
-        visible_deltas = await collect_openai_content_deltas(
+        visible_deltas, visible_reasoning_deltas = await collect_openai_deltas(
             router.stream_openai_ensemble_response(
                 visible_req,
                 self.tenant,
@@ -2013,15 +2664,15 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         visible_content = "".join(visible_deltas)
+        visible_reasoning = "".join(visible_reasoning_deltas)
 
-        self.assertIn("ModelNet 并联流程", visible_content)
-        self.assertIn("并联发起", visible_content)
-        self.assertIn("source-1", visible_content)
-        self.assertIn("进入合成", visible_content)
-        self.assertIn("最终回答", visible_content)
-        answer_deltas = [delta for delta in visible_deltas if delta in {"combined ", "answer"}]
-        self.assertEqual(answer_deltas, ["combined ", "answer"])
-        self.assertTrue(visible_content.endswith("combined answer"))
+        self.assertEqual(visible_deltas, ["combined ", "answer"])
+        self.assertEqual(visible_content, "combined answer")
+        self.assertIn("ModelNet 并联流程", visible_reasoning)
+        self.assertIn("并联发起", visible_reasoning)
+        self.assertIn("source-1", visible_reasoning)
+        self.assertIn("进入合成", visible_reasoning)
+        self.assertNotIn("最终回答", visible_content)
 
         hidden_req = visible_req.model_copy(
             update={

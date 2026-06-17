@@ -23,6 +23,7 @@ import { ModelProvider } from 'model-bank';
 
 import { DEFAULT_AGENT_CONFIG } from '@/const/settings';
 import {
+  MODELNET_AUTO_MODEL_ID,
   isModelNetParallelModel,
   isModelNetSerialModel,
   MAX_MODELNET_PARALLEL_MODELS,
@@ -424,12 +425,15 @@ class ChatService {
     // This ensures the user's preference takes priority over provider's useResponseModels config
     // When user enables Responses API, set to 'responses' to force use Responses API
     const normalizedModel = model.toLowerCase();
+    const isModelNetAuto =
+      provider === ModelProvider.OpenAI && normalizedModel === MODELNET_AUTO_MODEL_ID;
     const forceChatCompletions =
       isModelNetParallel ||
       isModelNetSerial ||
+      isModelNetAuto ||
       (provider === ModelProvider.OpenAI &&
         (normalizedModel === 'modelnet' || normalizedModel === 'modelnet/modelnet'));
-    if (forceChatCompletions) {
+    if (forceChatCompletions && !isModelNetAuto) {
       model = 'modelnet';
     }
     const apiMode: 'responses' | 'chatCompletion' =
@@ -494,6 +498,21 @@ class ChatService {
             allow_degraded: false,
             response_synthesizer_model: responseSynthesizerModel,
             show_parallel_flow: true,
+          },
+        },
+      };
+    }
+
+    if (isModelNetAuto) {
+      payload.modelnet = {
+        stream_options: {
+          include_trace: true,
+        },
+        collaboration_plan: {
+          aggregator: 'auto',
+          runner: 'auto.network',
+          runner_config: {
+            show_auto_flow: true,
           },
         },
       };

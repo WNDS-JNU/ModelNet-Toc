@@ -8,6 +8,7 @@ export const MODELNET_PROVIDER_IDS = [
   MODELNET_OPENAI_PROVIDER_ID,
   MODELNET_LEGACY_PROVIDER_ID,
 ] as const;
+export const MODELNET_AUTO_MODEL_ID = 'modelnet-auto';
 export const MODELNET_PARALLEL_MODEL_ID = 'modelnet-parallel';
 export const MODELNET_PARALLEL_DISPLAY_NAME = 'ModelNet \u5e76\u8054';
 export const MIN_MODELNET_PARALLEL_MODELS = 2;
@@ -25,7 +26,7 @@ export interface ModelNetSerialTopology {
 
 const MODELNET_SYSTEM_MODEL_IDS = new Set([
   'modelnet',
-  'modelnet-auto',
+  MODELNET_AUTO_MODEL_ID,
   MODELNET_PARALLEL_MODEL_ID,
   MODELNET_SERIAL_MODEL_ID,
 ]);
