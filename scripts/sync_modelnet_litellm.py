@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Generate LiteLLM Proxy config from Dify's ModelNet registry."""
+"""Generate LiteLLM Proxy config from Dify's ModelNet registry.
+
+Layering invariant: aggregate aliases route through modelnet-router, while
+concrete backend model IDs keep their registry model_url as the LiteLLM api_base.
+"""
 
 from __future__ import annotations
 

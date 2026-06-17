@@ -6,7 +6,7 @@ Self-hosted LobeHub ToC deployment for ModelNet, with:
 - HAProxy entry load balancing on `:3081`
 - A login-protected ModelNet capability leaderboard embedded at `/leaderboard`
 - PostgreSQL, Redis, RustFS/S3, and Searxng for the full LobeHub stack
-- A ModelNet-owned OpenAI-compatible gateway: LobeHub -> LiteLLM -> modelnet-router -> K8S model backends
+- A ModelNet-owned OpenAI-compatible gateway: LobeHub -> LiteLLM -> `modelnet-router` for aggregate/auto aliases, or directly to generated K8S backend endpoints for concrete model IDs
 
 ## Runtime Layout
 
@@ -16,7 +16,7 @@ Self-hosted LobeHub ToC deployment for ModelNet, with:
 - LobeHub app service: `lobe`, pinned to a single container
 - Leaderboard API: `GET /api/modelnet/leaderboard`, served by the custom LobeHub image
 - Model gateway services: `modelnet-litellm` and `modelnet-router`, owned by this compose project
-- The public automatic networking model is `modelnet-auto`; the old `modelnet` entrypoint is retired.
+- The public automatic networking model is `modelnet-auto`; concrete backend model IDs remain LiteLLM entries generated from the ModelNet registry.
 
 The stack builds the custom LobeHub image from the vendored source tree at `./lobehub` by default.
 Override it with `LOBEHUB_TOC_SRC=/path/to/lobehub-source` only when testing another checkout.

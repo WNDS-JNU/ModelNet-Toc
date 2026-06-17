@@ -10,7 +10,7 @@
 ## Model Deployment
 
 - Local-LAN ModelNet inference backends are deployed through Kubernetes.
-- The gateway path is LobeHub -> LiteLLM -> modelnet-router -> K8S model backends.
+- LiteLLM is the outer OpenAI-compatible proxy. Aggregate/auto aliases such as `modelnet` and `modelnet-auto` go to `modelnet-router`; concrete backend model IDs go directly to their generated K8S backend endpoints.
 - Do not assume model backends are local Docker Compose services when running smoke tests or debugging backend availability.
 
 ## P0 Smoke Notes
