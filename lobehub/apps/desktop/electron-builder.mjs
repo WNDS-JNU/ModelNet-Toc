@@ -22,6 +22,13 @@ dotenv.config();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const packageJSON = JSON.parse(await fs.readFile(path.join(__dirname, 'package.json'), 'utf8'));
+const isModelNetDesktop = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.MODELNET_DESKTOP || '').toLowerCase(),
+);
+const desktopProductName = isModelNetDesktop ? 'ModelNet Desktop' : 'LobeHub';
+const linuxExecutableName = isModelNetDesktop ? 'modelnet-desktop' : undefined;
+const modelNetDesktopServerUrl = process.env.MODELNET_DESKTOP_SERVER_URL || 'http://123.56.135.150';
+const appId = isModelNetDesktop ? 'cn.edu.jnu.wnds.modelnet-desktop' : 'com.lobehub.lobehub-desktop';
 
 const channel = process.env.UPDATE_CHANNEL;
 const arch = os.arch();
@@ -213,7 +220,19 @@ const config = {
       console.info(`⏭️  Skipping Assets.car (not found or copy failed)`);
     }
   },
-  appId: 'com.lobehub.lobehub-desktop',
+  appId,
+  ...(isModelNetDesktop ? { productName: desktopProductName } : {}),
+  ...(isModelNetDesktop
+    ? {
+        extraMetadata: {
+          author: 'ModelNet',
+          description: 'ModelNet Desktop Application',
+          homepage: modelNetDesktopServerUrl,
+          name: 'modelnet-desktop',
+          productName: desktopProductName,
+        },
+      }
+    : {}),
   appImage: {
     artifactName: '${productName}-${version}.${ext}',
   },
@@ -262,6 +281,7 @@ const config = {
   generateUpdatesFilesForAllChannels: true,
   linux: {
     category: 'Utility',
+    ...(linuxExecutableName ? { executableName: linuxExecutableName } : {}),
     icon: 'build/icon.png',
     maintainer: 'electronjs.org',
     target: ['AppImage', 'snap', 'deb', 'rpm', 'tar.gz'],
@@ -330,7 +350,7 @@ const config = {
   ],
 
   win: {
-    executableName: 'LobeHub',
+    executableName: desktopProductName,
   },
 };
 

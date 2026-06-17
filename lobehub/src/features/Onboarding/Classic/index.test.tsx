@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   commonStepsCompleted: true,
   currentStep: 1,
   enableKlavis: true,
+  finishOnboarding: vi.fn().mockResolvedValue(undefined),
   goToNextStep: vi.fn(),
   goToPreviousStep: vi.fn(),
   isUserStateInit: true,
@@ -33,23 +34,8 @@ vi.mock('@/features/Onboarding/components/ModeSwitch', () => ({
   default: () => <div>ModeSwitch</div>,
 }));
 
-vi.mock('@/hooks/useOnboardingAgentTemplates', () => ({
-  useOnboardingAgentTemplates: vi.fn(),
-}));
-
 vi.mock('@/routes/onboarding/_layout', () => ({
   default: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-}));
-
-vi.mock('@/routes/onboarding/features/AgentPickerStep', () => ({
-  default: ({ onBack }: { onBack: () => void }) => (
-    <div>
-      AgentPickerStep
-      <button type="button" onClick={onBack}>
-        agent-back
-      </button>
-    </div>
-  ),
 }));
 
 vi.mock('@/routes/onboarding/features/FullNameStep', () => ({
@@ -118,6 +104,7 @@ vi.mock('@/store/user', () => ({
     selector: (state: {
       commonStepsCompleted: boolean;
       currentStep: number;
+      finishOnboarding: () => Promise<void>;
       goToNextStep: () => void;
       goToPreviousStep: () => void;
       isUserStateInit: boolean;
@@ -126,6 +113,7 @@ vi.mock('@/store/user', () => ({
     selector({
       commonStepsCompleted: mocks.commonStepsCompleted,
       currentStep: mocks.currentStep,
+      finishOnboarding: mocks.finishOnboarding,
       goToNextStep: mocks.goToNextStep,
       goToPreviousStep: mocks.goToPreviousStep,
       isUserStateInit: mocks.isUserStateInit,
@@ -150,6 +138,7 @@ beforeEach(() => {
   mocks.commonStepsCompleted = true;
   mocks.currentStep = 1;
   mocks.enableKlavis = true;
+  mocks.finishOnboarding.mockClear();
   mocks.goToNextStep.mockReset();
   mocks.goToPreviousStep.mockReset();
   mocks.isUserStateInit = true;
@@ -187,7 +176,7 @@ describe('ClassicOnboardingPage', () => {
     expect(mocks.goToNextStep).toHaveBeenCalledTimes(1);
   });
 
-  it('skips ProSettings when moving forward from interests without Klavis', () => {
+  it('finishes onboarding from interests when ProSettings is skipped', async () => {
     mocks.currentStep = 2;
     mocks.enableKlavis = false;
 
@@ -200,17 +189,17 @@ describe('ClassicOnboardingPage', () => {
       step: 'interests',
       stepIndex: 2,
     });
-    expect(mocks.goToNextStep).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(mocks.finishOnboarding).toHaveBeenCalledTimes(1));
+    expect(mocks.goToNextStep).not.toHaveBeenCalled();
   });
 
-  it('moves back from the agent picker to interests when ProSettings is skipped', () => {
+  it('finishes immediately when resuming the removed agent picker step', async () => {
     mocks.currentStep = MAX_ONBOARDING_STEPS;
-    mocks.enableKlavis = false;
 
     renderClassic();
-    fireEvent.click(screen.getByText('agent-back'));
 
-    expect(mocks.goToPreviousStep).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(mocks.finishOnboarding).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('AgentPickerStep')).not.toBeInTheDocument();
   });
 
   it('waits for server config before deciding whether to skip ProSettings', () => {
@@ -263,7 +252,7 @@ describe('ClassicOnboardingPage', () => {
     expect(mocks.goToNextStep).not.toHaveBeenCalled();
   });
 
-  it('keeps ProSettings in the flow when Klavis is enabled', () => {
+  it('finishes onboarding from ProSettings when Klavis is enabled', async () => {
     mocks.currentStep = 3;
     mocks.enableKlavis = true;
 
@@ -276,6 +265,7 @@ describe('ClassicOnboardingPage', () => {
       step: 'prosettings',
       stepIndex: 3,
     });
-    expect(mocks.goToNextStep).toHaveBeenCalled();
+    await waitFor(() => expect(mocks.finishOnboarding).toHaveBeenCalledTimes(1));
+    expect(mocks.goToNextStep).not.toHaveBeenCalled();
   });
 });

@@ -11,7 +11,7 @@
   "author": "LobeHub",
   "main": "./dist/main/index.js",
   "scripts": {
-    "build:cli": "cd ../cli && cross-env MINIFY=1 bun run build",
+    "build:cli": "cross-env MINIFY=1 npm run build --prefix=../cli",
     "build:main": "cross-env NODE_OPTIONS=--max-old-space-size=8192 electron-vite build",
     "build:run-unpack": "electron .",
     "dev": "electron-vite dev",
@@ -29,6 +29,7 @@
     "lint:style": "stylelint \"{src,tests}/**/*.{js,jsx,ts,tsx}\" --fix",
     "lint:ts": "eslint \"{src,tests}/**/*.{js,jsx,ts,tsx}\" --fix",
     "package:linux": "npm run build:main && electron-builder --linux --config electron-builder.mjs  --publish never",
+    "package:linux:appimage": "electron-builder --linux AppImage --config electron-builder.mjs --publish never --c.asar=false",
     "package:local": "npm run build:main && electron-builder --dir --config electron-builder.mjs  --c.mac.notarize=false -c.mac.identity=null --c.asar=false",
     "package:local:reuse": "electron-builder --dir --config electron-builder.mjs  --c.mac.notarize=false -c.mac.identity=null --c.asar=false",
     "package:mac": "npm run build:main && electron-builder --mac --config electron-builder.mjs  --publish never",

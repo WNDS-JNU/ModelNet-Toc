@@ -102,10 +102,10 @@ describe('OnboardingActionHintInjector', () => {
     });
   });
 
-  describe('marketplace detection (Summary phase)', () => {
+  describe('summary completion guidance', () => {
     const phaseGuidance = 'Phase: Summary. Wrap-up.';
 
-    it('uses the not-opened branch when no prior showAgentMarketplace tool call exists', async () => {
+    it('finishes onboarding directly without opening template selection', async () => {
       const provider = buildProvider(phaseGuidance);
       const result = await provider.process(
         createContext([
@@ -116,63 +116,11 @@ describe('OnboardingActionHintInjector', () => {
       );
       const last = result.messages.at(-1);
       expect(last?.role).toBe('user');
-      expect(last?.content).toContain('THIS TURN call `showAgentMarketplace`');
-      expect(last?.content).not.toContain('ALREADY opened');
+      expect(last?.content).toContain('THIS TURN call `finishOnboarding`');
+      expect(last?.content).toContain('Template selection has been removed');
     });
 
-    it('detects DB-shape `tools` array with apiName=showAgentMarketplace', async () => {
-      const provider = buildProvider(phaseGuidance);
-      const result = await provider.process(
-        createContext([
-          { content: 'sys', role: 'system' },
-          { content: 'hi', role: 'user' },
-          {
-            content: '',
-            role: 'assistant',
-            tools: [
-              {
-                apiName: 'showAgentMarketplace',
-                arguments: '{}',
-                id: 'call_1',
-                identifier: 'lobe-web-onboarding',
-                type: 'default',
-              },
-            ],
-          },
-        ]),
-      );
-      const last = result.messages.at(-1);
-      expect(last?.content).toContain('ALREADY opened');
-      expect(last?.content).not.toContain('THIS TURN call `showAgentMarketplace`');
-    });
-
-    it('detects OpenAI-shape `tool_calls` array as a fallback', async () => {
-      const provider = buildProvider(phaseGuidance);
-      const result = await provider.process(
-        createContext([
-          { content: 'sys', role: 'system' },
-          { content: 'hi', role: 'user' },
-          {
-            content: '',
-            role: 'assistant',
-            tool_calls: [
-              {
-                function: {
-                  arguments: '{}',
-                  name: 'lobe-web-onboarding____showAgentMarketplace____builtin',
-                },
-                id: 'call_1',
-                type: 'function',
-              },
-            ],
-          },
-        ]),
-      );
-      const last = result.messages.at(-1);
-      expect(last?.content).toContain('ALREADY opened');
-    });
-
-    it('does not flag unrelated tool calls', async () => {
+    it('keeps finishing directly even when unrelated tool calls exist', async () => {
       const provider = buildProvider(phaseGuidance);
       const result = await provider.process(
         createContext([
@@ -194,8 +142,7 @@ describe('OnboardingActionHintInjector', () => {
         ]),
       );
       const last = result.messages.at(-1);
-      expect(last?.content).toContain('THIS TURN call `showAgentMarketplace`');
-      expect(last?.content).not.toContain('ALREADY opened');
+      expect(last?.content).toContain('THIS TURN call `finishOnboarding`');
     });
   });
 });

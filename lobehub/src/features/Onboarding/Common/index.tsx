@@ -7,7 +7,6 @@ import { memo, useCallback, useEffect, useRef } from 'react';
 import { Navigate, useSearchParams } from 'react-router-dom';
 
 import Loading from '@/components/Loading/BrandTextLoading';
-import { useOnboardingAgentTemplates } from '@/hooks/useOnboardingAgentTemplates';
 import OnboardingContainer from '@/routes/onboarding/_layout';
 import { deriveOnboardingBranchPath } from '@/routes/onboarding/branch';
 import ResponseLanguageStep from '@/routes/onboarding/features/ResponseLanguageStep';
@@ -23,13 +22,12 @@ import { onboardingSelectors } from '@/store/user/selectors';
 /**
  * Remap a `currentStep` persisted under the old 5-step classic flow
  * (1=Telemetry, 2=FullName, 3=Interests, 4=Language, 5=ProSettings) onto
- * the current classic flow (1=FullName, 2=Interests, 3=ProSettings,
- * 4=AgentPicker).
+ * the current classic flow (1=FullName, 2=Interests, 3=ProSettings).
  *
  * Telemetry/Language are extracted into the shared prefix, so an in-progress
  * legacy user must skip those positions when resuming classic. Legacy
- * Language/ProSettings (raw >= 4) resume at the new ProSettings step
- * (MAX_ONBOARDING_STEPS - 1) — never the trailing agent-picker step.
+ * Language/ProSettings (raw >= 4) resume at the ProSettings step — the
+ * trailing agent-picker step has been removed.
  */
 const remapLegacyClassicStep = (raw: number): number => {
   if (raw <= 2) return 1;
@@ -52,8 +50,6 @@ const CommonOnboardingPage = memo(() => {
   const step: 1 | 2 = searchParams.get('step') === '2' ? 2 : 1;
   const hasStepParam = searchParams.has('step');
   const viewedStepKeysRef = useRef<Set<string>>(new Set());
-
-  useOnboardingAgentTemplates(isUserStateInit && (!commonStepsCompleted || hasStepParam));
 
   // One-time legacy migration: when the user lands on the shared prefix, if
   // their persisted `currentStep` was authored under the old 5-step schema,
