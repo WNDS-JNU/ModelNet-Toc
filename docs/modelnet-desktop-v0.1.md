@@ -139,6 +139,27 @@ The AppImage is the preferred Linux v0.1 handoff. The unpacked tarball is useful
 but direct execution may require either a root-owned `chrome-sandbox` with mode `4755` or launching
 with Electron's `--no-sandbox` flag.
 
+Windows artifacts produced on 2026-06-17:
+
+```text
+/home/duxianghe/ModelNet-toc/lobehub/apps/desktop/release/ModelNet-Desktop-v0.1-win-x64-setup.exe
+size: 210M
+sha256: 7c49efd4b9e5beab7e8001ece562035d9a57bee0767375e6d4b3f59f9304b628
+type: unsigned current-user installer
+notes: installs to %LOCALAPPDATA%\ModelNetDesktop, excludes Windows build .deps cache paths,
+       bundles Windows x64 native optional dependencies for node-screenshots and @napi-rs/canvas,
+       and removes non-Windows native binaries from the Windows payload
+
+/home/duxianghe/ModelNet-toc/lobehub/apps/desktop/release/ModelNet Desktop 0.0.0.exe
+size: 115M
+sha256: 502be106cab83dbbe093edf344472d5b2e63aac35a893696c5f37313b5cd97c1
+type: unsigned portable executable
+
+/home/duxianghe/ModelNet-toc/lobehub/apps/desktop/release/ModelNet-Desktop-v0.1-win-x64-unpacked.tgz
+size: 204M
+sha256: 47b018773fc1e21b547a1e407427a9857102ea64546a93338ada858bab2a5f63
+```
+
 For a platform installer on the current build machine:
 
 ```bash

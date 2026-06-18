@@ -1495,7 +1495,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(recovery["recovered"])
         self.assertEqual(recovery["reason"], "meta_review_visible_answer")
 
-    async def test_gateway_serial_does_not_recover_nonempty_visible_answer(self) -> None:
+    async def test_gateway_serial_continues_nonempty_cutoff_visible_answer(self) -> None:
         seen: list[str] = []
 
         async def fake_pick(_tenant, source, required_capabilities=None):
@@ -1503,6 +1503,8 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_generate(_candidate, source, **_kwargs):
             seen.append(source.source_id)
+            if source.source_id.endswith("__visible_recovery"):
+                return {"text": "and then completes cleanly.", "metadata": {"finish_reason": "stop"}}
             return {
                 "text": "visible answer without terminal punctuation",
                 "metadata": {"finish_reason": "length"},
@@ -1511,7 +1513,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         router.pick_source_candidate = fake_pick
         router.generate_text = fake_generate
         req = router.EnsembleRequest(
-            request_id="serial-no-visible-recovery",
+            request_id="serial-cutoff-visible-recovery",
             runner="dynamic_collab_route",
             aggregator="judge_refine",
             runner_config={
@@ -1531,9 +1533,16 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         events = await collect_events(router.run_gateway_serial_ensemble(req, self.tenant))
         done = done_payload(events)
 
-        self.assertNotIn("step-2__visible_recovery", seen)
-        self.assertEqual(done["text"], "visible answer without terminal punctuation")
-        self.assertIsNone(done["metadata"]["serial_steps"][1]["metadata"].get("serial_visible_answer_recovery"))
+        self.assertIn("step-2__visible_recovery", seen)
+        self.assertEqual(
+            done["text"],
+            "visible answer without terminal punctuationand then completes cleanly.",
+        )
+        recovery = done["metadata"]["serial_steps"][1]["metadata"]["serial_visible_answer_recovery"]
+        self.assertTrue(recovery["recovered"])
+        self.assertTrue(recovery["continued_partial"])
+        self.assertEqual(recovery["reason"], "cut_off_visible_answer")
+        self.assertEqual(recovery["finish_reason"], "length")
 
     async def test_gateway_serial_summarizes_when_next_prompt_exceeds_context(self) -> None:
         seen: list[dict[str, Any]] = []
