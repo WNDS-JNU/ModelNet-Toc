@@ -8,8 +8,11 @@ import {
   getModelNetParallelProvider,
   isModelNetParallelModel,
   isModelNetSerialModel,
+  modelIdsToModelNetSerialTopology,
   MODELNET_PARALLEL_MODEL_ID,
   MODELNET_SERIAL_MODEL_ID,
+  normalizeModelNetParallelModelIds,
+  normalizeModelNetSerialTopology,
   withModelNetParallelModel,
 } from './index';
 
@@ -19,10 +22,7 @@ const model = (id: string, displayName?: string): AiModelForSelect => ({
   id,
 });
 
-const provider = (
-  id: string,
-  children: AiModelForSelect[],
-): EnabledProviderWithModels => ({
+const provider = (id: string, children: AiModelForSelect[]): EnabledProviderWithModels => ({
   children,
   id,
   name: id,
@@ -61,13 +61,28 @@ describe('ModelNetParallel helpers', () => {
 
   it('does not inject the pseudo model when fewer than two ModelNet member models are available', () => {
     const result = withModelNetParallelModel([
-      provider('openai', [
-        model('gpt-4o', 'GPT-4o'),
-        model('inference-qwen3', 'ModelNet/Qwen3'),
-      ]),
+      provider('openai', [model('gpt-4o', 'GPT-4o'), model('inference-qwen3', 'ModelNet/Qwen3')]),
     ]);
 
     expect(result[0].children.map((item) => item.id)).toEqual(['gpt-4o', 'inference-qwen3']);
+  });
+
+  it('normalizes selected models up to the current candidate count', () => {
+    const candidates = Array.from({ length: 17 }, (_, index) =>
+      model(`inference-model-${index + 1}`, `ModelNet/Model ${index + 1}`),
+    );
+    const parallelIds = candidates.map((item) => item.id);
+
+    expect(normalizeModelNetParallelModelIds(parallelIds, candidates)).toEqual(parallelIds);
+
+    const serialCandidates = candidates.slice(0, 10);
+    const serialIds = serialCandidates.map((item) => item.id);
+    const topology = normalizeModelNetSerialTopology(
+      modelIdsToModelNetSerialTopology(serialIds),
+      serialCandidates,
+    );
+
+    expect(topology.nodes.map((node) => node.modelId)).toEqual(serialIds);
   });
 
   it('keeps legacy lobehub provider compatibility but prefers OpenAI when both exist', () => {

@@ -3,23 +3,16 @@
 import { Flexbox, Icon, Popover, SearchBar } from '@lobehub/ui';
 import { Button, message } from 'antd';
 import { createStaticStyles, cx } from 'antd-style';
-import {
-  ArrowDownIcon,
-  ArrowUpIcon,
-  LinkIcon,
-  PlusIcon,
-  Trash2Icon,
-} from 'lucide-react';
+import { ArrowDownIcon, ArrowUpIcon, LinkIcon, PlusIcon, Trash2Icon } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 
 import {
   getModelNetParallelCandidates,
   isModelNetSerialModel,
-  MAX_MODELNET_SERIAL_MODELS,
   MIN_MODELNET_SERIAL_MODELS,
   modelIdsToModelNetSerialTopology,
-  normalizeModelNetSerialTopology,
   type ModelNetSerialTopology,
+  normalizeModelNetSerialTopology,
 } from '@/features/ModelNetParallel';
 import { useEnabledChatModels } from '@/hooks/useEnabledChatModels';
 import { useAgentStore } from '@/store/agent';
@@ -27,18 +20,15 @@ import { agentByIdSelectors } from '@/store/agent/selectors';
 
 import { useAgentId } from '../../hooks/useAgentId';
 
-const SERIAL_LABEL = '\u4e32\u8054';
-const SELECT_SERIAL_MODELS_LABEL = '\u9009\u62e9\u4e32\u8054\u6a21\u578b';
-const PANEL_SUBTITLE_LABEL =
-  `\u9009\u62e9 ${MIN_MODELNET_SERIAL_MODELS}-${MAX_MODELNET_SERIAL_MODELS} ` +
-  '\u4e2a\u6a21\u578b\uff0c\u6309\u987a\u5e8f\u4f9d\u6b21 review/refine';
-const SEARCH_PLACEHOLDER_LABEL = '\u641c\u7d22\u6a21\u578b';
-const CHAIN_LABEL = '\u4e32\u8054\u94fe\u8def';
-const AVAILABLE_LABEL = '\u53ef\u6dfb\u52a0\u6a21\u578b';
-const MAX_REACHED_LABEL = '\u5df2\u8fbe\u5230\u4e0a\u9650';
-const EMPTY_LABEL = '\u6ca1\u6709\u53ef\u6dfb\u52a0\u7684\u6a21\u578b';
-const CANCEL_LABEL = '\u53d6\u6d88';
-const SAVE_LABEL = '\u4fdd\u5b58';
+const SERIAL_LABEL = '\u4E32\u8054';
+const SELECT_SERIAL_MODELS_LABEL = '\u9009\u62E9\u4E32\u8054\u6A21\u578B';
+const SEARCH_PLACEHOLDER_LABEL = '\u641C\u7D22\u6A21\u578B';
+const CHAIN_LABEL = '\u4E32\u8054\u94FE\u8DEF';
+const AVAILABLE_LABEL = '\u53EF\u6DFB\u52A0\u6A21\u578B';
+const MAX_REACHED_LABEL = '\u5DF2\u8FBE\u5230\u4E0A\u9650';
+const EMPTY_LABEL = '\u6CA1\u6709\u53EF\u6DFB\u52A0\u7684\u6A21\u578B';
+const CANCEL_LABEL = '\u53D6\u6D88';
+const SAVE_LABEL = '\u4FDD\u5B58';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   addButton: css`
@@ -304,47 +294,53 @@ const ModelNetSerial = memo(() => {
       const displayName = candidate.displayName || '';
 
       return (
-        candidate.id.toLowerCase().includes(keyword) ||
-        displayName.toLowerCase().includes(keyword)
+        candidate.id.toLowerCase().includes(keyword) || displayName.toLowerCase().includes(keyword)
       );
     });
   }, [candidates, draftIds, searchKeyword]);
 
+  const maxSelectableModels = candidates.length;
+  const panelSubtitleLabel =
+    `\u9009\u62E9 ${MIN_MODELNET_SERIAL_MODELS}-${maxSelectableModels} ` +
+    '\u4E2A\u6A21\u578B\uFF0C\u6309\u987A\u5E8F\u4F9D\u6B21 review/refine';
+
   const draftInvalid =
-    draftIds.length < MIN_MODELNET_SERIAL_MODELS ||
-    draftIds.length > MAX_MODELNET_SERIAL_MODELS;
+    draftIds.length < MIN_MODELNET_SERIAL_MODELS || draftIds.length > maxSelectableModels;
   const minRemaining = Math.max(MIN_MODELNET_SERIAL_MODELS - draftIds.length, 0);
-  const draftHint = draftInvalid
-    ? `\u8fd8\u9700\u8981 ${minRemaining} \u4e2a\u6a21\u578b`
-    : draftIds.length >= MAX_MODELNET_SERIAL_MODELS
-      ? MAX_REACHED_LABEL
-      : `\u8fd8\u53ef\u6dfb\u52a0 ${MAX_MODELNET_SERIAL_MODELS - draftIds.length} \u4e2a`;
+  const draftHint =
+    draftIds.length < MIN_MODELNET_SERIAL_MODELS
+      ? `\u8FD8\u9700\u8981 ${minRemaining} \u4E2A\u6A21\u578B`
+      : draftIds.length > maxSelectableModels
+        ? `\u6700\u591A\u9009\u62E9 ${maxSelectableModels} \u4E2A\u6A21\u578B`
+        : draftIds.length >= maxSelectableModels
+          ? MAX_REACHED_LABEL
+          : `\u8FD8\u53EF\u6DFB\u52A0 ${maxSelectableModels - draftIds.length} \u4E2A`;
   const chainPreview = draftIds.map((_, index) => `step-${index + 1}`).join(' \u2192 ');
 
-  const handleAdd = useCallback((id: string) => {
-    setDraftIds((current) => {
-      if (current.includes(id)) return current;
-      if (current.length >= MAX_MODELNET_SERIAL_MODELS) {
-        message.error(
-          `\u6700\u591a\u9009\u62e9 ${MAX_MODELNET_SERIAL_MODELS} \u4e2a\u4e32\u8054\u6a21\u578b`,
-        );
-        return current;
-      }
+  const handleAdd = useCallback(
+    (id: string) => {
+      setDraftIds((current) => {
+        if (current.includes(id)) return current;
+        if (current.length >= maxSelectableModels) {
+          message.error(
+            `\u6700\u591A\u9009\u62E9 ${maxSelectableModels} \u4E2A\u4E32\u8054\u6A21\u578B`,
+          );
+          return current;
+        }
 
-      return [...current, id];
-    });
-  }, []);
+        return [...current, id];
+      });
+    },
+    [maxSelectableModels],
+  );
 
   const handleSave = useCallback(async () => {
     const candidateIds = new Set(candidates.map((candidate) => candidate.id));
     const nextIds = [...new Set(draftIds)].filter((id) => candidateIds.has(id));
 
-    if (
-      nextIds.length < MIN_MODELNET_SERIAL_MODELS ||
-      nextIds.length > MAX_MODELNET_SERIAL_MODELS
-    ) {
+    if (nextIds.length < MIN_MODELNET_SERIAL_MODELS || nextIds.length > maxSelectableModels) {
       message.error(
-        `ModelNet \u4e32\u8054\u9700\u8981\u9009\u62e9 ${MIN_MODELNET_SERIAL_MODELS}-${MAX_MODELNET_SERIAL_MODELS} \u4e2a\u6a21\u578b`,
+        `ModelNet \u4E32\u8054\u9700\u8981\u9009\u62E9 ${MIN_MODELNET_SERIAL_MODELS}-${maxSelectableModels} \u4E2A\u6A21\u578B`,
       );
       return;
     }
@@ -356,17 +352,19 @@ const ModelNetSerial = memo(() => {
       },
     });
     setOpen(false);
-  }, [agentId, agentParams, candidates, draftIds, updateAgentConfigById]);
+  }, [agentId, agentParams, candidates, draftIds, maxSelectableModels, updateAgentConfigById]);
 
   if (!isModelNetSerialModel(provider, model)) return null;
   if (isLoading || candidates.length < MIN_MODELNET_SERIAL_MODELS || !selectedTopology) return null;
 
   const invalid =
-    selectedIds.length < MIN_MODELNET_SERIAL_MODELS ||
-    selectedIds.length > MAX_MODELNET_SERIAL_MODELS;
+    selectedIds.length < MIN_MODELNET_SERIAL_MODELS || selectedIds.length > maxSelectableModels;
 
   return (
     <Popover
+      nativeButton={false}
+      open={open}
+      placement="top"
       content={
         <Flexbox
           className={styles.panel}
@@ -380,10 +378,10 @@ const ModelNetSerial = memo(() => {
             </Flexbox>
             <Flexbox flex={1} gap={2}>
               <span className={styles.title}>{SELECT_SERIAL_MODELS_LABEL}</span>
-              <span className={styles.hint}>{PANEL_SUBTITLE_LABEL}</span>
+              <span className={styles.hint}>{panelSubtitleLabel}</span>
             </Flexbox>
             <span className={styles.status}>
-              {draftIds.length}/{MAX_MODELNET_SERIAL_MODELS}
+              {draftIds.length}/{maxSelectableModels}
             </span>
           </Flexbox>
 
@@ -397,7 +395,7 @@ const ModelNetSerial = memo(() => {
                 const showId = id !== displayName;
 
                 return (
-                  <div className={styles.option} key={`${id}-${index}`} title={id}>
+                  <div className={styles.option} key={id} title={id}>
                     <span className={styles.stepBadge}>step-{index + 1}</span>
                     <Flexbox flex={1} gap={2} style={{ minWidth: 0 }}>
                       <span className={styles.modelName}>{displayName}</span>
@@ -422,7 +420,11 @@ const ModelNetSerial = memo(() => {
                         icon={<Icon icon={Trash2Icon} size={14} />}
                         size="small"
                         type="text"
-                        onClick={() => setDraftIds((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                        onClick={() =>
+                          setDraftIds((current) =>
+                            current.filter((_, itemIndex) => itemIndex !== index),
+                          )
+                        }
                       />
                     </Flexbox>
                   </div>
@@ -445,7 +447,9 @@ const ModelNetSerial = memo(() => {
           <Flexbox gap={6}>
             <Flexbox horizontal align={'center'} justify={'space-between'}>
               <span className={styles.availableHeader}>{AVAILABLE_LABEL}</span>
-              <span className={cx(styles.hint, draftInvalid && styles.hintInvalid)}>{draftHint}</span>
+              <span className={cx(styles.hint, draftInvalid && styles.hintInvalid)}>
+                {draftHint}
+              </span>
             </Flexbox>
             <Flexbox className={styles.list} gap={6}>
               {filteredCandidates.length === 0 ? (
@@ -454,7 +458,7 @@ const ModelNetSerial = memo(() => {
                 filteredCandidates.map((candidate) => {
                   const displayName = candidate.displayName || candidate.id;
                   const showId = candidate.id !== displayName;
-                  const blocked = draftIds.length >= MAX_MODELNET_SERIAL_MODELS;
+                  const blocked = draftIds.length >= maxSelectableModels;
 
                   return (
                     <button
@@ -479,7 +483,7 @@ const ModelNetSerial = memo(() => {
 
           <Flexbox horizontal align={'center'} className={styles.footer} justify={'space-between'}>
             <span className={styles.count}>
-              {draftIds.length}/{MAX_MODELNET_SERIAL_MODELS}
+              {draftIds.length}/{maxSelectableModels}
             </span>
             <Flexbox horizontal gap={8}>
               <Button size="small" onClick={() => setOpen(false)}>
@@ -492,9 +496,6 @@ const ModelNetSerial = memo(() => {
           </Flexbox>
         </Flexbox>
       }
-      nativeButton={false}
-      open={open}
-      placement="top"
       onOpenChange={setOpen}
     >
       <button

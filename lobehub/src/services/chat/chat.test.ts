@@ -1839,11 +1839,13 @@ describe('ChatService', () => {
     });
 
     it('should request visible flow events for ModelNet parallel responses', async () => {
+      const modelIds = Array.from({ length: 17 }, (_, index) => `inference-model-${index + 1}`);
+
       await chatService.getChatCompletion(
         {
           messages: [],
           model: MODELNET_PARALLEL_MODEL_ID,
-          modelnetParallelModelIds: ['inference-qwen3', 'inference-deepseek'],
+          modelnetParallelModelIds: modelIds,
           provider: ModelProvider.OpenAI,
         } as any,
         {},
@@ -1860,7 +1862,7 @@ describe('ChatService', () => {
         },
         collaboration_plan: {
           aggregator: 'synthesize',
-          models: ['inference-qwen3', 'inference-deepseek'],
+          models: modelIds,
           runner: 'response.parallel',
           runner_config: {
             allow_degraded: false,
@@ -1871,13 +1873,17 @@ describe('ChatService', () => {
     });
 
     it('should request gateway serial runtime for ModelNet serial responses', async () => {
+      const nodes = Array.from({ length: 10 }, (_, index) => ({
+        id: `step-${index + 1}`,
+        modelId: `inference-model-${index + 1}`,
+      }));
       const topology = {
         version: 'modelnet.serial.v1',
-        nodes: [
-          { id: 'step-1', modelId: 'inference-qwen3' },
-          { id: 'step-2', modelId: 'inference-deepseek' },
-        ],
-        edges: [{ source: 'step-1', target: 'step-2' }],
+        nodes,
+        edges: nodes.slice(0, -1).map((node, index) => ({
+          source: node.id,
+          target: nodes[index + 1].id,
+        })),
       };
 
       await chatService.getChatCompletion(

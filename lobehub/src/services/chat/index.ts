@@ -23,13 +23,11 @@ import { ModelProvider } from 'model-bank';
 
 import { DEFAULT_AGENT_CONFIG } from '@/const/settings';
 import {
-  MODELNET_AUTO_MODEL_ID,
   isModelNetParallelModel,
   isModelNetSerialModel,
-  MAX_MODELNET_PARALLEL_MODELS,
-  MAX_MODELNET_SERIAL_MODELS,
   MIN_MODELNET_PARALLEL_MODELS,
   MIN_MODELNET_SERIAL_MODELS,
+  MODELNET_AUTO_MODEL_ID,
 } from '@/features/ModelNetParallel';
 import { getSearchConfig } from '@/helpers/getSearchConfig';
 import { getAgentStoreState } from '@/store/agent';
@@ -68,7 +66,6 @@ import {
 } from './mecha';
 import { type FetchOptions } from './types';
 
-const defaultProvider = ModelProvider.OpenAI;
 const providersWithDeploymentName = new Set<string>([
   ModelProvider.Azure,
   ModelProvider.AzureAI,
@@ -454,12 +451,9 @@ class ChatService {
     delete (payload as any).modelnetSerialTopology;
 
     if (isModelNetParallel) {
-      if (
-        modelnetParallelModelIds.length < MIN_MODELNET_PARALLEL_MODELS ||
-        modelnetParallelModelIds.length > MAX_MODELNET_PARALLEL_MODELS
-      ) {
+      if (modelnetParallelModelIds.length < MIN_MODELNET_PARALLEL_MODELS) {
         throw new Error(
-          `ModelNet \u5e76\u8054\u9700\u8981\u9009\u62e9 ${MIN_MODELNET_PARALLEL_MODELS}-${MAX_MODELNET_PARALLEL_MODELS} \u4e2a\u6a21\u578b`,
+          `ModelNet \u5E76\u8054\u81F3\u5C11\u9700\u8981\u9009\u62E9 ${MIN_MODELNET_PARALLEL_MODELS} \u4E2A\u6A21\u578B`,
         );
       }
 
@@ -501,9 +495,9 @@ class ChatService {
         | undefined;
       const nodeCount = Array.isArray(serialTopology?.nodes) ? serialTopology.nodes.length : 0;
 
-      if (nodeCount < MIN_MODELNET_SERIAL_MODELS || nodeCount > MAX_MODELNET_SERIAL_MODELS) {
+      if (nodeCount < MIN_MODELNET_SERIAL_MODELS) {
         throw new Error(
-          `ModelNet \u4e32\u8054\u9700\u8981\u9009\u62e9 ${MIN_MODELNET_SERIAL_MODELS}-${MAX_MODELNET_SERIAL_MODELS} \u4e2a\u6a21\u578b`,
+          `ModelNet \u4E32\u8054\u81F3\u5C11\u9700\u8981\u9009\u62E9 ${MIN_MODELNET_SERIAL_MODELS} \u4E2A\u6A21\u578B`,
         );
       }
 

@@ -9,7 +9,6 @@ import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   getModelNetParallelCandidates,
   isModelNetParallelModel,
-  MAX_MODELNET_PARALLEL_MODELS,
   MIN_MODELNET_PARALLEL_MODELS,
   normalizeModelNetParallelModelIds,
 } from '@/features/ModelNetParallel';
@@ -19,17 +18,14 @@ import { agentByIdSelectors } from '@/store/agent/selectors';
 
 import { useAgentId } from '../../hooks/useAgentId';
 
-const PARALLEL_LABEL = '\u5e76\u8054';
-const SELECT_PARALLEL_MODELS_LABEL = '\u9009\u62e9\u5e76\u8054\u6a21\u578b';
-const PANEL_SUBTITLE_LABEL =
-  `\u9009\u62e9 ${MIN_MODELNET_PARALLEL_MODELS}-${MAX_MODELNET_PARALLEL_MODELS} ` +
-  '\u4e2a\u6a21\u578b\u53c2\u4e0e\u540c\u4e00\u6b21\u54cd\u5e94';
-const SEARCH_PLACEHOLDER_LABEL = '\u641c\u7d22\u6a21\u578b';
-const SELECTED_LABEL = '\u5df2\u9009';
-const MAX_REACHED_LABEL = '\u5df2\u8fbe\u5230\u4e0a\u9650';
-const EMPTY_LABEL = '\u6ca1\u6709\u5339\u914d\u7684\u6a21\u578b';
-const CANCEL_LABEL = '\u53d6\u6d88';
-const SAVE_LABEL = '\u4fdd\u5b58';
+const PARALLEL_LABEL = '\u5E76\u8054';
+const SELECT_PARALLEL_MODELS_LABEL = '\u9009\u62E9\u5E76\u8054\u6A21\u578B';
+const SEARCH_PLACEHOLDER_LABEL = '\u641C\u7D22\u6A21\u578B';
+const SELECTED_LABEL = '\u5DF2\u9009';
+const MAX_REACHED_LABEL = '\u5DF2\u8FBE\u5230\u4E0A\u9650';
+const EMPTY_LABEL = '\u6CA1\u6709\u5339\u914D\u7684\u6A21\u578B';
+const CANCEL_LABEL = '\u53D6\u6D88';
+const SAVE_LABEL = '\u4FDD\u5B58';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   checkmark: css`
@@ -268,47 +264,52 @@ const ModelNetParallel = memo(() => {
       const displayName = candidate.displayName || '';
 
       return (
-        candidate.id.toLowerCase().includes(keyword) ||
-        displayName.toLowerCase().includes(keyword)
+        candidate.id.toLowerCase().includes(keyword) || displayName.toLowerCase().includes(keyword)
       );
     });
   }, [candidates, searchKeyword]);
+  const maxSelectableModels = candidates.length;
+  const panelSubtitleLabel =
+    `\u9009\u62E9 ${MIN_MODELNET_PARALLEL_MODELS}-${maxSelectableModels} ` +
+    '\u4E2A\u6A21\u578B\u53C2\u4E0E\u540C\u4E00\u6B21\u54CD\u5E94';
 
   const draftInvalid =
-    draftIds.length < MIN_MODELNET_PARALLEL_MODELS ||
-    draftIds.length > MAX_MODELNET_PARALLEL_MODELS;
+    draftIds.length < MIN_MODELNET_PARALLEL_MODELS || draftIds.length > maxSelectableModels;
   const minRemaining = Math.max(MIN_MODELNET_PARALLEL_MODELS - draftIds.length, 0);
 
-  const draftHint = draftInvalid
-    ? `\u8fd8\u9700\u8981 ${minRemaining} \u4e2a\u6a21\u578b`
-    : draftIds.length >= MAX_MODELNET_PARALLEL_MODELS
-      ? MAX_REACHED_LABEL
-      : `\u8fd8\u53ef\u9009\u62e9 ${MAX_MODELNET_PARALLEL_MODELS - draftIds.length} \u4e2a`;
+  const draftHint =
+    draftIds.length < MIN_MODELNET_PARALLEL_MODELS
+      ? `\u8FD8\u9700\u8981 ${minRemaining} \u4E2A\u6A21\u578B`
+      : draftIds.length > maxSelectableModels
+        ? `\u6700\u591A\u9009\u62E9 ${maxSelectableModels} \u4E2A\u6A21\u578B`
+        : draftIds.length >= maxSelectableModels
+          ? MAX_REACHED_LABEL
+          : `\u8FD8\u53EF\u9009\u62E9 ${maxSelectableModels - draftIds.length} \u4E2A`;
 
-  const handleToggle = useCallback((id: string) => {
-    setDraftIds((current) => {
-      if (current.includes(id)) return current.filter((item) => item !== id);
-      if (current.length >= MAX_MODELNET_PARALLEL_MODELS) {
-        message.error(
-          `\u6700\u591a\u9009\u62e9 ${MAX_MODELNET_PARALLEL_MODELS} \u4e2a\u5e76\u8054\u6a21\u578b`,
-        );
-        return current;
-      }
+  const handleToggle = useCallback(
+    (id: string) => {
+      setDraftIds((current) => {
+        if (current.includes(id)) return current.filter((item) => item !== id);
+        if (current.length >= maxSelectableModels) {
+          message.error(
+            `\u6700\u591A\u9009\u62E9 ${maxSelectableModels} \u4E2A\u5E76\u8054\u6A21\u578B`,
+          );
+          return current;
+        }
 
-      return [...current, id];
-    });
-  }, []);
+        return [...current, id];
+      });
+    },
+    [maxSelectableModels],
+  );
 
   const handleSave = useCallback(async () => {
     const candidateIds = new Set(candidates.map((candidate) => candidate.id));
     const nextIds = [...new Set(draftIds)].filter((id) => candidateIds.has(id));
 
-    if (
-      nextIds.length < MIN_MODELNET_PARALLEL_MODELS ||
-      nextIds.length > MAX_MODELNET_PARALLEL_MODELS
-    ) {
+    if (nextIds.length < MIN_MODELNET_PARALLEL_MODELS || nextIds.length > maxSelectableModels) {
       message.error(
-        `ModelNet \u5e76\u8054\u9700\u8981\u9009\u62e9 ${MIN_MODELNET_PARALLEL_MODELS}-${MAX_MODELNET_PARALLEL_MODELS} \u4e2a\u6a21\u578b`,
+        `ModelNet \u5E76\u8054\u9700\u8981\u9009\u62E9 ${MIN_MODELNET_PARALLEL_MODELS}-${maxSelectableModels} \u4E2A\u6A21\u578B`,
       );
       return;
     }
@@ -320,17 +321,19 @@ const ModelNetParallel = memo(() => {
       },
     });
     setOpen(false);
-  }, [agentId, agentParams, candidates, draftIds, updateAgentConfigById]);
+  }, [agentId, agentParams, candidates, draftIds, maxSelectableModels, updateAgentConfigById]);
 
   if (!isModelNetParallelModel(provider, model)) return null;
   if (isLoading || candidates.length < MIN_MODELNET_PARALLEL_MODELS) return null;
 
   const invalid =
-    selectedIds.length < MIN_MODELNET_PARALLEL_MODELS ||
-    selectedIds.length > MAX_MODELNET_PARALLEL_MODELS;
+    selectedIds.length < MIN_MODELNET_PARALLEL_MODELS || selectedIds.length > maxSelectableModels;
 
   return (
     <Popover
+      nativeButton={false}
+      open={open}
+      placement="top"
       content={
         <Flexbox
           className={styles.panel}
@@ -344,10 +347,10 @@ const ModelNetParallel = memo(() => {
             </Flexbox>
             <Flexbox flex={1} gap={2}>
               <span className={styles.title}>{SELECT_PARALLEL_MODELS_LABEL}</span>
-              <span className={styles.hint}>{PANEL_SUBTITLE_LABEL}</span>
+              <span className={styles.hint}>{panelSubtitleLabel}</span>
             </Flexbox>
             <span className={styles.status}>
-              {draftIds.length}/{MAX_MODELNET_PARALLEL_MODELS}
+              {draftIds.length}/{maxSelectableModels}
             </span>
           </Flexbox>
 
@@ -368,21 +371,21 @@ const ModelNetParallel = memo(() => {
             ) : (
               filteredCandidates.map((candidate) => {
                 const checked = draftIds.includes(candidate.id);
-                const blocked = !checked && draftIds.length >= MAX_MODELNET_PARALLEL_MODELS;
+                const blocked = !checked && draftIds.length >= maxSelectableModels;
                 const displayName = candidate.displayName || candidate.id;
                 const showId = candidate.id !== displayName;
 
                 return (
                   <button
                     aria-pressed={checked}
+                    key={candidate.id}
+                    title={candidate.id}
+                    type="button"
                     className={cx(
                       styles.option,
                       checked && styles.optionActive,
                       blocked && styles.optionBlocked,
                     )}
-                    key={candidate.id}
-                    title={candidate.id}
-                    type="button"
                     onClick={() => handleToggle(candidate.id)}
                   >
                     <span className={cx(styles.checkmark, checked && styles.checkmarkActive)}>
@@ -401,7 +404,7 @@ const ModelNetParallel = memo(() => {
           <Flexbox horizontal align={'center'} className={styles.footer} justify={'space-between'}>
             <Flexbox gap={2}>
               <span className={styles.count}>
-                {SELECTED_LABEL} {draftIds.length}/{MAX_MODELNET_PARALLEL_MODELS}
+                {SELECTED_LABEL} {draftIds.length}/{maxSelectableModels}
               </span>
               <span className={cx(styles.hint, draftInvalid && styles.hintInvalid)}>
                 {draftHint}
@@ -418,14 +421,11 @@ const ModelNetParallel = memo(() => {
           </Flexbox>
         </Flexbox>
       }
-      nativeButton={false}
-      open={open}
-      placement="top"
       onOpenChange={setOpen}
     >
       <button
         className={cx(styles.trigger, invalid && styles.invalid)}
-        title="ModelNet \u5e76\u8054\u6a21\u578b"
+        title="ModelNet \u5E76\u8054\u6A21\u578B"
         type="button"
       >
         <Icon icon={NetworkIcon} size={14} />

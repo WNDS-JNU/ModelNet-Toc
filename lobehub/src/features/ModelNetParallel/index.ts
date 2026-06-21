@@ -10,13 +10,11 @@ export const MODELNET_PROVIDER_IDS = [
 ] as const;
 export const MODELNET_AUTO_MODEL_ID = 'modelnet-auto';
 export const MODELNET_PARALLEL_MODEL_ID = 'modelnet-parallel';
-export const MODELNET_PARALLEL_DISPLAY_NAME = 'ModelNet \u5e76\u8054';
+export const MODELNET_PARALLEL_DISPLAY_NAME = 'ModelNet \u5E76\u8054';
 export const MIN_MODELNET_PARALLEL_MODELS = 2;
-export const MAX_MODELNET_PARALLEL_MODELS = 16;
 export const MODELNET_SERIAL_MODEL_ID = 'modelnet-serial';
-export const MODELNET_SERIAL_DISPLAY_NAME = 'ModelNet \u4e32\u8054';
+export const MODELNET_SERIAL_DISPLAY_NAME = 'ModelNet \u4E32\u8054';
 export const MIN_MODELNET_SERIAL_MODELS = 2;
-export const MAX_MODELNET_SERIAL_MODELS = 8;
 
 export interface ModelNetSerialTopology {
   edges: { source: string; target: string }[];
@@ -88,7 +86,9 @@ export const getModelNetParallelCandidates = (
     (providerId && enabledList.find((item) => item.id === providerId)) ||
     getModelNetParallelProvider(enabledList);
 
-  return provider?.children.filter((model) => isModelNetParallelCandidate(model, provider.id)) ?? [];
+  return (
+    provider?.children.filter((model) => isModelNetParallelCandidate(model, provider.id)) ?? []
+  );
 };
 
 export const getDefaultModelNetParallelModelIds = (candidates: AiModelForSelect[]) =>
@@ -101,19 +101,14 @@ export const normalizeModelNetParallelModelIds = (
   const candidateIds = new Set(candidates.map((model) => model.id));
   const uniqueIds = [...new Set(modelIds ?? [])].filter((id) => candidateIds.has(id));
 
-  if (
-    uniqueIds.length >= MIN_MODELNET_PARALLEL_MODELS &&
-    uniqueIds.length <= MAX_MODELNET_PARALLEL_MODELS
-  ) {
+  if (uniqueIds.length >= MIN_MODELNET_PARALLEL_MODELS) {
     return uniqueIds;
   }
 
   return getDefaultModelNetParallelModelIds(candidates);
 };
 
-export const modelIdsToModelNetSerialTopology = (
-  modelIds: string[],
-): ModelNetSerialTopology => {
+export const modelIdsToModelNetSerialTopology = (modelIds: string[]): ModelNetSerialTopology => {
   const nodes = modelIds.map((modelId, index) => ({
     id: `step-${index + 1}`,
     modelId,
@@ -147,7 +142,7 @@ export const normalizeModelNetSerialTopology = (
   const modelIds = topology?.nodes.map((node) => node.modelId) ?? [];
   const uniqueIds = [...new Set(modelIds)].filter((id) => candidateIds.has(id));
 
-  if (uniqueIds.length >= MIN_MODELNET_SERIAL_MODELS && uniqueIds.length <= MAX_MODELNET_SERIAL_MODELS) {
+  if (uniqueIds.length >= MIN_MODELNET_SERIAL_MODELS) {
     return modelIdsToModelNetSerialTopology(uniqueIds);
   }
 
