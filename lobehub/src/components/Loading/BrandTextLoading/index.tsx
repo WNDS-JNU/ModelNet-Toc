@@ -1,5 +1,5 @@
 import { BRANDING_LOGO_URL, BRANDING_NAME } from '@lobechat/business-const';
-import { BrandLoading, LobeHubText } from '@lobehub/ui/brand';
+import { BrandLoading, type BrandLoadingProps } from '@lobehub/ui/brand';
 
 import { isCustomBranding } from '@/const/version';
 
@@ -9,6 +9,22 @@ import styles from './index.module.css';
 interface BrandTextLoadingProps {
   debugId: string;
 }
+
+const ModelNetText: BrandLoadingProps['text'] = ({ className, size = 40, style }) => (
+  <span
+    className={className}
+    style={{
+      flex: 'none',
+      fontSize: typeof size === 'number' ? Math.round(size * 0.62) : size,
+      fontWeight: 700,
+      letterSpacing: 0,
+      lineHeight: 1,
+      ...style,
+    }}
+  >
+    ModelNet
+  </span>
+);
 
 const BrandTextLoading = ({ debugId }: BrandTextLoadingProps) => {
   if (isCustomBranding)
@@ -30,7 +46,7 @@ const BrandTextLoading = ({ debugId }: BrandTextLoadingProps) => {
   return (
     <div className={styles.container}>
       <div aria-label="Loading" className={styles.brand} role="status">
-        <BrandLoading size={40} text={LobeHubText} />
+        <BrandLoading size={40} text={ModelNetText} />
       </div>
       {showDebug && (
         <div className={styles.debug}>

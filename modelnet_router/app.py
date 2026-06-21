@@ -9049,8 +9049,12 @@ async def recover_serial_visible_answer(
     reasoning_text = str(metadata.get("reasoning_content") or "").strip()
     needs_visible_answer = not text.strip() and bool(reasoning_text)
     needs_meta_review_rewrite = bool(text.strip()) and serial_text_looks_like_meta_review(text)
-    needs_continuation = False
-    if not needs_visible_answer and not needs_meta_review_rewrite:
+    needs_continuation = (
+        bool(text.strip())
+        and not needs_meta_review_rewrite
+        and answer_needs_continuation(text, metadata)
+    )
+    if not needs_visible_answer and not needs_meta_review_rewrite and not needs_continuation:
         return text, metadata, None
 
     recovery_source = serial_recovery_source(
@@ -9086,8 +9090,14 @@ async def recover_serial_visible_answer(
         "source_id": node.id,
         "metadata": {
             "method": "visible_answer_recovery",
-            "reason": "empty_visible_answer" if needs_visible_answer else "meta_review_visible_answer",
+            "reason": "empty_visible_answer"
+            if needs_visible_answer
+            else "cut_off_visible_answer"
+            if needs_continuation
+            else "meta_review_visible_answer",
             "recovered": bool(recovery_text),
+            "continued_partial": needs_continuation,
+            "finish_reason": metadata.get("finish_reason"),
             "fallback_to_previous_answer": bool(not recovery_text and not text and previous_answer),
             "reasoning_chars": len(reasoning_text),
             "recovery_text_chars": len(recovery_text),

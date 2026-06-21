@@ -1,11 +1,43 @@
 # ModelNet ToC Agent Notes
 
-## Remote Server
+## Current 4A100 Host
 
-- SSH: `ssh 4A100`
+- Current device: this workspace is already on `4A100`.
+- SSH from other machines: `ssh 4A100`
 - Code dir: `/home/duxianghe/ModelNet-toc`
-- code_sync: remote working tree
+- code_sync: current 4A100 working tree
 - wandb: false
+
+## Project Preferences
+
+- All development for this project must happen on the current `4A100` device, inside the confirmed directory `/home/duxianghe/ModelNet-toc`.
+- Codex network access for this project should go through the local proxy on port `7890` (for example `127.0.0.1:7890` / `localhost:7890`).
+
+<!-- codex-memory:modelnet-dev-stack:start -->
+## Current Memory: Isolated TOC Dev Stack and Promotion Rule
+
+- As of 2026-06-18, the project has an isolated dev stack on `4A100` in `/home/duxianghe/ModelNet-toc`, defined by `docker-compose.dev.yml` and ignored `.env.dev`.
+- Development policy: make code/config changes and test them on the dev stack first. Promote to the production stack only after dev verification passes.
+- The dev stack includes TOC/Lobe, `modelnet-router`, LiteLLM, and private dev dependencies: Postgres, Redis, RustFS, and searxng.
+- Dev stack identity:
+  - Compose project/network: `lobehub-toc-dev` / `lobehub-toc-dev_lobe-dev-network`.
+  - Main containers: `lobehub-toc-dev-lobe`, `lobehub-toc-dev-lb`, `modelnet-router-dev`, `modelnet-litellm-dev`.
+  - Dev volumes are project-scoped under `lobehub-toc-dev_*`, separate from production volumes.
+- Dev host bindings are local-only on 4A100:
+  - TOC: `127.0.0.1:3181 -> 80`.
+  - LiteLLM: `127.0.0.1:3190 -> 8000`.
+  - Router: `127.0.0.1:3192 -> 8000`.
+  - RustFS dev: `127.0.0.1:9180 -> 9000`, `127.0.0.1:9181 -> 9001`.
+- Dev isolation rule: do not attach the dev router to production Dify's `docker_default` network with alias `modelnet-gateway`; that alias belongs to production routing.
+- Dev TOC should point at dev services: `APP_URL=http://127.0.0.1:3181`, `OPENAI_PROXY_URL=http://litellm:8000/v1`, `REDIS_PREFIX=lobehub-toc-dev`, and `S3_ENDPOINT=http://rustfs:9000`.
+- `modelnet-litellm-dev` currently reuses the existing `lobehub-toc-litellm-modelnet` image, but runs as a separate dev container with separate port, network, and mounted config.
+- This Codex/workspace session is already on 4A100. For commands, run them directly in `/home/duxianghe/ModelNet-toc`; from another machine, use an SSH tunnel such as `ssh -N -L 3181:127.0.0.1:3181 -L 3190:127.0.0.1:3190 -L 3192:127.0.0.1:3192 4A100`, then open `http://127.0.0.1:3181`.
+- Useful dev commands:
+  - Status: `cd /home/duxianghe/ModelNet-toc && docker compose --env-file .env --env-file .env.dev -f docker-compose.dev.yml ps`.
+  - Start after images exist: `cd /home/duxianghe/ModelNet-toc && docker compose --env-file .env --env-file .env.dev -f docker-compose.dev.yml up -d --no-build --pull never`.
+  - Stop while preserving dev data: `cd /home/duxianghe/ModelNet-toc && docker compose --env-file .env --env-file .env.dev -f docker-compose.dev.yml down`.
+- Verification on 2026-06-18: dev TOC `/signin` returned `200`, dev router `/healthz` returned `status: ok`, LiteLLM liveliness/readiness returned `200`, and production `3081/3090/3092` remained healthy.
+<!-- codex-memory:modelnet-dev-stack:end -->
 
 ## Model Deployment
 
@@ -46,7 +78,7 @@
   - `http://123.56.135.150/` and `http://toc.123.56.135.150.sslip.io/` proxy to `100.116.34.3:3081` (TOC).
   - `http://123.56.135.150:8080/` and `http://tob.123.56.135.150.sslip.io/` proxy to `100.116.34.3:80` (Dify / TOB).
   - Aliyun does **not** proxy ModelNet gateway ports `3090` or `3092`; public access to `123.56.135.150:3090` and `:3092` should fail.
-- 4A100 project root is `/home/duxianghe/ModelNet-toc`; all development for this project happens there.
+- Current 4A100 project root is `/home/duxianghe/ModelNet-toc`; all development for this project happens there.
 - TOC compose chain:
   - `lobehub-toc-lb` (`toc-lb`) publishes `0.0.0.0:3081 -> 80` and uses `haproxy.cfg`.
   - HAProxy frontend `toc_http` forwards to backend `lobe_apps`, server `lobe:3210`.
@@ -67,11 +99,11 @@
   - The observed public URL error `litellm.MidStreamFallbackError ... Received Model Group=modelnet` is **not** caused by needing to expose LiteLLM publicly.
   - The request reaches TOC and internal LiteLLM. Logs show LiteLLM forwarding `/v1/responses` to concrete backends such as llama.cpp endpoints, e.g. `.../v1/responses`, where some backends return `404 File Not Found`.
   - Likely root class: Responses API compatibility / model alias selection / backend capability mismatch, not Aliyun or Tailscale routing.
-  - First debug direction: reproduce from inside 4A100 against `modelnet-litellm` and `modelnet-router`, compare `modelnet` vs `modelnet-auto`, and either route Responses API only to compatible backends or force chat-completions-compatible flow for incompatible llama.cpp backends.
+  - First debug direction: reproduce locally on this 4A100 device against `modelnet-litellm` and `modelnet-router`, compare `modelnet` vs `modelnet-auto`, and either route Responses API only to compatible backends or force chat-completions-compatible flow for incompatible llama.cpp backends.
 - Useful verification commands:
   - `ssh aliyunM "nginx -t && systemctl is-active nginx && tailscale status"`
   - `ssh aliyunM "curl -sS -L -o /tmp/toc.html -w '%{http_code}\n' http://127.0.0.1/"`
   - `ssh aliyunM "curl -sS -L -o /tmp/dify.html -w '%{http_code}\n' http://127.0.0.1:8080/"`
-  - `ssh 4A100 "cd /home/duxianghe/ModelNet-toc && docker compose ps"`
-  - `ssh 4A100 "cd /home/duxianghe/ModelNet-toc && docker compose logs --tail=200 litellm modelnet-router"`
+  - `cd /home/duxianghe/ModelNet-toc && docker compose ps`
+  - `cd /home/duxianghe/ModelNet-toc && docker compose logs --tail=200 litellm modelnet-router`
 <!-- codex-memory:modelnet-public-chain:end -->

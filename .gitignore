@@ -7,6 +7,9 @@ data/
 *.log
 __pycache__/
 *.pyc
+.codex-run/
+modelnet_router/kubeconfig
+modelnet_router/model_net.yaml
 lobehub/.next/
 lobehub/.turbo/
 lobehub/node_modules/
