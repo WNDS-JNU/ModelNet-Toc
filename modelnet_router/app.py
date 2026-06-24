@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -329,6 +330,63 @@ def load_yaml(path: Path) -> Any:
         return yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError:
         return {"models": simple_registry_load(path)}
+
+
+def sha256_file(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def checksum_from_manifest(manifest_path: Path, relative_path: str) -> str | None:
+    try:
+        lines = manifest_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        digest, sep, path = line.partition("  ")
+        if sep and path.strip() == relative_path and digest:
+            return digest.strip()
+    return None
+
+
+def registry_observability() -> dict[str, Any]:
+    mtime = REGISTRY_PATH.stat().st_mtime if REGISTRY_PATH.exists() else None
+    bundle_dir = REGISTRY_PATH.parent
+    version_path = Path(
+        os.environ.get("MODELNET_REGISTRY_VERSION_FILE", str(bundle_dir / "version.json"))
+    )
+    checksums_path = Path(
+        os.environ.get("MODELNET_REGISTRY_CHECKSUMS_FILE", str(bundle_dir / "checksums.sha256"))
+    )
+
+    version_payload: dict[str, Any] = {}
+    try:
+        loaded_version = json.loads(version_path.read_text(encoding="utf-8"))
+        if isinstance(loaded_version, dict):
+            version_payload = loaded_version
+    except (OSError, json.JSONDecodeError):
+        version_payload = {}
+
+    registry_checksum_name = REGISTRY_PATH.name or "model_net.yaml"
+    registry_checksum = checksum_from_manifest(checksums_path, registry_checksum_name)
+    checksum_source = "checksums.sha256" if registry_checksum else "computed"
+    if not registry_checksum:
+        registry_checksum = sha256_file(REGISTRY_PATH)
+
+    return {
+        "registry_checksum": registry_checksum,
+        "registry_checksum_source": checksum_source if registry_checksum else None,
+        "registry_generated_at": version_payload.get("generated_at"),
+        "registry_mtime": mtime,
+        "registry_path": str(REGISTRY_PATH),
+        "registry_version": version_payload.get("version"),
+    }
 
 
 def registry_string_set(model: dict[str, Any], keys: tuple[str, ...]) -> set[str]:
@@ -4489,9 +4547,25 @@ def openai_parallel_flow_delta(event: str, data: dict[str, Any]) -> str:
         backend = backend_label(data.get("backend"))
         latency_ms = data.get("latency_ms")
         text_chars = data.get("text_chars")
+        diagnostics: list[str] = []
+        if safe_token_int(text_chars) == 0:
+            hidden_reasoning_chars = safe_token_int(data.get("hidden_reasoning_chars")) or 0
+            if data.get("hidden_reasoning_removed") or hidden_reasoning_chars:
+                hidden_detail = "已剥离 hidden reasoning"
+                if hidden_reasoning_chars:
+                    hidden_detail += f" {hidden_reasoning_chars} 字符"
+                diagnostics.append(hidden_detail)
+            else:
+                diagnostics.append("无可见输出")
+            finish_reason = str(data.get("finish_reason") or "").strip()
+            if finish_reason:
+                diagnostics.append(f"finish_reason={finish_reason}")
+            if data.get("usage_present") is False:
+                diagnostics.append("后端未返回 usage")
+        diagnostic_suffix = f"（{chr(65307).join(diagnostics)}）" if diagnostics else ""
         return (
             f"- {markdown_code(source_id)} 已完成：后端 {markdown_code(backend)}，"
-            f"耗时 {latency_ms} ms，返回 {text_chars} 字符。\n"
+            f"耗时 {latency_ms} ms，返回 {text_chars} 字符{diagnostic_suffix}。\n"
         )
     if stage == "source.failed":
         source_id = data.get("source_id")
@@ -5511,6 +5585,7 @@ async def healthz() -> dict[str, Any]:
                 by_backend[candidate.backend_type]["ready"] += 1
 
     return {
+        **registry_observability(),
         "backends": by_backend,
         "candidate_count": len(candidates),
         "k8s_error": snapshot.error,
@@ -6126,6 +6201,31 @@ def response_backend_id(response: dict[str, Any]) -> str:
 
 def response_has_visible_text(response: dict[str, Any]) -> bool:
     return bool(str(response.get("text") or "").strip())
+
+
+def source_completion_trace_payload(
+    result: dict[str, Any],
+    backend: dict[str, Any] | None,
+) -> dict[str, Any]:
+    text = str(result.get("text") or "")
+    metadata = dict(result.get("metadata") or {})
+    reasoning_text = str(metadata.get("reasoning_content") or "")
+    trace: dict[str, Any] = {
+        "stage": "source.completed",
+        "source_id": result["source_id"],
+        "backend": backend,
+        "latency_ms": result.get("latency_ms", 0),
+        "text_chars": len(text),
+    }
+    finish_reason = str(metadata.get("finish_reason") or "").strip()
+    if finish_reason:
+        trace["finish_reason"] = finish_reason
+    if metadata.get("source_hidden_reasoning_removed"):
+        trace["hidden_reasoning_removed"] = True
+    if reasoning_text:
+        trace["hidden_reasoning_chars"] = len(reasoning_text)
+    trace["usage_present"] = isinstance(metadata.get("usage"), dict)
+    return trace
 
 
 def configured_response_synthesizer_model_alias(request: EnsembleRequest) -> str | None:
@@ -8389,13 +8489,7 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
                     if emit_flow:
                         yield sse(
                             "trace_step",
-                            {
-                                "stage": "source.completed",
-                                "source_id": result["source_id"],
-                                "backend": backend,
-                                "latency_ms": result.get("latency_ms", 0),
-                                "text_chars": len(str(result.get("text") or "")),
-                            },
+                            source_completion_trace_payload(result, backend),
                         )
                     yield sse(
                         "full_response",
@@ -9632,10 +9726,8 @@ async def run_ensemble_stream(request: EnsembleRequest, tenant: GatewayTenant) -
 async def registry_status(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     tenant = assert_authorized(authorization)
     candidates = visible_candidates(tenant)
-    mtime = REGISTRY_PATH.stat().st_mtime if REGISTRY_PATH.exists() else None
     return {
-        "registry_path": str(REGISTRY_PATH),
-        "registry_mtime": mtime,
+        **registry_observability(),
         "tenant_id": tenant.tenant_id,
         "models": [candidate_backend_info(candidate) for candidate in candidates],
     }

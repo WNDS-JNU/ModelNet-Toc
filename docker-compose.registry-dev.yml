@@ -1,0 +1,34 @@
+services:
+  modelnet-router:
+    environment:
+      MODELNET_REGISTRY_PATH: /etc/modelnet/registry/current/capability-registry.yaml
+      MODELNET_REGISTRY_VERSION_FILE: /etc/modelnet/registry/current/version.json
+      MODELNET_REGISTRY_CHECKSUMS_FILE: /etc/modelnet/registry/current/checksums.sha256
+    volumes: !override
+      - type: bind
+        source: ${MODELNET_REGISTRY_DEV_ROOT:-/home/duxianghe/modelnet-runtime/registry-dev}
+        target: /etc/modelnet/registry
+        read_only: true
+      - type: bind
+        source: /home/duxianghe/.kube/config
+        target: /app/kubeconfig
+        read_only: true
+      - type: volume
+        source: modelnet_dev_claims
+        target: /data/modelnet_claims
+
+  litellm:
+    volumes: !override
+      - type: bind
+        source: ${MODELNET_REGISTRY_DEV_ROOT:-/home/duxianghe/modelnet-runtime/registry-dev}
+        target: /etc/modelnet/registry
+        read_only: true
+    command:
+      [
+        "--config",
+        "/etc/modelnet/registry/current/litellm/modelnet-config.yaml",
+        "--port",
+        "8000",
+        "--num_workers",
+        "4",
+      ]

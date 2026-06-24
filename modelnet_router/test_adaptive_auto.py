@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sys
 import tempfile
@@ -2736,6 +2737,28 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["text"], "visible")
         self.assertTrue(result["metadata"]["source_hidden_reasoning_removed"])
 
+    def test_openai_parallel_flow_delta_explains_empty_source_completion(self) -> None:
+        delta = router.openai_parallel_flow_delta(
+            "trace_step",
+            {
+                "stage": "source.completed",
+                "source_id": "source-1",
+                "backend": {"id": "qwen"},
+                "latency_ms": 123,
+                "text_chars": 0,
+                "hidden_reasoning_removed": True,
+                "hidden_reasoning_chars": 42,
+                "finish_reason": "length",
+                "usage_present": False,
+            },
+        )
+
+        self.assertIn("返回 0 字符", delta)
+        self.assertIn("已剥离 hidden reasoning 42 字符", delta)
+        self.assertIn("finish_reason=length", delta)
+        self.assertIn("后端未返回 usage", delta)
+
+
     async def test_response_aggregate_emits_parallel_flow_when_enabled(self) -> None:
         async def fake_generate(_tenant, source, **_kwargs):
             if source.source_id == "source-1":
@@ -2951,6 +2974,58 @@ class BackendAdapterTests(unittest.TestCase):
 
         self.assertIsNone(backend_adapters.context_limit_retry_max_tokens(detail, 1024))
         self.assertIsNone(backend_adapters.context_limit_retry_max_tokens("other bad request", 1024))
+
+
+class RegistryObservabilityTests(unittest.TestCase):
+    def test_registry_observability_reads_bundle_version_and_checksum_manifest(self) -> None:
+        original_registry_path = router.REGISTRY_PATH
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                bundle = Path(temp_dir)
+                registry = bundle / "model_net.yaml"
+                registry.write_text("models: []\n", encoding="utf-8")
+                digest = hashlib.sha256(registry.read_bytes()).hexdigest()
+                (bundle / "version.json").write_text(
+                    json.dumps(
+                        {
+                            "version": "2026-06-21T00-00-00Z",
+                            "generated_at": "2026-06-21T00:00:00Z",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (bundle / "checksums.sha256").write_text(
+                    f"{digest}  model_net.yaml\n",
+                    encoding="utf-8",
+                )
+
+                router.REGISTRY_PATH = registry
+                info = router.registry_observability()
+
+                self.assertEqual(info["registry_path"], str(registry))
+                self.assertEqual(info["registry_version"], "2026-06-21T00-00-00Z")
+                self.assertEqual(info["registry_generated_at"], "2026-06-21T00:00:00Z")
+                self.assertEqual(info["registry_checksum"], digest)
+                self.assertEqual(info["registry_checksum_source"], "checksums.sha256")
+        finally:
+            router.REGISTRY_PATH = original_registry_path
+
+    def test_registry_observability_computes_checksum_without_bundle_metadata(self) -> None:
+        original_registry_path = router.REGISTRY_PATH
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                registry = Path(temp_dir) / "model_net.yaml"
+                registry.write_text("models: []\n", encoding="utf-8")
+                digest = hashlib.sha256(registry.read_bytes()).hexdigest()
+
+                router.REGISTRY_PATH = registry
+                info = router.registry_observability()
+
+                self.assertIsNone(info["registry_version"])
+                self.assertEqual(info["registry_checksum"], digest)
+                self.assertEqual(info["registry_checksum_source"], "computed")
+        finally:
+            router.REGISTRY_PATH = original_registry_path
 
 
 if __name__ == "__main__":
