@@ -2019,6 +2019,8 @@ describe('ChatService', () => {
           runner: 'response.serial',
           runner_config: {
             allow_degraded: false,
+            serial_recovery_max_tokens: 4096,
+            serial_reserved_output_tokens: 2048,
             serial_topology: topology,
             show_serial_flow: true,
           },

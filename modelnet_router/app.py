@@ -9592,16 +9592,20 @@ async def run_gateway_serial_ensemble(request: EnsembleRequest, tenant: GatewayT
             text, removed_hidden_reasoning = strip_response_hidden_reasoning(text)
             if removed_hidden_reasoning:
                 metadata["source_hidden_reasoning_removed"] = True
-            text, metadata, recovery_event = await recover_serial_visible_answer(
-                candidate,
-                request,
-                source,
-                node=node,
-                original_prompt=original_prompt,
-                previous_answer=answer,
-                text=text,
-                metadata=metadata,
-            )
+            is_final_step = index == len(topology.nodes) - 1
+            if is_final_step:
+                recovery_event = None
+            else:
+                text, metadata, recovery_event = await recover_serial_visible_answer(
+                    candidate,
+                    request,
+                    source,
+                    node=node,
+                    original_prompt=original_prompt,
+                    previous_answer=answer,
+                    text=text,
+                    metadata=metadata,
+                )
             if recovery_event is not None and emit_flow:
                 yield sse(
                     "trace_step",

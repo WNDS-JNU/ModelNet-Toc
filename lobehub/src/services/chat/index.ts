@@ -584,6 +584,8 @@ class ChatService {
           runner: 'response.serial',
           runner_config: {
             allow_degraded: false,
+            serial_recovery_max_tokens: 4096,
+            serial_reserved_output_tokens: 2048,
             serial_topology: {
               version: 'modelnet.serial.v1',
               nodes: serialTopology?.nodes,

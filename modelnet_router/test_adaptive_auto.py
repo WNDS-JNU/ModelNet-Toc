@@ -1405,6 +1405,8 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                         "finish_reason": "length",
                     },
                 }
+            if source.source_id == "step-2__visible_recovery":
+                return {"text": "visible recovered intermediate answer", "metadata": {}}
             return {"text": "visible final answer", "metadata": {}}
 
         router.pick_source_candidate = fake_pick
@@ -1420,8 +1422,12 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                     "nodes": [
                         {"id": "step-1", "modelId": "model-a"},
                         {"id": "step-2", "modelId": "model-b"},
+                        {"id": "step-3", "modelId": "model-c"},
                     ],
-                    "edges": [{"source": "step-1", "target": "step-2"}],
+                    "edges": [
+                        {"source": "step-1", "target": "step-2"},
+                        {"source": "step-2", "target": "step-3"},
+                    ],
                 },
             },
             sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
@@ -1457,6 +1463,8 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                     "text": "**\n    *   Content: It introduces useful facts.\n    *   Issue: The text cuts off mid-sentence.",
                     "metadata": {},
                 }
+            if source.source_id == "step-2__visible_recovery":
+                return {"text": "intermediate user-facing answer", "metadata": {}}
             return {"text": "final user-facing answer", "metadata": {}}
 
         router.pick_source_candidate = fake_pick
@@ -1472,8 +1480,12 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                     "nodes": [
                         {"id": "step-1", "modelId": "model-a"},
                         {"id": "step-2", "modelId": "model-b"},
+                        {"id": "step-3", "modelId": "model-c"},
                     ],
-                    "edges": [{"source": "step-1", "target": "step-2"}],
+                    "edges": [
+                        {"source": "step-1", "target": "step-2"},
+                        {"source": "step-2", "target": "step-3"},
+                    ],
                 },
             },
             sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
@@ -1509,6 +1521,8 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                     "text": "**\n* Opening: Good, acknowledges both are great rulers, difficult to compare.",
                     "metadata": {"finish_reason": "length"},
                 }
+            if source.source_id == "step-3__visible_recovery":
+                return {"text": "中间恢复答案。", "metadata": {}}
             return {"text": "如果看创业难度，朱元璋更厉害；如果看治国成熟度和历史评价，李世民更胜一筹。", "metadata": {}}
 
         router.pick_source_candidate = fake_pick
@@ -1525,10 +1539,12 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                         {"id": "step-1", "modelId": "model-a"},
                         {"id": "step-2", "modelId": "model-b"},
                         {"id": "step-3", "modelId": "model-c"},
+                        {"id": "step-4", "modelId": "model-d"},
                     ],
                     "edges": [
                         {"source": "step-1", "target": "step-2"},
                         {"source": "step-2", "target": "step-3"},
+                        {"source": "step-3", "target": "step-4"},
                     ],
                 },
             },
@@ -1565,6 +1581,8 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                     "text": "用户的问题是“李世民和朱元璋谁厉害”。上一轮模型回答被截断了。我作为这一环节，需要基于上一轮的分析思路，补全并完善回答。关键点包括：",
                     "metadata": {},
                 }
+            if source.source_id == "step-2__visible_recovery":
+                return {"text": "intermediate answer for the user", "metadata": {}}
             return {"text": "final answer for the user", "metadata": {}}
 
         router.pick_source_candidate = fake_pick
@@ -1580,8 +1598,12 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                     "nodes": [
                         {"id": "step-1", "modelId": "model-a"},
                         {"id": "step-2", "modelId": "model-b"},
+                        {"id": "step-3", "modelId": "model-c"},
                     ],
-                    "edges": [{"source": "step-1", "target": "step-2"}],
+                    "edges": [
+                        {"source": "step-1", "target": "step-2"},
+                        {"source": "step-2", "target": "step-3"},
+                    ],
                 },
             },
             sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
@@ -1596,7 +1618,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(recovery["recovered"])
         self.assertEqual(recovery["reason"], "meta_review_visible_answer")
 
-    async def test_gateway_serial_continues_nonempty_cutoff_visible_answer(self) -> None:
+    async def test_gateway_serial_continues_nonempty_cutoff_visible_answer_before_final_step(self) -> None:
         seen: list[str] = []
 
         async def fake_pick(_tenant, source, required_capabilities=None):
@@ -1606,6 +1628,10 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             seen.append(source.source_id)
             if source.source_id.endswith("__visible_recovery"):
                 return {"text": "and then completes cleanly.", "metadata": {"finish_reason": "stop"}}
+            if source.source_id == "step-1":
+                return {"text": "first answer", "metadata": {}}
+            if source.source_id == "step-3":
+                return {"text": "final answer from recovered intermediate", "metadata": {}}
             return {
                 "text": "visible answer without terminal punctuation",
                 "metadata": {"finish_reason": "length"},
@@ -1624,6 +1650,58 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                     "nodes": [
                         {"id": "step-1", "modelId": "model-a"},
                         {"id": "step-2", "modelId": "model-b"},
+                        {"id": "step-3", "modelId": "model-c"},
+                    ],
+                    "edges": [
+                        {"source": "step-1", "target": "step-2"},
+                        {"source": "step-2", "target": "step-3"},
+                    ],
+                },
+            },
+            sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
+        )
+
+        events = await collect_events(router.run_gateway_serial_ensemble(req, self.tenant))
+        done = done_payload(events)
+
+        self.assertIn("step-2__visible_recovery", seen)
+        self.assertEqual(done["text"], "final answer from recovered intermediate")
+        recovery = done["metadata"]["serial_steps"][1]["metadata"]["serial_visible_answer_recovery"]
+        self.assertTrue(recovery["recovered"])
+        self.assertTrue(recovery["continued_partial"])
+        self.assertEqual(recovery["reason"], "cut_off_visible_answer")
+        self.assertEqual(recovery["finish_reason"], "length")
+
+    async def test_gateway_serial_does_not_recover_nonempty_cutoff_final_step(self) -> None:
+        seen: list[str] = []
+
+        async def fake_pick(_tenant, source, required_capabilities=None):
+            return candidate(str(source.model_alias), metadata={"max_model_len": 8192}), 10.0, "ready"
+
+        async def fake_generate(_candidate, source, **_kwargs):
+            seen.append(source.source_id)
+            if source.source_id.endswith("__visible_recovery"):
+                return {"text": "should not be used", "metadata": {"finish_reason": "stop"}}
+            if source.source_id == "step-1":
+                return {"text": "first answer", "metadata": {}}
+            return {
+                "text": "final answer written from the prior answer but cut off",
+                "metadata": {"finish_reason": "length"},
+            }
+
+        router.pick_source_candidate = fake_pick
+        router.generate_text = fake_generate
+        req = router.EnsembleRequest(
+            request_id="serial-final-cutoff-no-recovery",
+            runner="dynamic_collab_route",
+            aggregator="judge_refine",
+            runner_config={
+                "native_runner": "response.serial",
+                "serial_topology": {
+                    "version": "modelnet.serial.v1",
+                    "nodes": [
+                        {"id": "step-1", "modelId": "model-a"},
+                        {"id": "step-2", "modelId": "model-b"},
                     ],
                     "edges": [{"source": "step-1", "target": "step-2"}],
                 },
@@ -1634,16 +1712,12 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         events = await collect_events(router.run_gateway_serial_ensemble(req, self.tenant))
         done = done_payload(events)
 
-        self.assertIn("step-2__visible_recovery", seen)
-        self.assertEqual(
-            done["text"],
-            "visible answer without terminal punctuationand then completes cleanly.",
+        self.assertNotIn("step-2__visible_recovery", seen)
+        self.assertEqual(done["text"], "final answer written from the prior answer but cut off")
+        self.assertNotIn(
+            "serial_visible_answer_recovery",
+            done["metadata"]["serial_steps"][1]["metadata"],
         )
-        recovery = done["metadata"]["serial_steps"][1]["metadata"]["serial_visible_answer_recovery"]
-        self.assertTrue(recovery["recovered"])
-        self.assertTrue(recovery["continued_partial"])
-        self.assertEqual(recovery["reason"], "cut_off_visible_answer")
-        self.assertEqual(recovery["finish_reason"], "length")
 
     async def test_gateway_serial_summarizes_when_next_prompt_exceeds_context(self) -> None:
         seen: list[dict[str, Any]] = []
