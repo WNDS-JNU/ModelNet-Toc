@@ -69,13 +69,31 @@ describe('aiProvider action helpers', () => {
         ...createChatModel({ id: 'online-chat-model', providerId: 'lobehub' }),
         description: 'Inline description',
         pricing,
+        maxOutput: 4096,
       };
 
       const result = await normalizeChatModel(model);
 
       expect(result.description).toBe('Inline description');
       expect(result.pricing).toBe(pricing);
+      expect(result.maxOutput).toBe(4096);
       expect(fallbackSpy).not.toHaveBeenCalled();
+    });
+
+    it('fills max output tokens from fallback model config', async () => {
+      const fallbackSpy = vi
+        .mocked(runtimeModule.getModelPropertyWithFallback)
+        .mockImplementation(async (_id, key) => {
+          if (key === 'maxOutput') return 393_216;
+          return undefined;
+        });
+
+      const result = await normalizeChatModel(
+        createChatModel({ id: 'deepseek-v4-flash', providerId: 'deepseek' }),
+      );
+
+      expect(result).toMatchObject({ maxOutput: 393_216 });
+      expect(fallbackSpy).toHaveBeenCalledWith('deepseek-v4-flash', 'maxOutput', 'deepseek');
     });
   });
 

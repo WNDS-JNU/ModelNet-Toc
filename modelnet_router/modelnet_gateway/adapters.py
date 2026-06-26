@@ -23,6 +23,25 @@ OPENAI_SAMPLING_KEYS = {
 }
 
 
+def redact_modelnet_options(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+
+    redacted = dict(value)
+    if "runtime_candidates" in redacted:
+        runtime_candidates = redacted.pop("runtime_candidates")
+        redacted["runtime_candidates_redacted"] = (
+            len(runtime_candidates) if isinstance(runtime_candidates, list) else True
+        )
+    return redacted
+
+
+def redact_openai_metadata_value(key: str, value: Any) -> Any:
+    if key == "modelnet":
+        return redact_modelnet_options(value)
+    return value
+
+
 def openai_chat_to_ir(body: dict[str, Any]) -> ModelNetRunRequest:
     modelnet_options = body.get("modelnet") if isinstance(body.get("modelnet"), dict) else {}
     sampling_params = {
@@ -51,6 +70,8 @@ def openai_chat_to_ir(body: dict[str, Any]) -> ModelNetRunRequest:
             collaboration_plan.setdefault("runner", "route.once")
     if "candidate_aliases" in modelnet_options:
         collaboration_plan["candidate_aliases"] = modelnet_options["candidate_aliases"]
+    if "runtime_candidates" in modelnet_options:
+        collaboration_plan["runtime_candidates"] = modelnet_options["runtime_candidates"]
 
     return ModelNetRunRequest(
         request_id=str(body.get("request_id") or "") or None,
@@ -67,7 +88,7 @@ def openai_chat_to_ir(body: dict[str, Any]) -> ModelNetRunRequest:
             "northbound_protocol": "openai-compatible",
             "raw_model": body.get("model"),
             "raw_request_metadata": {
-                key: value
+                key: redact_openai_metadata_value(key, value)
                 for key, value in body.items()
                 if key not in {"messages", "tools"}
             },
@@ -90,6 +111,8 @@ def ir_to_ensemble_request(ir: ModelNetRunRequest) -> EnsembleRequest:
     runner_config.setdefault("native_runner", runner)
     if "graph" in plan:
         runner_config["graph"] = plan["graph"]
+    if "runtime_candidates" in plan:
+        runner_config["runtime_candidates"] = plan["runtime_candidates"]
     if ir.required_capabilities:
         runner_config.setdefault("required_capabilities", list(ir.required_capabilities))
     if ir.policy:

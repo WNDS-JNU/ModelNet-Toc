@@ -5,6 +5,7 @@ import { Rnd } from 'react-rnd';
 
 import { withModelNetParallelModel } from '@/features/ModelNetParallel';
 import { useEnabledChatModels } from '@/hooks/useEnabledChatModels';
+import { useAiInfraStore } from '@/store/aiInfra';
 import { useUserStore } from '@/store/user';
 import { userGeneralSettingsSelectors } from '@/store/user/slices/settings/selectors/general';
 import type { EnabledProviderWithModels } from '@/types/aiProvider';
@@ -37,9 +38,10 @@ export const PanelContent: FC<PanelContentProps> = ({
   provider: providerProp,
 }) => {
   const chatEnabledList = useEnabledChatModels();
+  const aiProviderRuntimeConfig = useAiInfraStore((s) => s.aiProviderRuntimeConfig);
   const enabledList = useMemo(
-    () => enabledListProp ?? withModelNetParallelModel(chatEnabledList),
-    [chatEnabledList, enabledListProp],
+    () => enabledListProp ?? withModelNetParallelModel(chatEnabledList, aiProviderRuntimeConfig),
+    [aiProviderRuntimeConfig, chatEnabledList, enabledListProp],
   );
   const [searchKeyword, setSearchKeyword] = useState('');
   const isDevMode = useUserStore((s) => userGeneralSettingsSelectors.config(s).isDevMode);
@@ -62,6 +64,7 @@ export const PanelContent: FC<PanelContentProps> = ({
         model={modelProp}
         pricingMode={pricingMode}
         provider={providerProp}
+        runtimeConfig={aiProviderRuntimeConfig}
         searchKeyword={searchKeyword}
         onModelChange={onModelChangeProp}
         onOpenChange={onOpenChange}

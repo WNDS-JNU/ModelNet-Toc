@@ -1,7 +1,7 @@
 import { LOADING_FLAT } from '@lobechat/const';
 import { type UIChatMessage } from '@lobechat/types';
 import { Flexbox } from '@lobehub/ui';
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useMemo } from 'react';
 
 import { useUserStore } from '@/store/user';
 import { userProfileSelectors } from '@/store/user/selectors';
@@ -14,8 +14,9 @@ import FileChunks from '../../components/FileChunks';
 import ImageFileListViewer from '../../components/ImageFileListViewer';
 import Reasoning from '../../components/Reasoning';
 import SearchGrounding from '../../components/SearchGrounding';
-import ModelNetParallelTrace from './ModelNetParallelTrace';
 import { useMarkdown } from '../useMarkdown';
+import { stripModelNetFlowContent } from './modelnetTraceContent';
+import ModelNetTraceThinking from './ModelNetTraceThinking';
 
 const MessageContent = memo<UIChatMessage>(
   ({ id, tools, content, chunksList, search, imageList, metadata, ...props }) => {
@@ -30,7 +31,9 @@ const MessageContent = memo<UIChatMessage>(
     const userId = useUserStore(userProfileSelectors.userId)!;
 
     const isLoading = generating || isCreating;
-    const isToolCallGenerating = isLoading && (content === LOADING_FLAT || !content) && !!tools;
+    const visibleContent = stripModelNetFlowContent(content);
+    const isToolCallGenerating =
+      isLoading && (visibleContent === LOADING_FLAT || !visibleContent) && !!tools;
 
     const showSearch = !!search && (!!search.citations?.length || !!search.imageResults?.length);
     const showImageItems = !!imageList && imageList.length > 0;
@@ -43,7 +46,7 @@ const MessageContent = memo<UIChatMessage>(
 
     const showFileChunks = !!chunksList && chunksList.length > 0;
 
-    const reactions = metadata?.reactions || [];
+    const reactions = useMemo(() => metadata?.reactions || [], [metadata?.reactions]);
 
     const handleReactionClick = useCallback(
       (emoji: string) => {
@@ -54,7 +57,7 @@ const MessageContent = memo<UIChatMessage>(
           addReaction(id, emoji);
         }
       },
-      [id, reactions, addReaction, removeReaction],
+      [id, reactions, addReaction, removeReaction, userId],
     );
 
     const isActive = useCallback(
@@ -62,10 +65,10 @@ const MessageContent = memo<UIChatMessage>(
         const reaction = reactions.find((r) => r.emoji === emoji);
         return !!reaction && reaction.users.includes(userId);
       },
-      [reactions],
+      [reactions, userId],
     );
 
-    if (isCollapsed) return <CollapsedMessage content={content} id={id} />;
+    if (isCollapsed) return <CollapsedMessage content={visibleContent} id={id} />;
 
     return (
       <Flexbox gap={8} id={id}>
@@ -80,8 +83,9 @@ const MessageContent = memo<UIChatMessage>(
         )}
         {showFileChunks && <FileChunks data={chunksList} />}
         {showReasoning && <Reasoning {...props.reasoning} id={id} />}
+        <ModelNetTraceThinking data={metadata?.modelnetParallel} />
         <DisplayContent
-          content={content}
+          content={visibleContent}
           generating={isLoading}
           hasImages={showImageItems}
           id={id}
@@ -90,7 +94,6 @@ const MessageContent = memo<UIChatMessage>(
           markdownProps={markdownProps}
           tempDisplayContent={metadata?.tempDisplayContent}
         />
-        <ModelNetParallelTrace data={metadata?.modelnetParallel} />
         {showImageItems && <ImageFileListViewer items={imageList} />}
         {reactions.length > 0 && (
           <ReactionDisplay

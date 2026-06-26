@@ -79,6 +79,7 @@ COPY apps/desktop/src/main/package.json ./apps/desktop/src/main/package.json
 RUN set -e && \
     if [ "${USE_CN_MIRROR:-false}" = "true" ]; then \
         export SENTRYCLI_CDNURL="https://npmmirror.com/mirrors/sentry-cli"; \
+        export FFMPEG_BINARIES_URL="https://npmmirror.com/mirrors/ffmpeg-static"; \
         npm config set registry "https://registry.npmmirror.com/"; \
         echo 'canvas_binary_host_mirror=https://npmmirror.com/mirrors/canvas' >> .npmrc; \
     fi && \

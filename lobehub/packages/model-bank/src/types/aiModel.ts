@@ -465,6 +465,7 @@ export interface AiProviderModelListItem {
   displayName?: string;
   enabled: boolean;
   id: string;
+  maxOutput?: number;
   parameters?: ModelParamsSchema;
   pricing?: Pricing;
   releasedAt?: string;
@@ -520,6 +521,7 @@ export interface AiModelForSelect {
   description?: string;
   displayName?: string;
   id: string;
+  maxOutput?: number;
   parameters?: ModelParamsSchema;
   /**
    * Exact per-image price (USD) calculated from pricing units
@@ -540,6 +542,7 @@ export interface EnabledAiModel {
   displayName?: string;
   enabled?: boolean;
   id: string;
+  maxOutput?: number;
   parameters?: ModelParamsSchema;
   providerId: string;
   releasedAt?: string;

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import ipaddress
 import json
 import logging
 import math
@@ -8,10 +10,11 @@ import os
 import re
 import time
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 import yaml
@@ -175,6 +178,12 @@ MODELNET_DIFY_SERIAL_MAX_NODES = int(
 )
 MODELNET_DIFY_SERIAL_MAX_TOKENS = int(os.environ.get("MODELNET_DIFY_SERIAL_MAX_TOKENS", "1024"))
 MODELNET_DIFY_SERIAL_TIMEOUT_SECONDS = float(os.environ.get("MODELNET_DIFY_SERIAL_TIMEOUT_SECONDS", "120"))
+MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS = int(
+    os.environ.get("MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS", "4096")
+)
+MODELNET_SERIAL_RECOVERY_MAX_TOKENS = int(
+    os.environ.get("MODELNET_SERIAL_RECOVERY_MAX_TOKENS", "4096")
+)
 DEFAULT_RESPONSE_AGGREGATE_INSTRUCTION = (
     "Merge the upstream responses into one coherent answer for the user. "
     "Preserve the most useful details, remove duplication, resolve conflicts "
@@ -192,6 +201,8 @@ RESPONSE_AGGREGATE_SYSTEM_PROMPT = (
 ENDPOINT_HEALTH_TTL_SECONDS = float(os.environ.get("MODELNET_ENDPOINT_HEALTH_TTL_SECONDS", "15"))
 ENDPOINT_READY_SCORE = float(os.environ.get("MODELNET_ENDPOINT_READY_SCORE", "100"))
 NO_DEVICE_METRICS_PENALTY = float(os.environ.get("MODELNET_NO_DEVICE_METRICS_PENALTY", "250"))
+RUNTIME_CANDIDATE_MAX = int(os.environ.get("MODELNET_RUNTIME_CANDIDATE_MAX", "16"))
+RUNTIME_CANDIDATE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/%+@-]{0,255}$")
 
 
 @dataclass(frozen=True)
@@ -207,6 +218,12 @@ class Candidate:
     eos: str = ""
     expose_raw_logits: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+RUNTIME_CANDIDATES_CONTEXT: ContextVar[tuple[Candidate, ...]] = ContextVar(
+    "modelnet_runtime_candidates",
+    default=(),
+)
 
 
 @dataclass
@@ -329,6 +346,63 @@ def load_yaml(path: Path) -> Any:
         return yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError:
         return {"models": simple_registry_load(path)}
+
+
+def sha256_file(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def checksum_from_manifest(manifest_path: Path, relative_path: str) -> str | None:
+    try:
+        lines = manifest_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        digest, sep, path = line.partition("  ")
+        if sep and path.strip() == relative_path and digest:
+            return digest.strip()
+    return None
+
+
+def registry_observability() -> dict[str, Any]:
+    mtime = REGISTRY_PATH.stat().st_mtime if REGISTRY_PATH.exists() else None
+    bundle_dir = REGISTRY_PATH.parent
+    version_path = Path(
+        os.environ.get("MODELNET_REGISTRY_VERSION_FILE", str(bundle_dir / "version.json"))
+    )
+    checksums_path = Path(
+        os.environ.get("MODELNET_REGISTRY_CHECKSUMS_FILE", str(bundle_dir / "checksums.sha256"))
+    )
+
+    version_payload: dict[str, Any] = {}
+    try:
+        loaded_version = json.loads(version_path.read_text(encoding="utf-8"))
+        if isinstance(loaded_version, dict):
+            version_payload = loaded_version
+    except (OSError, json.JSONDecodeError):
+        version_payload = {}
+
+    registry_checksum_name = REGISTRY_PATH.name or "model_net.yaml"
+    registry_checksum = checksum_from_manifest(checksums_path, registry_checksum_name)
+    checksum_source = "checksums.sha256" if registry_checksum else "computed"
+    if not registry_checksum:
+        registry_checksum = sha256_file(REGISTRY_PATH)
+
+    return {
+        "registry_checksum": registry_checksum,
+        "registry_checksum_source": checksum_source if registry_checksum else None,
+        "registry_generated_at": version_payload.get("generated_at"),
+        "registry_mtime": mtime,
+        "registry_path": str(REGISTRY_PATH),
+        "registry_version": version_payload.get("version"),
+    }
 
 
 def registry_string_set(model: dict[str, Any], keys: tuple[str, ...]) -> set[str]:
@@ -529,6 +603,173 @@ def load_candidates() -> list[Candidate]:
         backend_counts[candidate.backend_type] = backend_counts.get(candidate.backend_type, 0) + 1
     LOGGER.info("loaded %s candidates %s", len(candidates), backend_counts)
     return candidates
+
+
+def current_runtime_candidates() -> list[Candidate]:
+    return list(RUNTIME_CANDIDATES_CONTEXT.get())
+
+
+def candidate_pool(runtime_candidates: list[Candidate] | None = None) -> list[Candidate]:
+    candidates = list(load_candidates())
+    seen = {candidate.model_id for candidate in candidates}
+    for candidate in runtime_candidates if runtime_candidates is not None else current_runtime_candidates():
+        if candidate.model_id in seen:
+            continue
+        candidates.append(candidate)
+        seen.add(candidate.model_id)
+    return candidates
+
+
+def runtime_candidate_error(detail: str) -> None:
+    raise HTTPException(status_code=400, detail=f"Invalid ModelNet runtime candidate: {detail}")
+
+
+def runtime_candidate_string(
+    payload: dict[str, Any],
+    key: str,
+    *,
+    max_length: int = 256,
+    pattern: re.Pattern[str] | None = RUNTIME_CANDIDATE_ID_RE,
+) -> str:
+    value = str(payload.get(key) or "").strip()
+    if not value:
+        runtime_candidate_error(f"{key} is required")
+    if len(value) > max_length:
+        runtime_candidate_error(f"{key} is too long")
+    if pattern is not None and not pattern.match(value):
+        runtime_candidate_error(f"{key} contains unsupported characters")
+    return value
+
+
+def validate_runtime_candidate_api_base(value: Any) -> str:
+    api_base = str(value or "").strip().rstrip("/")
+    if not api_base:
+        runtime_candidate_error("api_base is required")
+    parsed = urlparse(api_base)
+    if parsed.scheme.lower() != "https":
+        runtime_candidate_error("api_base must use https")
+    if parsed.username or parsed.password:
+        runtime_candidate_error("api_base must not include credentials")
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not host:
+        runtime_candidate_error("api_base host is required")
+    if host in {"localhost", "ip6-localhost", "ip6-loopback"} or host.endswith(".localhost") or host.endswith(".local"):
+        runtime_candidate_error("api_base host must not be local")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return api_base
+    if (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+    ):
+        runtime_candidate_error("api_base host must be publicly routable")
+    return api_base
+
+
+def runtime_candidate_capabilities(value: Any) -> list[str]:
+    if value is None:
+        return ["chat", "streaming"]
+    if not isinstance(value, list):
+        runtime_candidate_error("capabilities must be a list")
+    capabilities: list[str] = []
+    for item in value[:16]:
+        capability = str(item or "").strip().lower()
+        if not capability:
+            continue
+        if len(capability) > 64 or not re.match(r"^[a-z0-9_.:-]+$", capability):
+            runtime_candidate_error("capabilities contain unsupported characters")
+        if capability not in capabilities:
+            capabilities.append(capability)
+    return capabilities or ["chat", "streaming"]
+
+
+def runtime_candidates_from_modelnet_options(modelnet_options: dict[str, Any] | None) -> list[Candidate]:
+    raw_candidates = modelnet_options.get("runtime_candidates") if isinstance(modelnet_options, dict) else None
+    if raw_candidates is None:
+        return []
+    if not isinstance(raw_candidates, list):
+        runtime_candidate_error("runtime_candidates must be a list")
+    if len(raw_candidates) > RUNTIME_CANDIDATE_MAX:
+        runtime_candidate_error("too many runtime_candidates")
+
+    candidates: list[Candidate] = []
+    seen: set[str] = set()
+    for raw in raw_candidates:
+        if not isinstance(raw, dict):
+            runtime_candidate_error("runtime candidate must be an object")
+        backend = str(raw.get("backend") or "").strip() or "openai_compatible"
+        if backend != "openai_compatible":
+            runtime_candidate_error("only openai_compatible runtime candidates are supported")
+        source = str(raw.get("source") or "user_provider").strip()
+        if source != "user_provider":
+            runtime_candidate_error("runtime candidate source must be user_provider")
+        candidate_id = runtime_candidate_string(raw, "id")
+        if candidate_id in seen:
+            continue
+        model_id = runtime_candidate_string(raw, "model_id")
+        provider_id = runtime_candidate_string(raw, "provider_id")
+        api_base_input = validate_runtime_candidate_api_base(raw.get("api_base"))
+        context_length_raw = raw.get("context_length")
+        context_length: int | None = None
+        if context_length_raw is not None:
+            try:
+                context_length = int(context_length_raw)
+            except (TypeError, ValueError):
+                runtime_candidate_error("context_length must be an integer")
+            if context_length <= 0:
+                runtime_candidate_error("context_length must be positive")
+        max_output_tokens_raw = None
+        for max_output_key in ("max_output_tokens", "max_output", "max_completion_tokens"):
+            if raw.get(max_output_key) is not None:
+                max_output_tokens_raw = raw.get(max_output_key)
+                break
+        max_output_tokens: int | None = None
+        if max_output_tokens_raw is not None:
+            try:
+                max_output_tokens = int(max_output_tokens_raw)
+            except (TypeError, ValueError):
+                runtime_candidate_error("max_output_tokens must be an integer")
+            if max_output_tokens <= 0:
+                runtime_candidate_error("max_output_tokens must be positive")
+        capabilities = runtime_candidate_capabilities(raw.get("capabilities"))
+        metadata: dict[str, Any] = {
+            "runtime_candidate": True,
+            "source": source,
+            "provider_id": provider_id,
+            "provider_name": str(raw.get("provider_name") or provider_id).strip() or provider_id,
+            "display_name": str(raw.get("display_name") or model_id).strip() or model_id,
+            "capabilities": capabilities,
+        }
+        if context_length is not None:
+            metadata["context_length"] = context_length
+        if max_output_tokens is not None:
+            metadata["max_output_tokens"] = max_output_tokens
+        candidates.append(
+            Candidate(
+                model_id=candidate_id,
+                backend_type="openai_compatible",
+                k8s_namespace="runtime",
+                backend_model=model_id,
+                root_url=normalize_root_url(api_base_input),
+                api_base=normalize_api_base(api_base_input),
+                service_names=(candidate_id,),
+                api_key=str(raw.get("api_key") or "").strip(),
+                metadata=metadata,
+            )
+        )
+        seen.add(candidate_id)
+    return candidates
+
+
+def runtime_candidates_from_runner_config(runner_config: dict[str, Any] | None) -> list[Candidate]:
+    if not isinstance(runner_config, dict) or "runtime_candidates" not in runner_config:
+        return []
+    return runtime_candidates_from_modelnet_options({"runtime_candidates": runner_config.get("runtime_candidates")})
 
 
 def parse_cpu_milli(value: str) -> float:
@@ -923,8 +1164,9 @@ async def pick_candidate(
     tenant: GatewayTenant | None = None,
     candidate_aliases: set[str] | None = None,
     required_capabilities: set[str] | None = None,
+    runtime_candidates: list[Candidate] | None = None,
 ) -> tuple[Candidate, float, str]:
-    candidates = load_candidates()
+    candidates = candidate_pool(runtime_candidates)
     if tenant is not None:
         candidates = [candidate for candidate in candidates if tenant.allows_model(candidate.model_id)]
     if candidate_aliases:
@@ -1628,8 +1870,9 @@ async def scored_candidate_pool(
     *,
     candidate_aliases: set[str] | None = None,
     required_capabilities: set[str] | None = None,
+    runtime_candidates: list[Candidate] | None = None,
 ) -> list[tuple[Candidate, float, str]]:
-    candidates = visible_candidates(tenant)
+    candidates = visible_candidates(tenant, runtime_candidates=runtime_candidates)
     if candidate_aliases:
         candidates = [candidate for candidate in candidates if candidate.model_id in candidate_aliases]
     if required_capabilities:
@@ -4489,9 +4732,25 @@ def openai_parallel_flow_delta(event: str, data: dict[str, Any]) -> str:
         backend = backend_label(data.get("backend"))
         latency_ms = data.get("latency_ms")
         text_chars = data.get("text_chars")
+        diagnostics: list[str] = []
+        if safe_token_int(text_chars) == 0:
+            hidden_reasoning_chars = safe_token_int(data.get("hidden_reasoning_chars")) or 0
+            if data.get("hidden_reasoning_removed") or hidden_reasoning_chars:
+                hidden_detail = "已剥离 hidden reasoning"
+                if hidden_reasoning_chars:
+                    hidden_detail += f" {hidden_reasoning_chars} 字符"
+                diagnostics.append(hidden_detail)
+            else:
+                diagnostics.append("无可见输出")
+            finish_reason = str(data.get("finish_reason") or "").strip()
+            if finish_reason:
+                diagnostics.append(f"finish_reason={finish_reason}")
+            if data.get("usage_present") is False:
+                diagnostics.append("后端未返回 usage")
+        diagnostic_suffix = f"（{chr(65307).join(diagnostics)}）" if diagnostics else ""
         return (
             f"- {markdown_code(source_id)} 已完成：后端 {markdown_code(backend)}，"
-            f"耗时 {latency_ms} ms，返回 {text_chars} 字符。\n"
+            f"耗时 {latency_ms} ms，返回 {text_chars} 字符{diagnostic_suffix}。\n"
         )
     if stage == "source.failed":
         source_id = data.get("source_id")
@@ -5295,6 +5554,7 @@ def candidate_backend_info(
 
 
 CONTEXT_LENGTH_METADATA_KEYS = ("context_length", "max_context_length", "max_model_len", "n_ctx", "max_tokens")
+OUTPUT_TOKEN_METADATA_KEYS = ("max_output_tokens", "max_output", "max_completion_tokens")
 
 
 def positive_context_length(value: Any) -> int | None:
@@ -5309,6 +5569,14 @@ def positive_context_length(value: Any) -> int | None:
 
 def candidate_context_length(candidate: Candidate) -> int | None:
     for key in CONTEXT_LENGTH_METADATA_KEYS:
+        parsed = positive_context_length(candidate.metadata.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def candidate_max_output_tokens(candidate: Candidate) -> int | None:
+    for key in OUTPUT_TOKEN_METADATA_KEYS:
         parsed = positive_context_length(candidate.metadata.get(key))
         if parsed is not None:
             return parsed
@@ -5419,8 +5687,12 @@ def backend_capability(candidate: Candidate, *, health: dict[str, Any] | None = 
     return capability.model_dump(exclude_none=True)
 
 
-def visible_candidates(tenant: GatewayTenant) -> list[Candidate]:
-    return [candidate for candidate in load_candidates() if tenant.allows_model(candidate.model_id)]
+def visible_candidates(
+    tenant: GatewayTenant,
+    *,
+    runtime_candidates: list[Candidate] | None = None,
+) -> list[Candidate]:
+    return [candidate for candidate in candidate_pool(runtime_candidates) if tenant.allows_model(candidate.model_id)]
 
 
 def capability_diagnostics(
@@ -5511,6 +5783,7 @@ async def healthz() -> dict[str, Any]:
                 by_backend[candidate.backend_type]["ready"] += 1
 
     return {
+        **registry_observability(),
         "backends": by_backend,
         "candidate_count": len(candidates),
         "k8s_error": snapshot.error,
@@ -5912,13 +6185,24 @@ async def resolve_generation_max_tokens(
     prefer_model_max: bool = False,
 ) -> int:
     explicit = explicit_generation_max_tokens(source)
+    output_cap = candidate_max_output_tokens(candidate)
     if explicit is None and not prefer_model_max:
-        return generation_max_tokens(source, default)
+        value = generation_max_tokens(source, default)
+        return min(value, output_cap) if output_cap is not None else value
 
     context_length = await discover_candidate_context_length(candidate)
     budget = usable_completion_token_budget(context_length, prompt_tokens)
     if explicit is not None:
-        return min(explicit, budget) if budget is not None else explicit
+        limits = [explicit]
+        if budget is not None:
+            limits.append(budget)
+        if output_cap is not None:
+            limits.append(output_cap)
+        return min(limits)
+    if budget is not None and output_cap is not None:
+        return min(budget, output_cap)
+    if output_cap is not None:
+        return output_cap
     if budget is not None:
         return budget
     return RESPONSE_PARALLEL_FALLBACK_MAX_TOKENS
@@ -6126,6 +6410,31 @@ def response_backend_id(response: dict[str, Any]) -> str:
 
 def response_has_visible_text(response: dict[str, Any]) -> bool:
     return bool(str(response.get("text") or "").strip())
+
+
+def source_completion_trace_payload(
+    result: dict[str, Any],
+    backend: dict[str, Any] | None,
+) -> dict[str, Any]:
+    text = str(result.get("text") or "")
+    metadata = dict(result.get("metadata") or {})
+    reasoning_text = str(metadata.get("reasoning_content") or "")
+    trace: dict[str, Any] = {
+        "stage": "source.completed",
+        "source_id": result["source_id"],
+        "backend": backend,
+        "latency_ms": result.get("latency_ms", 0),
+        "text_chars": len(text),
+    }
+    finish_reason = str(metadata.get("finish_reason") or "").strip()
+    if finish_reason:
+        trace["finish_reason"] = finish_reason
+    if metadata.get("source_hidden_reasoning_removed"):
+        trace["hidden_reasoning_removed"] = True
+    if reasoning_text:
+        trace["hidden_reasoning_chars"] = len(reasoning_text)
+    trace["usage_present"] = isinstance(metadata.get("usage"), dict)
+    return trace
 
 
 def configured_response_synthesizer_model_alias(request: EnsembleRequest) -> str | None:
@@ -8389,13 +8698,7 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
                     if emit_flow:
                         yield sse(
                             "trace_step",
-                            {
-                                "stage": "source.completed",
-                                "source_id": result["source_id"],
-                                "backend": backend,
-                                "latency_ms": result.get("latency_ms", 0),
-                                "text_chars": len(str(result.get("text") or "")),
-                            },
+                            source_completion_trace_payload(result, backend),
                         )
                     yield sse(
                         "full_response",
@@ -8712,9 +9015,12 @@ async def provision_dify_serial_workflow(topology: SerialTopology, yaml_content:
 def serial_reserved_output_tokens(request: EnsembleRequest, source: EnsembleSource) -> int:
     raw = request.runner_config.get("serial_reserved_output_tokens")
     if raw is not None:
-        return positive_int(raw, ENSEMBLE_DEFAULT_MAX_TOKENS)
+        requested_tokens = positive_int(raw, MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS)
+        if requested_tokens == 2048 and requested_tokens < MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS:
+            return MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS
+        return requested_tokens
     explicit = explicit_generation_max_tokens(source)
-    return explicit if explicit is not None else ENSEMBLE_DEFAULT_MAX_TOKENS
+    return explicit if explicit is not None else MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS
 
 
 SERIAL_STEP_SYSTEM_PROMPT = (
@@ -8784,6 +9090,10 @@ def serial_step_source(
         ]
     extra = dict(base_source.extra)
     extra.update(internal_thinking_extra(request))
+    if not coerce_bool(request.runner_config.get("enable_serial_thinking"), default=False):
+        chat_template_kwargs = dict(extra.get("chat_template_kwargs") or {})
+        chat_template_kwargs["enable_thinking"] = False
+        extra["chat_template_kwargs"] = chat_template_kwargs
     return EnsembleSource(
         source_id=node.id,
         model_alias=node.model_id,
@@ -9012,7 +9322,7 @@ def serial_recovery_source(
         continue_partial=continue_partial,
     )
     sampling_params = dict(source.sampling_params)
-    default_recovery_tokens = max(1024, generation_max_tokens(source))
+    default_recovery_tokens = max(MODELNET_SERIAL_RECOVERY_MAX_TOKENS, generation_max_tokens(source))
     sampling_params["max_tokens"] = positive_int(
         request.runner_config.get("serial_recovery_max_tokens"),
         default_recovery_tokens,
@@ -9295,16 +9605,20 @@ async def run_gateway_serial_ensemble(request: EnsembleRequest, tenant: GatewayT
             text, removed_hidden_reasoning = strip_response_hidden_reasoning(text)
             if removed_hidden_reasoning:
                 metadata["source_hidden_reasoning_removed"] = True
-            text, metadata, recovery_event = await recover_serial_visible_answer(
-                candidate,
-                request,
-                source,
-                node=node,
-                original_prompt=original_prompt,
-                previous_answer=answer,
-                text=text,
-                metadata=metadata,
-            )
+            is_final_step = index == len(topology.nodes) - 1
+            if is_final_step:
+                recovery_event = None
+            else:
+                text, metadata, recovery_event = await recover_serial_visible_answer(
+                    candidate,
+                    request,
+                    source,
+                    node=node,
+                    original_prompt=original_prompt,
+                    previous_answer=answer,
+                    text=text,
+                    metadata=metadata,
+                )
             if recovery_event is not None and emit_flow:
                 yield sse(
                     "trace_step",
@@ -9576,6 +9890,16 @@ def execution_contract_error(request: EnsembleRequest, tenant: GatewayTenant) ->
 
 
 async def run_ensemble_stream(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
+    runtime_candidates = runtime_candidates_from_runner_config(request.runner_config)
+    token = RUNTIME_CANDIDATES_CONTEXT.set(tuple(runtime_candidates))
+    try:
+        async for event in run_ensemble_stream_inner(request, tenant):
+            yield event
+    finally:
+        RUNTIME_CANDIDATES_CONTEXT.reset(token)
+
+
+async def run_ensemble_stream_inner(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
     contract_error = execution_contract_error(request, tenant)
     if contract_error is not None:
         yield sse("error", contract_error)
@@ -9632,10 +9956,8 @@ async def run_ensemble_stream(request: EnsembleRequest, tenant: GatewayTenant) -
 async def registry_status(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     tenant = assert_authorized(authorization)
     candidates = visible_candidates(tenant)
-    mtime = REGISTRY_PATH.stat().st_mtime if REGISTRY_PATH.exists() else None
     return {
-        "registry_path": str(REGISTRY_PATH),
-        "registry_mtime": mtime,
+        **registry_observability(),
         "tenant_id": tenant.tenant_id,
         "models": [candidate_backend_info(candidate) for candidate in candidates],
     }

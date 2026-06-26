@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_AGENT_CONFIG } from '@/const/settings';
 import {
+  createModelNetUserProviderAlias,
   MODELNET_AUTO_MODEL_ID,
   MODELNET_PARALLEL_MODEL_ID,
   MODELNET_SERIAL_MODEL_ID,
@@ -1839,11 +1840,13 @@ describe('ChatService', () => {
     });
 
     it('should request visible flow events for ModelNet parallel responses', async () => {
+      const modelIds = Array.from({ length: 17 }, (_, index) => `inference-model-${index + 1}`);
+
       await chatService.getChatCompletion(
         {
           messages: [],
           model: MODELNET_PARALLEL_MODEL_ID,
-          modelnetParallelModelIds: ['inference-qwen3', 'inference-deepseek'],
+          modelnetParallelModelIds: modelIds,
           provider: ModelProvider.OpenAI,
         } as any,
         {},
@@ -1860,7 +1863,7 @@ describe('ChatService', () => {
         },
         collaboration_plan: {
           aggregator: 'synthesize',
-          models: ['inference-qwen3', 'inference-deepseek'],
+          models: modelIds,
           runner: 'response.parallel',
           runner_config: {
             allow_degraded: false,
@@ -1870,14 +1873,126 @@ describe('ChatService', () => {
       });
     });
 
+    it('should attach selected custom provider runtime candidates for ModelNet parallel responses', async () => {
+      const customAlias = createModelNetUserProviderAlias('user-openai', 'user/model-a');
+      useAiInfraStore.setState({
+        aiProviderRuntimeConfig: {
+          'user-openai': {
+            config: {},
+            keyVaults: { apiKey: 'user-secret', baseURL: 'https://user.example.com/v1' },
+            settings: { sdkType: 'openai' },
+          },
+        },
+        enabledChatModelList: [
+          {
+            children: [
+              {
+                abilities: {},
+                contextWindowTokens: 32_768,
+                displayName: 'User Model A',
+                id: 'user/model-a',
+              },
+            ],
+            id: 'user-openai',
+            name: 'User OpenAI',
+            source: 'custom',
+          },
+        ],
+      } as any);
+
+      await chatService.getChatCompletion(
+        {
+          messages: [],
+          model: MODELNET_PARALLEL_MODEL_ID,
+          modelnetParallelModelIds: ['inference-qwen3', customAlias],
+          provider: ModelProvider.OpenAI,
+        } as any,
+        {},
+      );
+
+      const payload = JSON.parse(mockFetchSSE.mock.calls[0][1].body);
+
+      expect(payload.modelnet.collaboration_plan.models).toEqual(['inference-qwen3', customAlias]);
+      expect(payload.modelnet.runtime_candidates).toEqual([
+        expect.objectContaining({
+          api_base: 'https://user.example.com/v1',
+          api_key: 'user-secret',
+          backend: 'openai_compatible',
+          context_length: 32_768,
+          display_name: 'User Model A',
+          id: customAlias,
+          model_id: 'user/model-a',
+          provider_id: 'user-openai',
+          provider_name: 'User OpenAI',
+          source: 'user_provider',
+        }),
+      ]);
+    });
+
+    it('should attach keyed built-in DeepSeek runtime candidates for ModelNet auto responses', async () => {
+      const deepseekAlias = createModelNetUserProviderAlias('deepseek', 'deepseek-v4-flash');
+      useAiInfraStore.setState({
+        aiProviderRuntimeConfig: {
+          deepseek: {
+            config: {},
+            keyVaults: { apiKey: 'deepseek-secret' },
+            settings: { sdkType: 'openai' },
+          },
+        },
+        enabledChatModelList: [
+          {
+            children: [
+              {
+                abilities: {},
+                contextWindowTokens: 1_048_576,
+                displayName: 'DeepSeek V4 Flash',
+                maxOutput: 393_216,
+                id: 'deepseek-v4-flash',
+              },
+            ],
+            id: 'deepseek',
+            name: 'DeepSeek',
+            source: 'builtin',
+          },
+        ],
+      } as any);
+
+      await chatService.getChatCompletion(
+        {
+          messages: [],
+          model: MODELNET_AUTO_MODEL_ID,
+          modelnetAutoCandidateIds: ['inference-qwen3', deepseekAlias],
+          provider: ModelProvider.OpenAI,
+        } as any,
+        {},
+      );
+
+      const payload = JSON.parse(mockFetchSSE.mock.calls[0][1].body);
+      expect(payload.modelnet.candidate_aliases).toEqual(['inference-qwen3', deepseekAlias]);
+      expect(payload.modelnet.runtime_candidates).toEqual([
+        expect.objectContaining({
+          api_base: 'https://api.deepseek.com/v1',
+          api_key: 'deepseek-secret',
+          id: deepseekAlias,
+          max_output_tokens: 393_216,
+          model_id: 'deepseek-v4-flash',
+          provider_id: 'deepseek',
+        }),
+      ]);
+    });
+
     it('should request gateway serial runtime for ModelNet serial responses', async () => {
+      const nodes = Array.from({ length: 10 }, (_, index) => ({
+        id: `step-${index + 1}`,
+        modelId: `inference-model-${index + 1}`,
+      }));
       const topology = {
         version: 'modelnet.serial.v1',
-        nodes: [
-          { id: 'step-1', modelId: 'inference-qwen3' },
-          { id: 'step-2', modelId: 'inference-deepseek' },
-        ],
-        edges: [{ source: 'step-1', target: 'step-2' }],
+        nodes,
+        edges: nodes.slice(0, -1).map((node, index) => ({
+          source: node.id,
+          target: nodes[index + 1].id,
+        })),
       };
 
       await chatService.getChatCompletion(
@@ -1904,11 +2019,75 @@ describe('ChatService', () => {
           runner: 'response.serial',
           runner_config: {
             allow_degraded: false,
+            serial_recovery_max_tokens: 4096,
+            serial_reserved_output_tokens: 4096,
             serial_topology: topology,
             show_serial_flow: true,
           },
         },
       });
+    });
+
+    it('should attach selected custom provider runtime candidates for ModelNet serial and auto responses', async () => {
+      const customAlias = createModelNetUserProviderAlias('user-openai', 'user/model-a');
+      const topology = {
+        version: 'modelnet.serial.v1',
+        nodes: [
+          { id: 'step-1', modelId: 'inference-qwen3' },
+          { id: 'step-2', modelId: customAlias },
+        ],
+        edges: [{ source: 'step-1', target: 'step-2' }],
+      };
+      useAiInfraStore.setState({
+        aiProviderRuntimeConfig: {
+          'user-openai': {
+            config: {},
+            keyVaults: { apiKey: 'user-secret', baseURL: 'https://user.example.com/v1' },
+            settings: { sdkType: 'openai' },
+          },
+        },
+        enabledChatModelList: [
+          {
+            children: [{ abilities: {}, displayName: 'User Model A', id: 'user/model-a' }],
+            id: 'user-openai',
+            name: 'User OpenAI',
+            source: 'custom',
+          },
+        ],
+      } as any);
+
+      await chatService.getChatCompletion(
+        {
+          messages: [],
+          model: MODELNET_SERIAL_MODEL_ID,
+          modelnetSerialTopology: topology,
+          provider: ModelProvider.OpenAI,
+        } as any,
+        {},
+      );
+
+      let payload = JSON.parse(mockFetchSSE.mock.calls[0][1].body);
+      expect(payload.modelnet.collaboration_plan.runner_config.serial_topology).toEqual(topology);
+      expect(payload.modelnet.runtime_candidates).toEqual([
+        expect.objectContaining({ id: customAlias, model_id: 'user/model-a' }),
+      ]);
+
+      mockFetchSSE.mockClear();
+      await chatService.getChatCompletion(
+        {
+          messages: [],
+          model: MODELNET_AUTO_MODEL_ID,
+          modelnetAutoCandidateIds: ['inference-qwen3', customAlias],
+          provider: ModelProvider.OpenAI,
+        } as any,
+        {},
+      );
+
+      payload = JSON.parse(mockFetchSSE.mock.calls[0][1].body);
+      expect(payload.modelnet.candidate_aliases).toEqual(['inference-qwen3', customAlias]);
+      expect(payload.modelnet.runtime_candidates).toEqual([
+        expect.objectContaining({ id: customAlias, model_id: 'user/model-a' }),
+      ]);
     });
 
     it('should return InvalidAccessCode error when enableFetchOnClient is true and auth is enabled but user is not signed in', async () => {

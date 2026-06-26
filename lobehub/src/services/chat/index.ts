@@ -23,13 +23,13 @@ import { ModelProvider } from 'model-bank';
 
 import { DEFAULT_AGENT_CONFIG } from '@/const/settings';
 import {
-  MODELNET_AUTO_MODEL_ID,
+  getModelNetRuntimeProviderInfo,
   isModelNetParallelModel,
   isModelNetSerialModel,
-  MAX_MODELNET_PARALLEL_MODELS,
-  MAX_MODELNET_SERIAL_MODELS,
   MIN_MODELNET_PARALLEL_MODELS,
   MIN_MODELNET_SERIAL_MODELS,
+  MODELNET_AUTO_MODEL_ID,
+  parseModelNetUserProviderAlias,
 } from '@/features/ModelNetParallel';
 import { getSearchConfig } from '@/helpers/getSearchConfig';
 import { getAgentStoreState } from '@/store/agent';
@@ -68,7 +68,6 @@ import {
 } from './mecha';
 import { type FetchOptions } from './types';
 
-const defaultProvider = ModelProvider.OpenAI;
 const providersWithDeploymentName = new Set<string>([
   ModelProvider.Azure,
   ModelProvider.AzureAI,
@@ -92,6 +91,75 @@ interface GetChatCompletionPayload extends Partial<Omit<ChatStreamPayload, 'mess
 
 type ChatStreamInputParams = Partial<Omit<ChatStreamPayload, 'messages'>> & {
   messages?: (UIChatMessage | OpenAIChatMessage)[];
+};
+
+const uniqueStringList = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? [...new Set(value.filter((id): id is string => typeof id === 'string'))]
+    : [];
+
+const modelNetSerialModelIds = (topology: unknown): string[] => {
+  const nodes: unknown[] =
+    typeof topology === 'object' && topology !== null && Array.isArray((topology as any).nodes)
+      ? (topology as any).nodes
+      : [];
+  const modelIds = nodes
+    .map((node) =>
+      typeof node === 'object' && node !== null
+        ? (node as { modelId?: unknown }).modelId
+        : undefined,
+    )
+    .filter((modelId): modelId is string => typeof modelId === 'string');
+
+  return [...new Set(modelIds)];
+};
+
+const buildModelNetRuntimeCandidates = (modelIds: string[]) => {
+  const selectedIds = [...new Set(modelIds)];
+  if (selectedIds.length === 0) return [];
+
+  const { aiProviderRuntimeConfig = {}, enabledChatModelList = [] } = getAiInfraStoreState();
+
+  return selectedIds.flatMap((id) => {
+    const alias = parseModelNetUserProviderAlias(id);
+    if (!alias) return [];
+
+    const provider = enabledChatModelList.find((item) => item.id === alias.providerId);
+    const model = provider?.children.find((item) => item.id === alias.modelId);
+    const runtimeInfo = provider
+      ? getModelNetRuntimeProviderInfo(provider, aiProviderRuntimeConfig)
+      : undefined;
+
+    if (!provider || !model || !runtimeInfo) return [];
+
+    return [
+      {
+        backend: 'openai_compatible',
+        capabilities: ['chat', 'streaming'],
+        display_name: model.displayName || alias.modelId,
+        id,
+        model_id: alias.modelId,
+        provider_id: alias.providerId,
+        provider_name: provider.name || alias.providerId,
+        source: 'user_provider',
+        ...(typeof model.contextWindowTokens === 'number' && {
+          context_length: model.contextWindowTokens,
+        }),
+        ...(typeof model.maxOutput === 'number' && {
+          max_output_tokens: model.maxOutput,
+        }),
+        api_base: runtimeInfo.apiBase,
+        ...(runtimeInfo.apiKey && { api_key: runtimeInfo.apiKey }),
+      },
+    ];
+  });
+};
+
+const attachModelNetRuntimeCandidates = (modelnet: any, modelIds: string[]) => {
+  const runtimeCandidates = buildModelNetRuntimeCandidates(modelIds);
+  if (runtimeCandidates.length > 0) {
+    modelnet.runtime_candidates = runtimeCandidates;
+  }
 };
 
 interface FetchAITaskResultParams extends FetchSSEOptions {
@@ -369,16 +437,12 @@ class ChatService {
     const requestTrigger = metadata?.trigger;
 
     const { provider = ModelProvider.OpenAI, ...res } = params;
-    const modelnetParallelModelIds = Array.isArray((res as any).modelnetParallelModelIds)
-      ? [
-          ...new Set(
-            (res as any).modelnetParallelModelIds.filter((id: unknown) => typeof id === 'string'),
-          ),
-        ]
-      : [];
+    const modelnetParallelModelIds = uniqueStringList((res as any).modelnetParallelModelIds);
     delete (res as any).modelnetParallelModelIds;
     const modelnetSerialTopology = (res as any).modelnetSerialTopology;
     delete (res as any).modelnetSerialTopology;
+    const modelnetAutoCandidateIds = uniqueStringList((res as any).modelnetAutoCandidateIds);
+    delete (res as any).modelnetAutoCandidateIds;
     delete (res as any).modelnet;
 
     // =================== process model =================== //
@@ -452,14 +516,12 @@ class ChatService {
     if (payload.frequency_penalty === null) payload.frequency_penalty = undefined;
     delete (payload as any).modelnetParallelModelIds;
     delete (payload as any).modelnetSerialTopology;
+    delete (payload as any).modelnetAutoCandidateIds;
 
     if (isModelNetParallel) {
-      if (
-        modelnetParallelModelIds.length < MIN_MODELNET_PARALLEL_MODELS ||
-        modelnetParallelModelIds.length > MAX_MODELNET_PARALLEL_MODELS
-      ) {
+      if (modelnetParallelModelIds.length < MIN_MODELNET_PARALLEL_MODELS) {
         throw new Error(
-          `ModelNet \u5e76\u8054\u9700\u8981\u9009\u62e9 ${MIN_MODELNET_PARALLEL_MODELS}-${MAX_MODELNET_PARALLEL_MODELS} \u4e2a\u6a21\u578b`,
+          `ModelNet \u5E76\u8054\u81F3\u5C11\u9700\u8981\u9009\u62E9 ${MIN_MODELNET_PARALLEL_MODELS} \u4E2A\u6A21\u578B`,
         );
       }
 
@@ -478,6 +540,7 @@ class ChatService {
           },
         },
       };
+      attachModelNetRuntimeCandidates(payload.modelnet, modelnetParallelModelIds);
     }
 
     if (isModelNetAuto) {
@@ -485,6 +548,9 @@ class ChatService {
         stream_options: {
           include_trace: true,
         },
+        ...(modelnetAutoCandidateIds.length > 0 && {
+          candidate_aliases: modelnetAutoCandidateIds,
+        }),
         collaboration_plan: {
           aggregator: 'auto',
           runner: 'auto.network',
@@ -493,6 +559,7 @@ class ChatService {
           },
         },
       };
+      attachModelNetRuntimeCandidates(payload.modelnet, modelnetAutoCandidateIds);
     }
 
     if (isModelNetSerial) {
@@ -501,9 +568,9 @@ class ChatService {
         | undefined;
       const nodeCount = Array.isArray(serialTopology?.nodes) ? serialTopology.nodes.length : 0;
 
-      if (nodeCount < MIN_MODELNET_SERIAL_MODELS || nodeCount > MAX_MODELNET_SERIAL_MODELS) {
+      if (nodeCount < MIN_MODELNET_SERIAL_MODELS) {
         throw new Error(
-          `ModelNet \u4e32\u8054\u9700\u8981\u9009\u62e9 ${MIN_MODELNET_SERIAL_MODELS}-${MAX_MODELNET_SERIAL_MODELS} \u4e2a\u6a21\u578b`,
+          `ModelNet \u4E32\u8054\u81F3\u5C11\u9700\u8981\u9009\u62E9 ${MIN_MODELNET_SERIAL_MODELS} \u4E2A\u6A21\u578B`,
         );
       }
 
@@ -517,6 +584,8 @@ class ChatService {
           runner: 'response.serial',
           runner_config: {
             allow_degraded: false,
+            serial_recovery_max_tokens: 4096,
+            serial_reserved_output_tokens: 4096,
             serial_topology: {
               version: 'modelnet.serial.v1',
               nodes: serialTopology?.nodes,
@@ -526,6 +595,7 @@ class ChatService {
           },
         },
       };
+      attachModelNetRuntimeCandidates(payload.modelnet, modelNetSerialModelIds(serialTopology));
     }
 
     const sdkType = resolveRuntimeProvider(provider);

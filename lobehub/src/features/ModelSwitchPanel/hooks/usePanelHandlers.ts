@@ -6,6 +6,7 @@ import {
   isModelNetSerialModel,
   MIN_MODELNET_PARALLEL_MODELS,
   MIN_MODELNET_SERIAL_MODELS,
+  type ModelNetProviderRuntimeConfigMap,
   normalizeModelNetParallelModelIds,
   normalizeModelNetSerialTopology,
 } from '@/features/ModelNetParallel';
@@ -19,12 +20,14 @@ interface UsePanelHandlersProps {
   enabledList: EnabledProviderWithModels[];
   onModelChange?: (params: ModelChangeParams) => Promise<void>;
   onOpenChange?: (open: boolean) => void;
+  runtimeConfig?: ModelNetProviderRuntimeConfigMap;
 }
 
 export const usePanelHandlers = ({
   enabledList,
   onModelChange: onModelChangeProp,
   onOpenChange,
+  runtimeConfig,
 }: UsePanelHandlersProps) => {
   const updateAgentConfig = useAgentStore((s) => s.updateAgentConfig);
   const currentAgentParams = useAgentStore((s) => agentSelectors.currentAgentConfig(s)?.params);
@@ -37,7 +40,7 @@ export const usePanelHandlers = ({
         const params: ModelChangeParams = { model: modelId, provider: providerId };
 
         if (isModelNetParallelModel(providerId, modelId)) {
-          const candidates = getModelNetParallelCandidates(enabledList, providerId);
+          const candidates = getModelNetParallelCandidates(enabledList, providerId, runtimeConfig);
           const modelnetParallelModelIds = normalizeModelNetParallelModelIds(
             currentAgentParams?.modelnetParallelModelIds,
             candidates,
@@ -49,7 +52,7 @@ export const usePanelHandlers = ({
         }
 
         if (isModelNetSerialModel(providerId, modelId)) {
-          const candidates = getModelNetParallelCandidates(enabledList, providerId);
+          const candidates = getModelNetParallelCandidates(enabledList, providerId, runtimeConfig);
           const modelnetSerialTopology = normalizeModelNetSerialTopology(
             currentAgentParams?.modelnetSerialTopology,
             candidates,
@@ -67,7 +70,7 @@ export const usePanelHandlers = ({
         }
       }, 150);
     },
-    [currentAgentParams, enabledList, onModelChangeProp, updateAgentConfig],
+    [currentAgentParams, enabledList, onModelChangeProp, runtimeConfig, updateAgentConfig],
   );
 
   const handleClose = useCallback(() => {

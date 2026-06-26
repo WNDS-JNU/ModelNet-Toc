@@ -16,6 +16,22 @@ class ModelNetStreamOptions(BaseModel):
     include_trace: bool = False
 
 
+class ModelNetRuntimeCandidate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str = Field(min_length=1)
+    source: Literal["user_provider"] = "user_provider"
+    provider_id: str = Field(min_length=1)
+    provider_name: str | None = None
+    model_id: str = Field(min_length=1)
+    display_name: str | None = None
+    backend: Literal["openai_compatible"] = "openai_compatible"
+    api_base: str = Field(min_length=1)
+    api_key: str | None = None
+    context_length: int | None = None
+    capabilities: list[str] = Field(default_factory=list)
+
+
 class ModelNetRunRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 

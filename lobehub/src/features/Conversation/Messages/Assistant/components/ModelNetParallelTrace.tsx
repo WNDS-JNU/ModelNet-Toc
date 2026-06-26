@@ -2,7 +2,7 @@ import { Flexbox } from '@lobehub/ui';
 import { AlertCircle, CheckCircle2, ChevronDown, ChevronRight, Clock, Loader2 } from 'lucide-react';
 import { memo, useMemo, useState } from 'react';
 
-interface ModelNetParallelSourceState {
+export interface ModelNetParallelSourceState {
   error?: string;
   latencyMs?: number;
   model: string;
@@ -13,17 +13,17 @@ interface ModelNetParallelSourceState {
   text: string;
 }
 
-interface ModelNetParallelMetadata {
+export interface ModelNetParallelMetadata {
   sourceOrder?: string[];
   sources?: Record<string, ModelNetParallelSourceState>;
 }
 
 const statusLabel: Record<ModelNetParallelSourceState['status'], string> = {
-  completed: 'done',
-  failed: 'failed',
-  pending: 'pending',
-  running: 'running',
-  summarized: 'summarized',
+  completed: '已完成',
+  failed: '失败',
+  pending: '等待中',
+  running: '运行中',
+  summarized: '已总结',
 };
 
 const StatusIcon = ({ status }: { status: ModelNetParallelSourceState['status'] }) => {
@@ -60,13 +60,14 @@ const ModelNetParallelTrace = memo<{ data?: ModelNetParallelMetadata | null }>((
         padding: 10,
       }}
     >
-      <Flexbox gap={6} horizontal style={{ flexWrap: 'wrap' }}>
+      <Flexbox horizontal gap={6} style={{ flexWrap: 'wrap' }}>
         {orderedSources.map((source) => {
           const activeChip = source.sourceId === active.sourceId;
           return (
             <button
               key={source.sourceId}
-              onClick={() => setActiveSourceId(source.sourceId)}
+              title={source.model}
+              type="button"
               style={{
                 alignItems: 'center',
                 background: activeChip ? 'var(--lobe-color-fill-tertiary)' : 'transparent',
@@ -81,8 +82,7 @@ const ModelNetParallelTrace = memo<{ data?: ModelNetParallelMetadata | null }>((
                 minHeight: 28,
                 padding: '3px 9px',
               }}
-              title={source.model}
-              type="button"
+              onClick={() => setActiveSourceId(source.sourceId)}
             >
               {activeChip ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               <StatusIcon status={source.status} />

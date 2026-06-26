@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sys
 import tempfile
@@ -81,10 +82,13 @@ if "fastapi" not in sys.modules:
     sys.modules["fastapi.responses"] = responses_stub
 
 if "yaml" not in sys.modules:
-    yaml_stub = types.ModuleType("yaml")
-    yaml_stub.YAMLError = Exception
-    yaml_stub.safe_load = lambda text: {}
-    sys.modules["yaml"] = yaml_stub
+    try:
+        import yaml  # noqa: F401
+    except ModuleNotFoundError:
+        yaml_stub = types.ModuleType("yaml")
+        yaml_stub.YAMLError = Exception
+        yaml_stub.safe_load = lambda text: {}
+        sys.modules["yaml"] = yaml_stub
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -359,6 +363,106 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ensemble.runner_config["native_runner"], "response.parallel")
         self.assertEqual(ensemble.runner_config["allow_degraded"], False)
         self.assertEqual([source.model_alias for source in ensemble.sources], ["qwen-7b", "llama-8b"])
+
+
+    def runtime_candidate_payload(self, **overrides: Any) -> dict[str, Any]:
+        payload = {
+            "id": "user-provider:user-openai:user%2Fmodel-a",
+            "source": "user_provider",
+            "provider_id": "user-openai",
+            "provider_name": "User OpenAI",
+            "model_id": "user/model-a",
+            "display_name": "User Model A",
+            "backend": "openai_compatible",
+            "api_base": "https://user.example.com/v1",
+            "api_key": "user-secret",
+            "context_length": 32768,
+            "capabilities": ["chat", "streaming"],
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_runtime_candidates_parse_as_request_scoped_openai_candidates(self) -> None:
+        candidates = router.runtime_candidates_from_modelnet_options(
+            {"runtime_candidates": [self.runtime_candidate_payload()]}
+        )
+
+        self.assertEqual(len(candidates), 1)
+        candidate = candidates[0]
+        self.assertEqual(candidate.model_id, "user-provider:user-openai:user%2Fmodel-a")
+        self.assertEqual(candidate.backend_type, "openai_compatible")
+        self.assertEqual(candidate.backend_model, "user/model-a")
+        self.assertEqual(candidate.api_base, "https://user.example.com/v1")
+        self.assertEqual(candidate.api_key, "user-secret")
+        info = router.candidate_backend_info(candidate)
+        self.assertEqual(info["id"], candidate.model_id)
+        self.assertNotIn("api_key", json.dumps(info))
+        self.assertNotIn("user-secret", json.dumps(info))
+
+    def test_runtime_candidates_parse_max_output_tokens(self) -> None:
+        candidates = router.runtime_candidates_from_modelnet_options(
+            {"runtime_candidates": [self.runtime_candidate_payload(max_output_tokens=393216)]}
+        )
+
+        self.assertEqual(candidates[0].metadata["max_output_tokens"], 393216)
+
+    def test_openai_chat_to_ir_redacts_runtime_candidate_credentials(self) -> None:
+        ir = router.openai_chat_to_ir(
+            {
+                "model": router.PUBLIC_AUTO_MODEL_NAME,
+                "messages": [{"role": "user", "content": "hello"}],
+                "modelnet": {"runtime_candidates": [self.runtime_candidate_payload()]},
+            }
+        )
+
+        metadata_text = json.dumps(ir.metadata, ensure_ascii=False)
+        self.assertNotIn("user-secret", metadata_text)
+        self.assertNotIn("api_key", metadata_text)
+        self.assertIn("runtime_candidates_redacted", metadata_text)
+
+    def test_runtime_candidates_reject_unsafe_base_urls(self) -> None:
+        with self.assertRaises(router.HTTPException):
+            router.runtime_candidates_from_modelnet_options(
+                {"runtime_candidates": [self.runtime_candidate_payload(api_base="http://127.0.0.1:8000/v1")]}
+            )
+
+    async def test_pick_candidate_can_select_runtime_candidate_alias(self) -> None:
+        original_load_candidates = router.load_candidates
+        original_load_k8s_snapshot = router.load_k8s_snapshot
+        original_load_prometheus_snapshot = router.load_prometheus_snapshot
+        original_endpoint_health = router.endpoint_health
+        try:
+            runtime_candidates = router.runtime_candidates_from_modelnet_options(
+                {"runtime_candidates": [self.runtime_candidate_payload()]}
+            )
+            router.load_candidates = lambda: [candidate("system-a", backend_type="openai_compatible")]
+
+            async def fake_k8s() -> router.K8sSnapshot:
+                return router.K8sSnapshot()
+
+            async def fake_prometheus() -> router.PrometheusSnapshot:
+                return router.PrometheusSnapshot()
+
+            async def fake_endpoint_health(_candidate: router.Candidate) -> router.EndpointHealth:
+                return router.EndpointHealth(ready=True, updated_at=1)
+
+            router.load_k8s_snapshot = fake_k8s
+            router.load_prometheus_snapshot = fake_prometheus
+            router.endpoint_health = fake_endpoint_health
+
+            selected, _score, reason = await router.pick_candidate(
+                tenant=self.tenant,
+                candidate_aliases={"user-provider:user-openai:user%2Fmodel-a"},
+                runtime_candidates=runtime_candidates,
+            )
+
+            self.assertEqual(selected.model_id, "user-provider:user-openai:user%2Fmodel-a")
+            self.assertEqual(reason, "endpoint-ready")
+        finally:
+            router.load_candidates = original_load_candidates
+            router.load_k8s_snapshot = original_load_k8s_snapshot
+            router.load_prometheus_snapshot = original_load_prometheus_snapshot
+            router.endpoint_health = original_endpoint_health
 
     def serial_dify_request(self, serial_topology: dict[str, Any]) -> router.EnsembleRequest:
         return router.EnsembleRequest(
@@ -1268,6 +1372,51 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("answer from model-a", seen[1]["prompt"])
         self.assertEqual(seen[0]["messages"][0]["role"], "system")
         self.assertIn("visible user-facing final answer", seen[0]["messages"][0]["content"])
+        self.assertEqual(
+            seen[0]["extra"].get("chat_template_kwargs"),
+            {"enable_thinking": False},
+        )
+        self.assertEqual(
+            seen[1]["extra"].get("chat_template_kwargs"),
+            {"enable_thinking": False},
+        )
+        self.assertEqual(done["text"], "answer from model-b")
+        self.assertFalse(done["metadata"]["used_summaries"])
+
+    async def test_gateway_serial_can_explicitly_enable_internal_thinking(self) -> None:
+        seen: list[dict[str, Any]] = []
+
+        async def fake_pick(_tenant, source, required_capabilities=None):
+            return candidate(str(source.model_alias), metadata={"max_model_len": 8192}), 10.0, "ready"
+
+        async def fake_generate(source_candidate, source, **_kwargs):
+            seen.append({"source_id": source.source_id, "extra": dict(source.extra)})
+            return {"text": f"answer from {source_candidate.model_id}", "metadata": {}}
+
+        router.pick_source_candidate = fake_pick
+        router.generate_text = fake_generate
+        req = router.EnsembleRequest(
+            request_id="serial-enable-thinking",
+            runner="dynamic_collab_route",
+            aggregator="judge_refine",
+            runner_config={
+                "native_runner": "response.serial",
+                "enable_serial_thinking": True,
+                "serial_topology": {
+                    "version": "modelnet.serial.v1",
+                    "nodes": [
+                        {"id": "step-1", "modelId": "model-a"},
+                        {"id": "step-2", "modelId": "model-b"},
+                    ],
+                    "edges": [{"source": "step-1", "target": "step-2"}],
+                },
+            },
+            sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
+        )
+
+        events = await collect_events(router.run_gateway_serial_ensemble(req, self.tenant))
+
+        self.assertEqual(done_payload(events)["text"], "answer from model-b")
         self.assertNotEqual(
             seen[0]["extra"].get("chat_template_kwargs"),
             {"enable_thinking": False},
@@ -1276,8 +1425,6 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             seen[1]["extra"].get("chat_template_kwargs"),
             {"enable_thinking": False},
         )
-        self.assertEqual(done["text"], "answer from model-b")
-        self.assertFalse(done["metadata"]["used_summaries"])
 
     async def test_gateway_serial_recovers_visible_answer_after_reasoning_only_step(self) -> None:
         seen: list[dict[str, Any]] = []
@@ -1304,6 +1451,8 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                         "finish_reason": "length",
                     },
                 }
+            if source.source_id == "step-2__visible_recovery":
+                return {"text": "visible recovered intermediate answer", "metadata": {}}
             return {"text": "visible final answer", "metadata": {}}
 
         router.pick_source_candidate = fake_pick
@@ -1319,8 +1468,12 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                     "nodes": [
                         {"id": "step-1", "modelId": "model-a"},
                         {"id": "step-2", "modelId": "model-b"},
+                        {"id": "step-3", "modelId": "model-c"},
                     ],
-                    "edges": [{"source": "step-1", "target": "step-2"}],
+                    "edges": [
+                        {"source": "step-1", "target": "step-2"},
+                        {"source": "step-2", "target": "step-3"},
+                    ],
                 },
             },
             sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
@@ -1356,6 +1509,8 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                     "text": "**\n    *   Content: It introduces useful facts.\n    *   Issue: The text cuts off mid-sentence.",
                     "metadata": {},
                 }
+            if source.source_id == "step-2__visible_recovery":
+                return {"text": "intermediate user-facing answer", "metadata": {}}
             return {"text": "final user-facing answer", "metadata": {}}
 
         router.pick_source_candidate = fake_pick
@@ -1371,8 +1526,12 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                     "nodes": [
                         {"id": "step-1", "modelId": "model-a"},
                         {"id": "step-2", "modelId": "model-b"},
+                        {"id": "step-3", "modelId": "model-c"},
                     ],
-                    "edges": [{"source": "step-1", "target": "step-2"}],
+                    "edges": [
+                        {"source": "step-1", "target": "step-2"},
+                        {"source": "step-2", "target": "step-3"},
+                    ],
                 },
             },
             sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
@@ -1408,6 +1567,8 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                     "text": "**\n* Opening: Good, acknowledges both are great rulers, difficult to compare.",
                     "metadata": {"finish_reason": "length"},
                 }
+            if source.source_id == "step-3__visible_recovery":
+                return {"text": "中间恢复答案。", "metadata": {}}
             return {"text": "如果看创业难度，朱元璋更厉害；如果看治国成熟度和历史评价，李世民更胜一筹。", "metadata": {}}
 
         router.pick_source_candidate = fake_pick
@@ -1424,10 +1585,12 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                         {"id": "step-1", "modelId": "model-a"},
                         {"id": "step-2", "modelId": "model-b"},
                         {"id": "step-3", "modelId": "model-c"},
+                        {"id": "step-4", "modelId": "model-d"},
                     ],
                     "edges": [
                         {"source": "step-1", "target": "step-2"},
                         {"source": "step-2", "target": "step-3"},
+                        {"source": "step-3", "target": "step-4"},
                     ],
                 },
             },
@@ -1464,6 +1627,8 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                     "text": "用户的问题是“李世民和朱元璋谁厉害”。上一轮模型回答被截断了。我作为这一环节，需要基于上一轮的分析思路，补全并完善回答。关键点包括：",
                     "metadata": {},
                 }
+            if source.source_id == "step-2__visible_recovery":
+                return {"text": "intermediate answer for the user", "metadata": {}}
             return {"text": "final answer for the user", "metadata": {}}
 
         router.pick_source_candidate = fake_pick
@@ -1479,8 +1644,12 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                     "nodes": [
                         {"id": "step-1", "modelId": "model-a"},
                         {"id": "step-2", "modelId": "model-b"},
+                        {"id": "step-3", "modelId": "model-c"},
                     ],
-                    "edges": [{"source": "step-1", "target": "step-2"}],
+                    "edges": [
+                        {"source": "step-1", "target": "step-2"},
+                        {"source": "step-2", "target": "step-3"},
+                    ],
                 },
             },
             sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
@@ -1495,7 +1664,7 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(recovery["recovered"])
         self.assertEqual(recovery["reason"], "meta_review_visible_answer")
 
-    async def test_gateway_serial_continues_nonempty_cutoff_visible_answer(self) -> None:
+    async def test_gateway_serial_continues_nonempty_cutoff_visible_answer_before_final_step(self) -> None:
         seen: list[str] = []
 
         async def fake_pick(_tenant, source, required_capabilities=None):
@@ -1505,6 +1674,10 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             seen.append(source.source_id)
             if source.source_id.endswith("__visible_recovery"):
                 return {"text": "and then completes cleanly.", "metadata": {"finish_reason": "stop"}}
+            if source.source_id == "step-1":
+                return {"text": "first answer", "metadata": {}}
+            if source.source_id == "step-3":
+                return {"text": "final answer from recovered intermediate", "metadata": {}}
             return {
                 "text": "visible answer without terminal punctuation",
                 "metadata": {"finish_reason": "length"},
@@ -1523,6 +1696,58 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
                     "nodes": [
                         {"id": "step-1", "modelId": "model-a"},
                         {"id": "step-2", "modelId": "model-b"},
+                        {"id": "step-3", "modelId": "model-c"},
+                    ],
+                    "edges": [
+                        {"source": "step-1", "target": "step-2"},
+                        {"source": "step-2", "target": "step-3"},
+                    ],
+                },
+            },
+            sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
+        )
+
+        events = await collect_events(router.run_gateway_serial_ensemble(req, self.tenant))
+        done = done_payload(events)
+
+        self.assertIn("step-2__visible_recovery", seen)
+        self.assertEqual(done["text"], "final answer from recovered intermediate")
+        recovery = done["metadata"]["serial_steps"][1]["metadata"]["serial_visible_answer_recovery"]
+        self.assertTrue(recovery["recovered"])
+        self.assertTrue(recovery["continued_partial"])
+        self.assertEqual(recovery["reason"], "cut_off_visible_answer")
+        self.assertEqual(recovery["finish_reason"], "length")
+
+    async def test_gateway_serial_does_not_recover_nonempty_cutoff_final_step(self) -> None:
+        seen: list[str] = []
+
+        async def fake_pick(_tenant, source, required_capabilities=None):
+            return candidate(str(source.model_alias), metadata={"max_model_len": 8192}), 10.0, "ready"
+
+        async def fake_generate(_candidate, source, **_kwargs):
+            seen.append(source.source_id)
+            if source.source_id.endswith("__visible_recovery"):
+                return {"text": "should not be used", "metadata": {"finish_reason": "stop"}}
+            if source.source_id == "step-1":
+                return {"text": "first answer", "metadata": {}}
+            return {
+                "text": "final answer written from the prior answer but cut off",
+                "metadata": {"finish_reason": "length"},
+            }
+
+        router.pick_source_candidate = fake_pick
+        router.generate_text = fake_generate
+        req = router.EnsembleRequest(
+            request_id="serial-final-cutoff-no-recovery",
+            runner="dynamic_collab_route",
+            aggregator="judge_refine",
+            runner_config={
+                "native_runner": "response.serial",
+                "serial_topology": {
+                    "version": "modelnet.serial.v1",
+                    "nodes": [
+                        {"id": "step-1", "modelId": "model-a"},
+                        {"id": "step-2", "modelId": "model-b"},
                     ],
                     "edges": [{"source": "step-1", "target": "step-2"}],
                 },
@@ -1533,16 +1758,55 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         events = await collect_events(router.run_gateway_serial_ensemble(req, self.tenant))
         done = done_payload(events)
 
-        self.assertIn("step-2__visible_recovery", seen)
-        self.assertEqual(
-            done["text"],
-            "visible answer without terminal punctuationand then completes cleanly.",
+        self.assertNotIn("step-2__visible_recovery", seen)
+        self.assertEqual(done["text"], "final answer written from the prior answer but cut off")
+        self.assertNotIn(
+            "serial_visible_answer_recovery",
+            done["metadata"]["serial_steps"][1]["metadata"],
         )
-        recovery = done["metadata"]["serial_steps"][1]["metadata"]["serial_visible_answer_recovery"]
-        self.assertTrue(recovery["recovered"])
-        self.assertTrue(recovery["continued_partial"])
-        self.assertEqual(recovery["reason"], "cut_off_visible_answer")
-        self.assertEqual(recovery["finish_reason"], "length")
+
+    def test_gateway_serial_defaults_expand_output_and_recovery_budget(self) -> None:
+        req = router.EnsembleRequest(
+            request_id="serial-default-budgets",
+            runner="dynamic_collab_route",
+            aggregator="judge_refine",
+            runner_config={},
+            sources=[router.EnsembleSource(source_id="input", prompt="Question?", sampling_params={})],
+        )
+        source = req.sources[0]
+
+        self.assertEqual(router.MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS, 4096)
+        self.assertEqual(router.MODELNET_SERIAL_RECOVERY_MAX_TOKENS, 4096)
+        self.assertEqual(router.serial_reserved_output_tokens(req, source), 4096)
+
+        legacy_frontend_req = req.model_copy(update={"runner_config": {"serial_reserved_output_tokens": 2048}})
+        self.assertEqual(router.serial_reserved_output_tokens(legacy_frontend_req, source), 4096)
+
+        explicit_req = req.model_copy(update={"runner_config": {"serial_reserved_output_tokens": 64}})
+        self.assertEqual(router.serial_reserved_output_tokens(explicit_req, source), 64)
+
+        recovery = router.serial_recovery_source(
+            source,
+            req,
+            node=types.SimpleNamespace(id="step-1"),
+            original_prompt="Question?",
+            previous_answer="",
+            partial_answer="",
+            reasoning_text="internal reasoning",
+        )
+        self.assertEqual(recovery.sampling_params["max_tokens"], 4096)
+
+        explicit_recovery_req = req.model_copy(update={"runner_config": {"serial_recovery_max_tokens": 128}})
+        explicit_recovery = router.serial_recovery_source(
+            source,
+            explicit_recovery_req,
+            node=types.SimpleNamespace(id="step-1"),
+            original_prompt="Question?",
+            previous_answer="",
+            partial_answer="",
+            reasoning_text="internal reasoning",
+        )
+        self.assertEqual(explicit_recovery.sampling_params["max_tokens"], 128)
 
     async def test_gateway_serial_summarizes_when_next_prompt_exceeds_context(self) -> None:
         seen: list[dict[str, Any]] = []
@@ -1729,6 +1993,40 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(small_max, 512)
         self.assertEqual(huge_max, router.usable_completion_token_budget(8192, prompt_tokens))
+
+    async def test_response_source_caps_runtime_candidate_by_max_output_tokens(self) -> None:
+        source_candidate = candidate(
+            "user-provider:deepseek:deepseek-v4-flash",
+            backend_type="openai_compatible",
+            metadata={"context_length": 1_048_576, "max_output_tokens": 393_216},
+        )
+        source = router.EnsembleSource(
+            source_id="source-1",
+            prompt="Question?",
+            sampling_params={},
+        )
+        huge = router.EnsembleSource(
+            source_id="source-1",
+            prompt="Question?",
+            sampling_params={"max_tokens": 999_999},
+        )
+        prompt_tokens = router.estimate_token_count("Question?")
+
+        inferred_max = await router.resolve_generation_max_tokens(
+            source_candidate,
+            source,
+            prompt_tokens=prompt_tokens,
+            prefer_model_max=True,
+        )
+        explicit_max = await router.resolve_generation_max_tokens(
+            source_candidate,
+            huge,
+            prompt_tokens=prompt_tokens,
+            prefer_model_max=True,
+        )
+
+        self.assertEqual(inferred_max, 393_216)
+        self.assertEqual(explicit_max, 393_216)
 
     def test_response_synthesizer_prefers_strong_qwen_source_model(self) -> None:
         qwen_35b = "inference-qwen-qwen3-5-35b-a3b-gptq-int4"
@@ -2736,6 +3034,28 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["text"], "visible")
         self.assertTrue(result["metadata"]["source_hidden_reasoning_removed"])
 
+    def test_openai_parallel_flow_delta_explains_empty_source_completion(self) -> None:
+        delta = router.openai_parallel_flow_delta(
+            "trace_step",
+            {
+                "stage": "source.completed",
+                "source_id": "source-1",
+                "backend": {"id": "qwen"},
+                "latency_ms": 123,
+                "text_chars": 0,
+                "hidden_reasoning_removed": True,
+                "hidden_reasoning_chars": 42,
+                "finish_reason": "length",
+                "usage_present": False,
+            },
+        )
+
+        self.assertIn("返回 0 字符", delta)
+        self.assertIn("已剥离 hidden reasoning 42 字符", delta)
+        self.assertIn("finish_reason=length", delta)
+        self.assertIn("后端未返回 usage", delta)
+
+
     async def test_response_aggregate_emits_parallel_flow_when_enabled(self) -> None:
         async def fake_generate(_tenant, source, **_kwargs):
             if source.source_id == "source-1":
@@ -2933,6 +3253,34 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BackendAdapterTests(unittest.TestCase):
+    def test_prepare_chat_body_normalizes_gemma_messages_to_alternating_user_assistant(self) -> None:
+        source_candidate = candidate(
+            "inference-gaunernst-gemma-3-4b-it-int4-awq",
+            backend_type="vllm_chat",
+        )
+
+        body = backend_adapters.prepare_chat_body(
+            source_candidate,
+            {
+                "messages": [
+                    {"role": "system", "content": "Answer like a scientist."},
+                    {"role": "user", "content": "Question?"},
+                    {"role": "user", "content": "Extra context."},
+                    {"role": "assistant", "content": "Partial answer."},
+                    {"role": "assistant", "content": "More partial answer."},
+                ],
+                "stream": False,
+            },
+        )
+
+        messages = body["messages"]
+        self.assertEqual([message["role"] for message in messages], ["user", "assistant"])
+        self.assertIn("Answer like a scientist.", messages[0]["content"])
+        self.assertIn("Question?", messages[0]["content"])
+        self.assertIn("Extra context.", messages[0]["content"])
+        self.assertIn("Partial answer.", messages[1]["content"])
+        self.assertIn("More partial answer.", messages[1]["content"])
+
     def test_context_limit_retry_uses_backend_token_count(self) -> None:
         detail = (
             "This model's maximum context length is 8192 tokens. However, you requested "
@@ -2951,6 +3299,58 @@ class BackendAdapterTests(unittest.TestCase):
 
         self.assertIsNone(backend_adapters.context_limit_retry_max_tokens(detail, 1024))
         self.assertIsNone(backend_adapters.context_limit_retry_max_tokens("other bad request", 1024))
+
+
+class RegistryObservabilityTests(unittest.TestCase):
+    def test_registry_observability_reads_bundle_version_and_checksum_manifest(self) -> None:
+        original_registry_path = router.REGISTRY_PATH
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                bundle = Path(temp_dir)
+                registry = bundle / "model_net.yaml"
+                registry.write_text("models: []\n", encoding="utf-8")
+                digest = hashlib.sha256(registry.read_bytes()).hexdigest()
+                (bundle / "version.json").write_text(
+                    json.dumps(
+                        {
+                            "version": "2026-06-21T00-00-00Z",
+                            "generated_at": "2026-06-21T00:00:00Z",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (bundle / "checksums.sha256").write_text(
+                    f"{digest}  model_net.yaml\n",
+                    encoding="utf-8",
+                )
+
+                router.REGISTRY_PATH = registry
+                info = router.registry_observability()
+
+                self.assertEqual(info["registry_path"], str(registry))
+                self.assertEqual(info["registry_version"], "2026-06-21T00-00-00Z")
+                self.assertEqual(info["registry_generated_at"], "2026-06-21T00:00:00Z")
+                self.assertEqual(info["registry_checksum"], digest)
+                self.assertEqual(info["registry_checksum_source"], "checksums.sha256")
+        finally:
+            router.REGISTRY_PATH = original_registry_path
+
+    def test_registry_observability_computes_checksum_without_bundle_metadata(self) -> None:
+        original_registry_path = router.REGISTRY_PATH
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                registry = Path(temp_dir) / "model_net.yaml"
+                registry.write_text("models: []\n", encoding="utf-8")
+                digest = hashlib.sha256(registry.read_bytes()).hexdigest()
+
+                router.REGISTRY_PATH = registry
+                info = router.registry_observability()
+
+                self.assertIsNone(info["registry_version"])
+                self.assertEqual(info["registry_checksum"], digest)
+                self.assertEqual(info["registry_checksum_source"], "computed")
+        finally:
+            router.REGISTRY_PATH = original_registry_path
 
 
 if __name__ == "__main__":

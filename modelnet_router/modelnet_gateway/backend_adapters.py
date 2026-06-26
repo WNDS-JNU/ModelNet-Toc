@@ -73,12 +73,104 @@ def endpoint_health_urls(candidate: Any) -> list[str]:
     return []
 
 
+def join_message_content(*parts: str) -> str:
+    return "\n\n".join(part.strip() for part in parts if part and part.strip())
+
+
+def candidate_requires_user_assistant_only_messages(candidate: Any) -> bool:
+    if getattr(candidate, "backend_type", "") not in OPENAI_CHAT_BACKENDS:
+        return False
+    metadata = getattr(candidate, "metadata", {}) or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    names = [
+        getattr(candidate, "model_id", ""),
+        getattr(candidate, "backend_model", ""),
+        metadata.get("model_family", ""),
+        metadata.get("family", ""),
+        metadata.get("base_model", ""),
+    ]
+    return any("gemma" in str(name).lower() for name in names if name is not None)
+
+
+def chat_content_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text")
+                if text is None:
+                    text = part.get("content")
+                if text is not None:
+                    parts.append(str(text))
+            elif part is not None:
+                parts.append(str(part))
+        return "\n".join(part for part in parts if part)
+    return str(content)
+
+
+def append_alternating_message(messages: list[dict[str, str]], role: str, content: str) -> None:
+    normalized_role = "assistant" if role == "assistant" else "user"
+    text = content.strip()
+    if not text:
+        return
+    if not messages and normalized_role == "assistant":
+        normalized_role = "user"
+        text = join_message_content("Assistant context:", text)
+    if messages and messages[-1].get("role") == normalized_role:
+        messages[-1]["content"] = join_message_content(str(messages[-1].get("content") or ""), text)
+        return
+    messages.append({"role": normalized_role, "content": text})
+
+
+def normalize_user_assistant_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    pending_system: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "user").strip().lower()
+        content = chat_content_text(message.get("content")).strip()
+        if not content:
+            continue
+        if role in {"system", "developer"}:
+            if out and out[-1].get("role") == "user":
+                out[-1]["content"] = join_message_content(str(out[-1].get("content") or ""), content)
+            else:
+                pending_system.append(content)
+            continue
+
+        normalized_role = "assistant" if role == "assistant" else "user"
+        if pending_system:
+            if normalized_role == "assistant" and out and out[-1].get("role") == "user":
+                out[-1]["content"] = join_message_content(
+                    str(out[-1].get("content") or ""),
+                    *pending_system,
+                )
+            else:
+                content = join_message_content(*pending_system, content)
+            pending_system = []
+        append_alternating_message(out, normalized_role, content)
+
+    if pending_system:
+        append_alternating_message(out, "user", join_message_content(*pending_system))
+    return out or [{"role": "user", "content": "Continue."}]
+
+
 def prepare_chat_body(candidate: Any, body: dict[str, Any]) -> dict[str, Any]:
     if candidate.backend_type == "ollama":
         return openai_chat_to_ollama(candidate, body)
 
     prepared = dict(body)
     prepared["model"] = candidate.backend_model
+    if candidate_requires_user_assistant_only_messages(candidate):
+        prepared["messages"] = normalize_user_assistant_messages(list(prepared.get("messages") or []))
     if candidate.backend_type == "llama_cpp":
         prepared = {
             key: value
@@ -258,12 +350,14 @@ async def generate_text(
         }
 
     if candidate.backend_type in OPENAI_CHAT_BACKENDS:
-        body = {
-            "model": candidate.backend_model,
-            "messages": messages,
-            "stream": False,
-            **params,
-        }
+        body = prepare_chat_body(
+            candidate,
+            {
+                "messages": messages,
+                "stream": False,
+                **params,
+            },
+        )
         response, retry_metadata = await post_openai_chat_with_context_retry(
             candidate,
             body,

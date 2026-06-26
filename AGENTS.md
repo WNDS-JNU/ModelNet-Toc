@@ -39,6 +39,24 @@
 - Verification on 2026-06-18: dev TOC `/signin` returned `200`, dev router `/healthz` returned `status: ok`, LiteLLM liveliness/readiness returned `200`, and production `3081/3090/3092` remained healthy.
 <!-- codex-memory:modelnet-dev-stack:end -->
 
+<!-- codex-memory:modelnet-capability-registry-v1-dev:start -->
+## Current Memory: Capability Registry v1 Dev Runtime
+
+- As of 2026-06-23, the dev registry source and bundle are centered on one self-contained `capability-registry.yaml` file with schema `modelnet.capabilities.v1`. The file contains capability groups plus an embedded `models` inventory that replaces the old runtime use of `model_net.yaml`.
+- Source producer default output is `/home/duxianghe/modelnet-runtime/registry-source/capability-registry.yaml`; publisher default source is the same file. Published dev bundles no longer include `model_net.yaml`.
+- Current verified dev bundle: `/home/duxianghe/modelnet-runtime/registry-dev/versions/2026-06-23T10-09-11Z`; files are `capability-registry.yaml`, `litellm/modelnet-config.yaml`, `version.json`, and `checksums.sha256`.
+- Dev Router is configured with `MODELNET_REGISTRY_PATH=/etc/modelnet/registry/current/capability-registry.yaml`; `/healthz` returned `200` and reported registry version `2026-06-23T10-09-11Z`, 18 ready chat candidates, and registry path ending in `capability-registry.yaml`.
+- Dev LiteLLM uses `/etc/modelnet/registry/current/litellm/modelnet-config.yaml`, generated from the same capability registry.
+- Dev Lobe/TOC uses `docker-compose.router-direct-dev.yml`, so `OPENAI_PROXY_URL=http://modelnet-router:8000/v1`; `.env.modelnet` was regenerated from `/home/duxianghe/modelnet-runtime/registry-dev/current/capability-registry.yaml` for the model list.
+- Verification passed: dev Router `/v1/models` returned `200` with `modelnet-auto`, no embedding/reranker chat exposure; dev TOC `/signin` returned `200`; a minimal direct Router `modelnet-auto` chat smoke returned HTTP `200`.
+- Runtime check found no `model_net.yaml` reference in Router/LiteLLM/Lobe env/cmd/current bundle, and the current dev bundle has no `model_net.yaml` file.
+- Generator bug fixed during verification: reranker/score/classification/cross-encoder models are treated as non-chat, so rerankers are absent from capability candidates and chat model exposure.
+- Relevant verification commands passed:
+  - `python3 -m unittest scripts/test_publish_modelnet_registry.py scripts/test_modelnet_registry_source.py scripts/test_sync_modelnet_litellm.py scripts/test_sync_modelnet_lobehub.py`
+  - `python3 -m py_compile scripts/publish_modelnet_registry.py scripts/modelnet_registry_source.py scripts/sync_modelnet_litellm.py scripts/sync_modelnet_lobehub.py modelnet_router/app.py`
+- Note: a dev Router rebuild attempt timed out while fetching Docker base-image metadata, so the running Router was recreated with the existing image plus updated compose env. The registry-path switch is verified at runtime.
+<!-- codex-memory:modelnet-capability-registry-v1-dev:end -->
+
 ## Model Deployment
 
 - Local-LAN ModelNet inference backends are deployed through Kubernetes.
