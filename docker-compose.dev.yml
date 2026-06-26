@@ -18,8 +18,8 @@ services:
         condition: service_healthy
       rustfs-init:
         condition: service_completed_successfully
-      litellm:
-        condition: service_started
+      modelnet-router:
+        condition: service_healthy
     env_file:
       - .env
       - .env.modelnet
@@ -32,7 +32,8 @@ services:
       LOBE_DB_NAME: ${DEV_LOBE_DB_NAME:-lobechat_dev}
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgresql:5432/${DEV_LOBE_DB_NAME:-lobechat_dev}
       MODELNET_LEADERBOARD_DATA_DIR: /app/leaderboard/data
-      OPENAI_PROXY_URL: http://litellm:8000/v1
+      OPENAI_PROXY_URL: http://modelnet-router:8000/v1
+      OPENAI_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
       S3_ENDPOINT: http://rustfs:9000
       S3_BUCKET: ${RUSTFS_LOBE_BUCKET}
       S3_ENABLE_PATH_STYLE: "1"

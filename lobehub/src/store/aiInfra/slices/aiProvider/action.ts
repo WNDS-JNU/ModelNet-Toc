@@ -42,6 +42,7 @@ export type ProviderModelListItem = {
   description?: string;
   displayName: string;
   id: string;
+  maxOutput?: number;
   parameters?: ModelParamsSchema;
   pricePerImage?: number;
   pricePerVideo?: number;
@@ -80,9 +81,10 @@ const createProviderModelCollector = (
 };
 
 export const normalizeChatModel = async (model: EnabledAiModel): Promise<ProviderModelListItem> => {
-  const [description, pricing] = await Promise.all([
+  const [description, pricing, maxOutput] = await Promise.all([
     getModelProperty<string>(model, 'description'),
     getModelProperty<Pricing>(model, 'pricing'),
+    getModelProperty<number>(model, 'maxOutput'),
   ]);
 
   return {
@@ -93,6 +95,7 @@ export const normalizeChatModel = async (model: EnabledAiModel): Promise<Provide
     releasedAt: model.releasedAt,
     ...(description && { description }),
     ...(pricing && { pricing }),
+    ...(typeof maxOutput === 'number' && { maxOutput }),
   };
 };
 
