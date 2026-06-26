@@ -178,6 +178,12 @@ MODELNET_DIFY_SERIAL_MAX_NODES = int(
 )
 MODELNET_DIFY_SERIAL_MAX_TOKENS = int(os.environ.get("MODELNET_DIFY_SERIAL_MAX_TOKENS", "1024"))
 MODELNET_DIFY_SERIAL_TIMEOUT_SECONDS = float(os.environ.get("MODELNET_DIFY_SERIAL_TIMEOUT_SECONDS", "120"))
+MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS = int(
+    os.environ.get("MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS", "2048")
+)
+MODELNET_SERIAL_RECOVERY_MAX_TOKENS = int(
+    os.environ.get("MODELNET_SERIAL_RECOVERY_MAX_TOKENS", "4096")
+)
 DEFAULT_RESPONSE_AGGREGATE_INSTRUCTION = (
     "Merge the upstream responses into one coherent answer for the user. "
     "Preserve the most useful details, remove duplication, resolve conflicts "
@@ -9009,9 +9015,9 @@ async def provision_dify_serial_workflow(topology: SerialTopology, yaml_content:
 def serial_reserved_output_tokens(request: EnsembleRequest, source: EnsembleSource) -> int:
     raw = request.runner_config.get("serial_reserved_output_tokens")
     if raw is not None:
-        return positive_int(raw, ENSEMBLE_DEFAULT_MAX_TOKENS)
+        return positive_int(raw, MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS)
     explicit = explicit_generation_max_tokens(source)
-    return explicit if explicit is not None else ENSEMBLE_DEFAULT_MAX_TOKENS
+    return explicit if explicit is not None else MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS
 
 
 SERIAL_STEP_SYSTEM_PROMPT = (
@@ -9309,7 +9315,7 @@ def serial_recovery_source(
         continue_partial=continue_partial,
     )
     sampling_params = dict(source.sampling_params)
-    default_recovery_tokens = max(1024, generation_max_tokens(source))
+    default_recovery_tokens = max(MODELNET_SERIAL_RECOVERY_MAX_TOKENS, generation_max_tokens(source))
     sampling_params["max_tokens"] = positive_int(
         request.runner_config.get("serial_recovery_max_tokens"),
         default_recovery_tokens,

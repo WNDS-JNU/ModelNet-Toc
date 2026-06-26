@@ -1719,6 +1719,46 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             done["metadata"]["serial_steps"][1]["metadata"],
         )
 
+    def test_gateway_serial_defaults_expand_output_and_recovery_budget(self) -> None:
+        req = router.EnsembleRequest(
+            request_id="serial-default-budgets",
+            runner="dynamic_collab_route",
+            aggregator="judge_refine",
+            runner_config={},
+            sources=[router.EnsembleSource(source_id="input", prompt="Question?", sampling_params={})],
+        )
+        source = req.sources[0]
+
+        self.assertEqual(router.MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS, 2048)
+        self.assertEqual(router.MODELNET_SERIAL_RECOVERY_MAX_TOKENS, 4096)
+        self.assertEqual(router.serial_reserved_output_tokens(req, source), 2048)
+
+        explicit_req = req.model_copy(update={"runner_config": {"serial_reserved_output_tokens": 64}})
+        self.assertEqual(router.serial_reserved_output_tokens(explicit_req, source), 64)
+
+        recovery = router.serial_recovery_source(
+            source,
+            req,
+            node=types.SimpleNamespace(id="step-1"),
+            original_prompt="Question?",
+            previous_answer="",
+            partial_answer="",
+            reasoning_text="internal reasoning",
+        )
+        self.assertEqual(recovery.sampling_params["max_tokens"], 4096)
+
+        explicit_recovery_req = req.model_copy(update={"runner_config": {"serial_recovery_max_tokens": 128}})
+        explicit_recovery = router.serial_recovery_source(
+            source,
+            explicit_recovery_req,
+            node=types.SimpleNamespace(id="step-1"),
+            original_prompt="Question?",
+            previous_answer="",
+            partial_answer="",
+            reasoning_text="internal reasoning",
+        )
+        self.assertEqual(explicit_recovery.sampling_params["max_tokens"], 128)
+
     async def test_gateway_serial_summarizes_when_next_prompt_exceeds_context(self) -> None:
         seen: list[dict[str, Any]] = []
 
