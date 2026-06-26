@@ -9015,7 +9015,10 @@ async def provision_dify_serial_workflow(topology: SerialTopology, yaml_content:
 def serial_reserved_output_tokens(request: EnsembleRequest, source: EnsembleSource) -> int:
     raw = request.runner_config.get("serial_reserved_output_tokens")
     if raw is not None:
-        return positive_int(raw, MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS)
+        requested_tokens = positive_int(raw, MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS)
+        if requested_tokens == 2048 and requested_tokens < MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS:
+            return MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS
+        return requested_tokens
     explicit = explicit_generation_max_tokens(source)
     return explicit if explicit is not None else MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS
 

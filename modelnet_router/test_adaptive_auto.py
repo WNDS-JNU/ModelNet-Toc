@@ -1776,6 +1776,9 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(router.MODELNET_SERIAL_RECOVERY_MAX_TOKENS, 4096)
         self.assertEqual(router.serial_reserved_output_tokens(req, source), 4096)
 
+        legacy_frontend_req = req.model_copy(update={"runner_config": {"serial_reserved_output_tokens": 2048}})
+        self.assertEqual(router.serial_reserved_output_tokens(legacy_frontend_req, source), 4096)
+
         explicit_req = req.model_copy(update={"runner_config": {"serial_reserved_output_tokens": 64}})
         self.assertEqual(router.serial_reserved_output_tokens(explicit_req, source), 64)
 
