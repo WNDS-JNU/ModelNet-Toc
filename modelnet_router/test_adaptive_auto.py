@@ -1369,6 +1369,51 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("answer from model-a", seen[1]["prompt"])
         self.assertEqual(seen[0]["messages"][0]["role"], "system")
         self.assertIn("visible user-facing final answer", seen[0]["messages"][0]["content"])
+        self.assertEqual(
+            seen[0]["extra"].get("chat_template_kwargs"),
+            {"enable_thinking": False},
+        )
+        self.assertEqual(
+            seen[1]["extra"].get("chat_template_kwargs"),
+            {"enable_thinking": False},
+        )
+        self.assertEqual(done["text"], "answer from model-b")
+        self.assertFalse(done["metadata"]["used_summaries"])
+
+    async def test_gateway_serial_can_explicitly_enable_internal_thinking(self) -> None:
+        seen: list[dict[str, Any]] = []
+
+        async def fake_pick(_tenant, source, required_capabilities=None):
+            return candidate(str(source.model_alias), metadata={"max_model_len": 8192}), 10.0, "ready"
+
+        async def fake_generate(source_candidate, source, **_kwargs):
+            seen.append({"source_id": source.source_id, "extra": dict(source.extra)})
+            return {"text": f"answer from {source_candidate.model_id}", "metadata": {}}
+
+        router.pick_source_candidate = fake_pick
+        router.generate_text = fake_generate
+        req = router.EnsembleRequest(
+            request_id="serial-enable-thinking",
+            runner="dynamic_collab_route",
+            aggregator="judge_refine",
+            runner_config={
+                "native_runner": "response.serial",
+                "enable_serial_thinking": True,
+                "serial_topology": {
+                    "version": "modelnet.serial.v1",
+                    "nodes": [
+                        {"id": "step-1", "modelId": "model-a"},
+                        {"id": "step-2", "modelId": "model-b"},
+                    ],
+                    "edges": [{"source": "step-1", "target": "step-2"}],
+                },
+            },
+            sources=[router.EnsembleSource(source_id="input", prompt="Question?")],
+        )
+
+        events = await collect_events(router.run_gateway_serial_ensemble(req, self.tenant))
+
+        self.assertEqual(done_payload(events)["text"], "answer from model-b")
         self.assertNotEqual(
             seen[0]["extra"].get("chat_template_kwargs"),
             {"enable_thinking": False},
@@ -1377,8 +1422,6 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
             seen[1]["extra"].get("chat_template_kwargs"),
             {"enable_thinking": False},
         )
-        self.assertEqual(done["text"], "answer from model-b")
-        self.assertFalse(done["metadata"]["used_summaries"])
 
     async def test_gateway_serial_recovers_visible_answer_after_reasoning_only_step(self) -> None:
         seen: list[dict[str, Any]] = []
@@ -1729,9 +1772,9 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         )
         source = req.sources[0]
 
-        self.assertEqual(router.MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS, 2048)
+        self.assertEqual(router.MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS, 4096)
         self.assertEqual(router.MODELNET_SERIAL_RECOVERY_MAX_TOKENS, 4096)
-        self.assertEqual(router.serial_reserved_output_tokens(req, source), 2048)
+        self.assertEqual(router.serial_reserved_output_tokens(req, source), 4096)
 
         explicit_req = req.model_copy(update={"runner_config": {"serial_reserved_output_tokens": 64}})
         self.assertEqual(router.serial_reserved_output_tokens(explicit_req, source), 64)

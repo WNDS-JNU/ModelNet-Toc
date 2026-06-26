@@ -179,7 +179,7 @@ MODELNET_DIFY_SERIAL_MAX_NODES = int(
 MODELNET_DIFY_SERIAL_MAX_TOKENS = int(os.environ.get("MODELNET_DIFY_SERIAL_MAX_TOKENS", "1024"))
 MODELNET_DIFY_SERIAL_TIMEOUT_SECONDS = float(os.environ.get("MODELNET_DIFY_SERIAL_TIMEOUT_SECONDS", "120"))
 MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS = int(
-    os.environ.get("MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS", "2048")
+    os.environ.get("MODELNET_SERIAL_RESERVED_OUTPUT_TOKENS", "4096")
 )
 MODELNET_SERIAL_RECOVERY_MAX_TOKENS = int(
     os.environ.get("MODELNET_SERIAL_RECOVERY_MAX_TOKENS", "4096")
@@ -9087,6 +9087,10 @@ def serial_step_source(
         ]
     extra = dict(base_source.extra)
     extra.update(internal_thinking_extra(request))
+    if not coerce_bool(request.runner_config.get("enable_serial_thinking"), default=False):
+        chat_template_kwargs = dict(extra.get("chat_template_kwargs") or {})
+        chat_template_kwargs["enable_thinking"] = False
+        extra["chat_template_kwargs"] = chat_template_kwargs
     return EnsembleSource(
         source_id=node.id,
         model_alias=node.model_id,
