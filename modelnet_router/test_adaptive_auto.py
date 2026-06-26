@@ -82,10 +82,13 @@ if "fastapi" not in sys.modules:
     sys.modules["fastapi.responses"] = responses_stub
 
 if "yaml" not in sys.modules:
-    yaml_stub = types.ModuleType("yaml")
-    yaml_stub.YAMLError = Exception
-    yaml_stub.safe_load = lambda text: {}
-    sys.modules["yaml"] = yaml_stub
+    try:
+        import yaml  # noqa: F401
+    except ModuleNotFoundError:
+        yaml_stub = types.ModuleType("yaml")
+        yaml_stub.YAMLError = Exception
+        yaml_stub.safe_load = lambda text: {}
+        sys.modules["yaml"] = yaml_stub
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
