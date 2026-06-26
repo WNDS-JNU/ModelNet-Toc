@@ -23,6 +23,7 @@ import { ModelProvider } from 'model-bank';
 
 import { DEFAULT_AGENT_CONFIG } from '@/const/settings';
 import {
+  getModelNetRuntimeProviderInfo,
   isModelNetParallelModel,
   isModelNetSerialModel,
   MIN_MODELNET_PARALLEL_MODELS,
@@ -98,18 +99,19 @@ const uniqueStringList = (value: unknown): string[] =>
     : [];
 
 const modelNetSerialModelIds = (topology: unknown): string[] => {
-  const nodes =
+  const nodes: unknown[] =
     typeof topology === 'object' && topology !== null && Array.isArray((topology as any).nodes)
       ? (topology as any).nodes
       : [];
+  const modelIds = nodes
+    .map((node) =>
+      typeof node === 'object' && node !== null
+        ? (node as { modelId?: unknown }).modelId
+        : undefined,
+    )
+    .filter((modelId): modelId is string => typeof modelId === 'string');
 
-  return [
-    ...new Set(
-      nodes
-        .map((node: any) => node?.modelId)
-        .filter((modelId: unknown): modelId is string => typeof modelId === 'string'),
-    ),
-  ];
+  return [...new Set(modelIds)];
 };
 
 const buildModelNetRuntimeCandidates = (modelIds: string[]) => {
@@ -124,11 +126,11 @@ const buildModelNetRuntimeCandidates = (modelIds: string[]) => {
 
     const provider = enabledChatModelList.find((item) => item.id === alias.providerId);
     const model = provider?.children.find((item) => item.id === alias.modelId);
-    const runtimeConfig = aiProviderRuntimeConfig[alias.providerId];
-    const sdkType = runtimeConfig?.settings?.sdkType ?? 'openai';
-    const apiBase = runtimeConfig?.keyVaults?.baseURL?.trim();
+    const runtimeInfo = provider
+      ? getModelNetRuntimeProviderInfo(provider, aiProviderRuntimeConfig)
+      : undefined;
 
-    if (!provider || !model || sdkType !== 'openai' || !apiBase) return [];
+    if (!provider || !model || !runtimeInfo) return [];
 
     return [
       {
@@ -143,8 +145,8 @@ const buildModelNetRuntimeCandidates = (modelIds: string[]) => {
         ...(typeof model.contextWindowTokens === 'number' && {
           context_length: model.contextWindowTokens,
         }),
-        api_base: apiBase,
-        ...(runtimeConfig?.keyVaults?.apiKey && { api_key: runtimeConfig.keyVaults.apiKey }),
+        api_base: runtimeInfo.apiBase,
+        ...(runtimeInfo.apiKey && { api_key: runtimeInfo.apiKey }),
       },
     ];
   });

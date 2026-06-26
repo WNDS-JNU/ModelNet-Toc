@@ -22,6 +22,9 @@ export const MIN_MODELNET_SERIAL_MODELS = 2;
 export const MODELNET_USER_PROVIDER_ALIAS_PREFIX = 'user-provider:';
 
 export type ModelNetProviderRuntimeConfigMap = Record<string, AiProviderRuntimeConfig | undefined>;
+export const MODELNET_DEFAULT_PROVIDER_API_BASES: Record<string, string> = {
+  deepseek: 'https://api.deepseek.com/v1',
+};
 
 export interface ModelNetSerialTopology {
   edges: { source: string; target: string }[];
@@ -89,12 +92,28 @@ const isLikelyModelNetAlias = (id: string, providerId?: string) => {
   );
 };
 
-const isOpenAICompatibleCustomProvider = (
+export const getModelNetRuntimeProviderInfo = (
   provider: EnabledProviderWithModels,
   runtimeConfig: ModelNetProviderRuntimeConfigMap = {},
-) =>
-  provider.source === AiProviderSourceEnum.Custom &&
-  (runtimeConfig[provider.id]?.settings?.sdkType ?? 'openai') === 'openai';
+) => {
+  const config = runtimeConfig[provider.id];
+  const sdkType = config?.settings?.sdkType ?? 'openai';
+  if (sdkType !== 'openai') return undefined;
+
+  const apiKey = config?.keyVaults?.apiKey?.trim();
+  const apiBase =
+    config?.keyVaults?.baseURL?.trim() || MODELNET_DEFAULT_PROVIDER_API_BASES[provider.id];
+  if (!apiBase) return undefined;
+
+  const isCustom = provider.source === AiProviderSourceEnum.Custom;
+  const isKeyedBuiltin = provider.source === AiProviderSourceEnum.Builtin && !!apiKey;
+  if (!isCustom && !isKeyedBuiltin) return undefined;
+
+  return {
+    apiBase,
+    apiKey,
+  };
+};
 
 export const isModelNetParallelCandidate = (model: AiModelForSelect, providerId?: string) => {
   if (MODELNET_SYSTEM_MODEL_IDS.has(model.id)) return false;
@@ -108,7 +127,7 @@ export const getModelNetUserProviderCandidates = (
   runtimeConfig: ModelNetProviderRuntimeConfigMap = {},
 ): AiModelForSelect[] =>
   enabledList.flatMap((provider) => {
-    if (!isOpenAICompatibleCustomProvider(provider, runtimeConfig)) return [];
+    if (!getModelNetRuntimeProviderInfo(provider, runtimeConfig)) return [];
 
     return provider.children
       .filter((model) => !MODELNET_SYSTEM_MODEL_IDS.has(model.id))
@@ -140,7 +159,9 @@ export const getModelNetParallelProvider = (
       ),
       provider,
     }))
-    .filter(({ candidates }) => candidates.length + customCandidateCount >= MIN_MODELNET_PARALLEL_MODELS);
+    .filter(
+      ({ candidates }) => candidates.length + customCandidateCount >= MIN_MODELNET_PARALLEL_MODELS,
+    );
 
   return (
     MODELNET_PROVIDER_IDS.map((providerId) =>

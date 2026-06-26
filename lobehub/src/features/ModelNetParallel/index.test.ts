@@ -9,6 +9,7 @@ import {
 
 import {
   createModelNetUserProviderAlias,
+  getModelNetUserProviderCandidates,
   getModelNetParallelCandidates,
   getModelNetParallelProvider,
   isModelNetParallelModel,
@@ -136,15 +137,13 @@ describe('ModelNetParallel helpers', () => {
     const customAlias = createModelNetUserProviderAlias('user-openai', 'user/model-a');
     const enabledList = [
       provider('openai', [model('inference-qwen3', 'ModelNet/Qwen3')]),
-      provider(
-        'user-openai',
-        [model('user/model-a', 'User Model A')],
-        AiProviderSourceEnum.Custom,
-      ),
+      provider('user-openai', [model('user/model-a', 'User Model A')], AiProviderSourceEnum.Custom),
       provider('user-ollama', [model('ollama-a', 'Ollama A')], AiProviderSourceEnum.Custom),
     ];
     const configs = {
-      'user-openai': runtimeConfig('openai'),
+      'user-openai': runtimeConfig('openai', {
+        keyVaults: { apiKey: 'user-secret', baseURL: 'https://user.example.com/v1' },
+      }),
       'user-ollama': runtimeConfig('ollama'),
     };
 
@@ -163,5 +162,26 @@ describe('ModelNetParallel helpers', () => {
       modelId: 'user/model-a',
       providerId: 'user-openai',
     });
+  });
+
+  it('includes keyed built-in DeepSeek models as ModelNet runtime candidates', () => {
+    const deepseekAlias = createModelNetUserProviderAlias('deepseek', 'deepseek-v4-flash');
+    const enabledList = [
+      provider('openai', [model('inference-qwen3', 'ModelNet/Qwen3')]),
+      provider('deepseek', [model('deepseek-v4-flash', 'DeepSeek V4 Flash')]),
+    ];
+    const configs = {
+      deepseek: runtimeConfig('openai', { keyVaults: { apiKey: 'deepseek-secret' } }),
+    };
+
+    expect(getModelNetUserProviderCandidates(enabledList, configs).map((item) => item.id)).toEqual([
+      deepseekAlias,
+    ]);
+    expect(
+      getModelNetParallelCandidates(enabledList, 'openai', configs).map((item) => item.id),
+    ).toEqual(['inference-qwen3', deepseekAlias]);
+    expect(
+      withModelNetParallelModel(enabledList, configs)[0].children.map((item) => item.id),
+    ).toEqual([MODELNET_PARALLEL_MODEL_ID, MODELNET_SERIAL_MODEL_ID, 'inference-qwen3']);
   });
 });

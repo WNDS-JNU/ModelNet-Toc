@@ -1873,8 +1873,6 @@ describe('ChatService', () => {
       });
     });
 
-
-
     it('should attach selected custom provider runtime candidates for ModelNet parallel responses', async () => {
       const customAlias = createModelNetUserProviderAlias('user-openai', 'user/model-a');
       useAiInfraStore.setState({
@@ -1931,6 +1929,56 @@ describe('ChatService', () => {
       ]);
     });
 
+    it('should attach keyed built-in DeepSeek runtime candidates for ModelNet auto responses', async () => {
+      const deepseekAlias = createModelNetUserProviderAlias('deepseek', 'deepseek-v4-flash');
+      useAiInfraStore.setState({
+        aiProviderRuntimeConfig: {
+          deepseek: {
+            config: {},
+            keyVaults: { apiKey: 'deepseek-secret' },
+            settings: { sdkType: 'openai' },
+          },
+        },
+        enabledChatModelList: [
+          {
+            children: [
+              {
+                abilities: {},
+                contextWindowTokens: 1_048_576,
+                displayName: 'DeepSeek V4 Flash',
+                id: 'deepseek-v4-flash',
+              },
+            ],
+            id: 'deepseek',
+            name: 'DeepSeek',
+            source: 'builtin',
+          },
+        ],
+      } as any);
+
+      await chatService.getChatCompletion(
+        {
+          messages: [],
+          model: MODELNET_AUTO_MODEL_ID,
+          modelnetAutoCandidateIds: ['inference-qwen3', deepseekAlias],
+          provider: ModelProvider.OpenAI,
+        } as any,
+        {},
+      );
+
+      const payload = JSON.parse(mockFetchSSE.mock.calls[0][1].body);
+      expect(payload.modelnet.candidate_aliases).toEqual(['inference-qwen3', deepseekAlias]);
+      expect(payload.modelnet.runtime_candidates).toEqual([
+        expect.objectContaining({
+          api_base: 'https://api.deepseek.com/v1',
+          api_key: 'deepseek-secret',
+          id: deepseekAlias,
+          model_id: 'deepseek-v4-flash',
+          provider_id: 'deepseek',
+        }),
+      ]);
+    });
+
     it('should request gateway serial runtime for ModelNet serial responses', async () => {
       const nodes = Array.from({ length: 10 }, (_, index) => ({
         id: `step-${index + 1}`,
@@ -1975,8 +2023,6 @@ describe('ChatService', () => {
         },
       });
     });
-
-
 
     it('should attach selected custom provider runtime candidates for ModelNet serial and auto responses', async () => {
       const customAlias = createModelNetUserProviderAlias('user-openai', 'user/model-a');
