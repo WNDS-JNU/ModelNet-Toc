@@ -4,6 +4,7 @@ import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useBusinessModelListGuard } from '@/business/client/hooks/useBusinessModelListGuard';
+import type { ModelNetProviderRuntimeConfigMap } from '@/features/ModelNetParallel';
 import { useEnabledChatModels } from '@/hooks/useEnabledChatModels';
 import type { EnabledProviderWithModels } from '@/types/aiProvider';
 
@@ -27,6 +28,7 @@ interface ListProps {
   onOpenChange?: (open: boolean) => void;
   pricingMode?: PricingMode;
   provider?: string;
+  runtimeConfig?: ModelNetProviderRuntimeConfigMap;
   searchKeyword?: string;
 }
 
@@ -39,6 +41,7 @@ export const List: FC<ListProps> = ({
   onOpenChange,
   pricingMode,
   provider: providerProp,
+  runtimeConfig,
   searchKeyword = '',
 }) => {
   const { t: tCommon } = useTranslation('common');
@@ -53,6 +56,7 @@ export const List: FC<ListProps> = ({
     enabledList,
     onModelChange: onModelChangeProp,
     onOpenChange,
+    runtimeConfig,
   });
   const listItems = useBuildListItems(enabledList, groupMode, searchKeyword);
 

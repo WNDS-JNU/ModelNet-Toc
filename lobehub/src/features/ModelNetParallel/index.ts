@@ -1,6 +1,10 @@
 import { type AiModelForSelect } from 'model-bank';
 
-import { type EnabledProviderWithModels } from '@/types/aiProvider';
+import {
+  type AiProviderRuntimeConfig,
+  AiProviderSourceEnum,
+  type EnabledProviderWithModels,
+} from '@/types/aiProvider';
 
 export const MODELNET_OPENAI_PROVIDER_ID = 'openai';
 export const MODELNET_LEGACY_PROVIDER_ID = 'lobehub';
@@ -15,11 +19,19 @@ export const MIN_MODELNET_PARALLEL_MODELS = 2;
 export const MODELNET_SERIAL_MODEL_ID = 'modelnet-serial';
 export const MODELNET_SERIAL_DISPLAY_NAME = 'ModelNet \u4E32\u8054';
 export const MIN_MODELNET_SERIAL_MODELS = 2;
+export const MODELNET_USER_PROVIDER_ALIAS_PREFIX = 'user-provider:';
+
+export type ModelNetProviderRuntimeConfigMap = Record<string, AiProviderRuntimeConfig | undefined>;
 
 export interface ModelNetSerialTopology {
   edges: { source: string; target: string }[];
   nodes: { id: string; modelId: string }[];
   version: 'modelnet.serial.v1';
+}
+
+export interface ModelNetUserProviderAlias {
+  modelId: string;
+  providerId: string;
 }
 
 const MODELNET_SYSTEM_MODEL_IDS = new Set([
@@ -28,6 +40,31 @@ const MODELNET_SYSTEM_MODEL_IDS = new Set([
   MODELNET_PARALLEL_MODEL_ID,
   MODELNET_SERIAL_MODEL_ID,
 ]);
+
+export const createModelNetUserProviderAlias = (providerId: string, modelId: string) =>
+  `${MODELNET_USER_PROVIDER_ALIAS_PREFIX}${encodeURIComponent(providerId)}:${encodeURIComponent(modelId)}`;
+
+export const parseModelNetUserProviderAlias = (
+  alias: string | undefined,
+): ModelNetUserProviderAlias | undefined => {
+  if (!alias?.startsWith(MODELNET_USER_PROVIDER_ALIAS_PREFIX)) return undefined;
+
+  const payload = alias.slice(MODELNET_USER_PROVIDER_ALIAS_PREFIX.length);
+  const separatorIndex = payload.indexOf(':');
+  if (separatorIndex <= 0 || separatorIndex >= payload.length - 1) return undefined;
+
+  try {
+    return {
+      providerId: decodeURIComponent(payload.slice(0, separatorIndex)),
+      modelId: decodeURIComponent(payload.slice(separatorIndex + 1)),
+    };
+  } catch {
+    return undefined;
+  }
+};
+
+export const isModelNetUserProviderAlias = (alias: string | undefined) =>
+  !!parseModelNetUserProviderAlias(alias);
 
 export const isModelNetParallelModel = (provider?: string, model?: string) =>
   !!provider &&
@@ -52,6 +89,13 @@ const isLikelyModelNetAlias = (id: string, providerId?: string) => {
   );
 };
 
+const isOpenAICompatibleCustomProvider = (
+  provider: EnabledProviderWithModels,
+  runtimeConfig: ModelNetProviderRuntimeConfigMap = {},
+) =>
+  provider.source === AiProviderSourceEnum.Custom &&
+  (runtimeConfig[provider.id]?.settings?.sdkType ?? 'openai') === 'openai';
+
 export const isModelNetParallelCandidate = (model: AiModelForSelect, providerId?: string) => {
   if (MODELNET_SYSTEM_MODEL_IDS.has(model.id)) return false;
   if (providerId === MODELNET_LEGACY_PROVIDER_ID) return true;
@@ -59,9 +103,36 @@ export const isModelNetParallelCandidate = (model: AiModelForSelect, providerId?
   return isModelNetDisplayName(model.displayName) || isLikelyModelNetAlias(model.id, providerId);
 };
 
+export const getModelNetUserProviderCandidates = (
+  enabledList: EnabledProviderWithModels[],
+  runtimeConfig: ModelNetProviderRuntimeConfigMap = {},
+): AiModelForSelect[] =>
+  enabledList.flatMap((provider) => {
+    if (!isOpenAICompatibleCustomProvider(provider, runtimeConfig)) return [];
+
+    return provider.children
+      .filter((model) => !MODELNET_SYSTEM_MODEL_IDS.has(model.id))
+      .map((model) => ({
+        ...model,
+        description: model.description,
+        displayName: `${provider.name || provider.id}/${model.displayName || model.id}`,
+        id: createModelNetUserProviderAlias(provider.id, model.id),
+      }));
+  });
+
+const uniqueCandidates = (candidates: AiModelForSelect[]) => {
+  const byId = new Map<string, AiModelForSelect>();
+  for (const candidate of candidates) {
+    if (!byId.has(candidate.id)) byId.set(candidate.id, candidate);
+  }
+  return [...byId.values()];
+};
+
 export const getModelNetParallelProvider = (
   enabledList: EnabledProviderWithModels[],
+  runtimeConfig: ModelNetProviderRuntimeConfigMap = {},
 ): EnabledProviderWithModels | undefined => {
+  const customCandidateCount = getModelNetUserProviderCandidates(enabledList, runtimeConfig).length;
   const providerMatches = enabledList
     .map((provider) => ({
       candidates: provider.children.filter((model) =>
@@ -69,7 +140,7 @@ export const getModelNetParallelProvider = (
       ),
       provider,
     }))
-    .filter(({ candidates }) => candidates.length >= MIN_MODELNET_PARALLEL_MODELS);
+    .filter(({ candidates }) => candidates.length + customCandidateCount >= MIN_MODELNET_PARALLEL_MODELS);
 
   return (
     MODELNET_PROVIDER_IDS.map((providerId) =>
@@ -81,14 +152,18 @@ export const getModelNetParallelProvider = (
 export const getModelNetParallelCandidates = (
   enabledList: EnabledProviderWithModels[],
   providerId?: string,
+  runtimeConfig: ModelNetProviderRuntimeConfigMap = {},
 ): AiModelForSelect[] => {
   const provider =
     (providerId && enabledList.find((item) => item.id === providerId)) ||
-    getModelNetParallelProvider(enabledList);
+    getModelNetParallelProvider(enabledList, runtimeConfig);
+  const registryCandidates =
+    provider?.children.filter((model) => isModelNetParallelCandidate(model, provider.id)) ?? [];
 
-  return (
-    provider?.children.filter((model) => isModelNetParallelCandidate(model, provider.id)) ?? []
-  );
+  return uniqueCandidates([
+    ...registryCandidates,
+    ...getModelNetUserProviderCandidates(enabledList, runtimeConfig),
+  ]);
 };
 
 export const getDefaultModelNetParallelModelIds = (candidates: AiModelForSelect[]) =>
@@ -165,6 +240,7 @@ const serialModel: AiModelForSelect = {
 
 export const withModelNetParallelModel = (
   enabledList: EnabledProviderWithModels[],
+  runtimeConfig: ModelNetProviderRuntimeConfigMap = {},
 ): EnabledProviderWithModels[] => {
   const normalizedList = enabledList.map((provider) => ({
     ...provider,
@@ -172,9 +248,9 @@ export const withModelNetParallelModel = (
       (model) => model.id !== MODELNET_PARALLEL_MODEL_ID && model.id !== MODELNET_SERIAL_MODEL_ID,
     ),
   }));
-  const modelNetProvider = getModelNetParallelProvider(normalizedList);
+  const modelNetProvider = getModelNetParallelProvider(normalizedList, runtimeConfig);
   const candidates = modelNetProvider
-    ? getModelNetParallelCandidates(normalizedList, modelNetProvider.id)
+    ? getModelNetParallelCandidates(normalizedList, modelNetProvider.id, runtimeConfig)
     : [];
   if (candidates.length < MIN_MODELNET_PARALLEL_MODELS) return normalizedList;
 

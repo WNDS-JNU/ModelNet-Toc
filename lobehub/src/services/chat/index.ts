@@ -28,6 +28,7 @@ import {
   MIN_MODELNET_PARALLEL_MODELS,
   MIN_MODELNET_SERIAL_MODELS,
   MODELNET_AUTO_MODEL_ID,
+  parseModelNetUserProviderAlias,
 } from '@/features/ModelNetParallel';
 import { getSearchConfig } from '@/helpers/getSearchConfig';
 import { getAgentStoreState } from '@/store/agent';
@@ -89,6 +90,71 @@ interface GetChatCompletionPayload extends Partial<Omit<ChatStreamPayload, 'mess
 
 type ChatStreamInputParams = Partial<Omit<ChatStreamPayload, 'messages'>> & {
   messages?: (UIChatMessage | OpenAIChatMessage)[];
+};
+
+const uniqueStringList = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? [...new Set(value.filter((id): id is string => typeof id === 'string'))]
+    : [];
+
+const modelNetSerialModelIds = (topology: unknown): string[] => {
+  const nodes =
+    typeof topology === 'object' && topology !== null && Array.isArray((topology as any).nodes)
+      ? (topology as any).nodes
+      : [];
+
+  return [
+    ...new Set(
+      nodes
+        .map((node: any) => node?.modelId)
+        .filter((modelId: unknown): modelId is string => typeof modelId === 'string'),
+    ),
+  ];
+};
+
+const buildModelNetRuntimeCandidates = (modelIds: string[]) => {
+  const selectedIds = [...new Set(modelIds)];
+  if (selectedIds.length === 0) return [];
+
+  const { aiProviderRuntimeConfig = {}, enabledChatModelList = [] } = getAiInfraStoreState();
+
+  return selectedIds.flatMap((id) => {
+    const alias = parseModelNetUserProviderAlias(id);
+    if (!alias) return [];
+
+    const provider = enabledChatModelList.find((item) => item.id === alias.providerId);
+    const model = provider?.children.find((item) => item.id === alias.modelId);
+    const runtimeConfig = aiProviderRuntimeConfig[alias.providerId];
+    const sdkType = runtimeConfig?.settings?.sdkType ?? 'openai';
+    const apiBase = runtimeConfig?.keyVaults?.baseURL?.trim();
+
+    if (!provider || !model || sdkType !== 'openai' || !apiBase) return [];
+
+    return [
+      {
+        backend: 'openai_compatible',
+        capabilities: ['chat', 'streaming'],
+        display_name: model.displayName || alias.modelId,
+        id,
+        model_id: alias.modelId,
+        provider_id: alias.providerId,
+        provider_name: provider.name || alias.providerId,
+        source: 'user_provider',
+        ...(typeof model.contextWindowTokens === 'number' && {
+          context_length: model.contextWindowTokens,
+        }),
+        api_base: apiBase,
+        ...(runtimeConfig?.keyVaults?.apiKey && { api_key: runtimeConfig.keyVaults.apiKey }),
+      },
+    ];
+  });
+};
+
+const attachModelNetRuntimeCandidates = (modelnet: any, modelIds: string[]) => {
+  const runtimeCandidates = buildModelNetRuntimeCandidates(modelIds);
+  if (runtimeCandidates.length > 0) {
+    modelnet.runtime_candidates = runtimeCandidates;
+  }
 };
 
 interface FetchAITaskResultParams extends FetchSSEOptions {
@@ -366,16 +432,12 @@ class ChatService {
     const requestTrigger = metadata?.trigger;
 
     const { provider = ModelProvider.OpenAI, ...res } = params;
-    const modelnetParallelModelIds = Array.isArray((res as any).modelnetParallelModelIds)
-      ? [
-          ...new Set(
-            (res as any).modelnetParallelModelIds.filter((id: unknown) => typeof id === 'string'),
-          ),
-        ]
-      : [];
+    const modelnetParallelModelIds = uniqueStringList((res as any).modelnetParallelModelIds);
     delete (res as any).modelnetParallelModelIds;
     const modelnetSerialTopology = (res as any).modelnetSerialTopology;
     delete (res as any).modelnetSerialTopology;
+    const modelnetAutoCandidateIds = uniqueStringList((res as any).modelnetAutoCandidateIds);
+    delete (res as any).modelnetAutoCandidateIds;
     delete (res as any).modelnet;
 
     // =================== process model =================== //
@@ -449,6 +511,7 @@ class ChatService {
     if (payload.frequency_penalty === null) payload.frequency_penalty = undefined;
     delete (payload as any).modelnetParallelModelIds;
     delete (payload as any).modelnetSerialTopology;
+    delete (payload as any).modelnetAutoCandidateIds;
 
     if (isModelNetParallel) {
       if (modelnetParallelModelIds.length < MIN_MODELNET_PARALLEL_MODELS) {
@@ -472,6 +535,7 @@ class ChatService {
           },
         },
       };
+      attachModelNetRuntimeCandidates(payload.modelnet, modelnetParallelModelIds);
     }
 
     if (isModelNetAuto) {
@@ -479,6 +543,9 @@ class ChatService {
         stream_options: {
           include_trace: true,
         },
+        ...(modelnetAutoCandidateIds.length > 0 && {
+          candidate_aliases: modelnetAutoCandidateIds,
+        }),
         collaboration_plan: {
           aggregator: 'auto',
           runner: 'auto.network',
@@ -487,6 +554,7 @@ class ChatService {
           },
         },
       };
+      attachModelNetRuntimeCandidates(payload.modelnet, modelnetAutoCandidateIds);
     }
 
     if (isModelNetSerial) {
@@ -520,6 +588,7 @@ class ChatService {
           },
         },
       };
+      attachModelNetRuntimeCandidates(payload.modelnet, modelNetSerialModelIds(serialTopology));
     }
 
     const sdkType = resolveRuntimeProvider(provider);

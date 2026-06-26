@@ -17,6 +17,7 @@ import {
 import { useEnabledChatModels } from '@/hooks/useEnabledChatModels';
 import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors } from '@/store/agent/selectors';
+import { useAiInfraStore } from '@/store/aiInfra';
 
 import { useAgentId } from '../../hooks/useAgentId';
 
@@ -242,6 +243,7 @@ const moveItem = (items: string[], index: number, direction: -1 | 1) => {
 const ModelNetSerial = memo(() => {
   const agentId = useAgentId();
   const enabledList = useEnabledChatModels();
+  const aiProviderRuntimeConfig = useAiInfraStore((s) => s.aiProviderRuntimeConfig);
   const [model, provider, agentParams, isLoading, updateAgentConfigById] = useAgentStore((s) => [
     agentByIdSelectors.getAgentModelById(agentId)(s),
     agentByIdSelectors.getAgentModelProviderById(agentId)(s),
@@ -250,8 +252,8 @@ const ModelNetSerial = memo(() => {
     s.updateAgentConfigById,
   ]);
   const candidates = useMemo(
-    () => getModelNetParallelCandidates(enabledList, provider),
-    [enabledList, provider],
+    () => getModelNetParallelCandidates(enabledList, provider, aiProviderRuntimeConfig),
+    [aiProviderRuntimeConfig, enabledList, provider],
   );
   const modelMap = useMemo(
     () => new Map(candidates.map((candidate) => [candidate.id, candidate])),

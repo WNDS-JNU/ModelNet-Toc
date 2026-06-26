@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import logging
 import math
@@ -9,10 +10,11 @@ import os
 import re
 import time
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 import yaml
@@ -193,6 +195,8 @@ RESPONSE_AGGREGATE_SYSTEM_PROMPT = (
 ENDPOINT_HEALTH_TTL_SECONDS = float(os.environ.get("MODELNET_ENDPOINT_HEALTH_TTL_SECONDS", "15"))
 ENDPOINT_READY_SCORE = float(os.environ.get("MODELNET_ENDPOINT_READY_SCORE", "100"))
 NO_DEVICE_METRICS_PENALTY = float(os.environ.get("MODELNET_NO_DEVICE_METRICS_PENALTY", "250"))
+RUNTIME_CANDIDATE_MAX = int(os.environ.get("MODELNET_RUNTIME_CANDIDATE_MAX", "16"))
+RUNTIME_CANDIDATE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/%+@-]{0,255}$")
 
 
 @dataclass(frozen=True)
@@ -208,6 +212,12 @@ class Candidate:
     eos: str = ""
     expose_raw_logits: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+RUNTIME_CANDIDATES_CONTEXT: ContextVar[tuple[Candidate, ...]] = ContextVar(
+    "modelnet_runtime_candidates",
+    default=(),
+)
 
 
 @dataclass
@@ -587,6 +597,158 @@ def load_candidates() -> list[Candidate]:
         backend_counts[candidate.backend_type] = backend_counts.get(candidate.backend_type, 0) + 1
     LOGGER.info("loaded %s candidates %s", len(candidates), backend_counts)
     return candidates
+
+
+def current_runtime_candidates() -> list[Candidate]:
+    return list(RUNTIME_CANDIDATES_CONTEXT.get())
+
+
+def candidate_pool(runtime_candidates: list[Candidate] | None = None) -> list[Candidate]:
+    candidates = list(load_candidates())
+    seen = {candidate.model_id for candidate in candidates}
+    for candidate in runtime_candidates if runtime_candidates is not None else current_runtime_candidates():
+        if candidate.model_id in seen:
+            continue
+        candidates.append(candidate)
+        seen.add(candidate.model_id)
+    return candidates
+
+
+def runtime_candidate_error(detail: str) -> None:
+    raise HTTPException(status_code=400, detail=f"Invalid ModelNet runtime candidate: {detail}")
+
+
+def runtime_candidate_string(
+    payload: dict[str, Any],
+    key: str,
+    *,
+    max_length: int = 256,
+    pattern: re.Pattern[str] | None = RUNTIME_CANDIDATE_ID_RE,
+) -> str:
+    value = str(payload.get(key) or "").strip()
+    if not value:
+        runtime_candidate_error(f"{key} is required")
+    if len(value) > max_length:
+        runtime_candidate_error(f"{key} is too long")
+    if pattern is not None and not pattern.match(value):
+        runtime_candidate_error(f"{key} contains unsupported characters")
+    return value
+
+
+def validate_runtime_candidate_api_base(value: Any) -> str:
+    api_base = str(value or "").strip().rstrip("/")
+    if not api_base:
+        runtime_candidate_error("api_base is required")
+    parsed = urlparse(api_base)
+    if parsed.scheme.lower() != "https":
+        runtime_candidate_error("api_base must use https")
+    if parsed.username or parsed.password:
+        runtime_candidate_error("api_base must not include credentials")
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not host:
+        runtime_candidate_error("api_base host is required")
+    if host in {"localhost", "ip6-localhost", "ip6-loopback"} or host.endswith(".localhost") or host.endswith(".local"):
+        runtime_candidate_error("api_base host must not be local")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return api_base
+    if (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+    ):
+        runtime_candidate_error("api_base host must be publicly routable")
+    return api_base
+
+
+def runtime_candidate_capabilities(value: Any) -> list[str]:
+    if value is None:
+        return ["chat", "streaming"]
+    if not isinstance(value, list):
+        runtime_candidate_error("capabilities must be a list")
+    capabilities: list[str] = []
+    for item in value[:16]:
+        capability = str(item or "").strip().lower()
+        if not capability:
+            continue
+        if len(capability) > 64 or not re.match(r"^[a-z0-9_.:-]+$", capability):
+            runtime_candidate_error("capabilities contain unsupported characters")
+        if capability not in capabilities:
+            capabilities.append(capability)
+    return capabilities or ["chat", "streaming"]
+
+
+def runtime_candidates_from_modelnet_options(modelnet_options: dict[str, Any] | None) -> list[Candidate]:
+    raw_candidates = modelnet_options.get("runtime_candidates") if isinstance(modelnet_options, dict) else None
+    if raw_candidates is None:
+        return []
+    if not isinstance(raw_candidates, list):
+        runtime_candidate_error("runtime_candidates must be a list")
+    if len(raw_candidates) > RUNTIME_CANDIDATE_MAX:
+        runtime_candidate_error("too many runtime_candidates")
+
+    candidates: list[Candidate] = []
+    seen: set[str] = set()
+    for raw in raw_candidates:
+        if not isinstance(raw, dict):
+            runtime_candidate_error("runtime candidate must be an object")
+        backend = str(raw.get("backend") or "").strip() or "openai_compatible"
+        if backend != "openai_compatible":
+            runtime_candidate_error("only openai_compatible runtime candidates are supported")
+        source = str(raw.get("source") or "user_provider").strip()
+        if source != "user_provider":
+            runtime_candidate_error("runtime candidate source must be user_provider")
+        candidate_id = runtime_candidate_string(raw, "id")
+        if candidate_id in seen:
+            continue
+        model_id = runtime_candidate_string(raw, "model_id")
+        provider_id = runtime_candidate_string(raw, "provider_id")
+        api_base_input = validate_runtime_candidate_api_base(raw.get("api_base"))
+        context_length_raw = raw.get("context_length")
+        context_length: int | None = None
+        if context_length_raw is not None:
+            try:
+                context_length = int(context_length_raw)
+            except (TypeError, ValueError):
+                runtime_candidate_error("context_length must be an integer")
+            if context_length <= 0:
+                runtime_candidate_error("context_length must be positive")
+        capabilities = runtime_candidate_capabilities(raw.get("capabilities"))
+        metadata: dict[str, Any] = {
+            "runtime_candidate": True,
+            "source": source,
+            "provider_id": provider_id,
+            "provider_name": str(raw.get("provider_name") or provider_id).strip() or provider_id,
+            "display_name": str(raw.get("display_name") or model_id).strip() or model_id,
+            "capabilities": capabilities,
+        }
+        if context_length is not None:
+            metadata["context_length"] = context_length
+        candidates.append(
+            Candidate(
+                model_id=candidate_id,
+                backend_type="openai_compatible",
+                k8s_namespace="runtime",
+                backend_model=model_id,
+                root_url=normalize_root_url(api_base_input),
+                api_base=normalize_api_base(api_base_input),
+                service_names=(candidate_id,),
+                api_key=str(raw.get("api_key") or "").strip(),
+                metadata=metadata,
+            )
+        )
+        seen.add(candidate_id)
+    return candidates
+
+
+def runtime_candidates_from_runner_config(runner_config: dict[str, Any] | None) -> list[Candidate]:
+    if not isinstance(runner_config, dict) or "runtime_candidates" not in runner_config:
+        return []
+    return runtime_candidates_from_modelnet_options({"runtime_candidates": runner_config.get("runtime_candidates")})
 
 
 def parse_cpu_milli(value: str) -> float:
@@ -981,8 +1143,9 @@ async def pick_candidate(
     tenant: GatewayTenant | None = None,
     candidate_aliases: set[str] | None = None,
     required_capabilities: set[str] | None = None,
+    runtime_candidates: list[Candidate] | None = None,
 ) -> tuple[Candidate, float, str]:
-    candidates = load_candidates()
+    candidates = candidate_pool(runtime_candidates)
     if tenant is not None:
         candidates = [candidate for candidate in candidates if tenant.allows_model(candidate.model_id)]
     if candidate_aliases:
@@ -1686,8 +1849,9 @@ async def scored_candidate_pool(
     *,
     candidate_aliases: set[str] | None = None,
     required_capabilities: set[str] | None = None,
+    runtime_candidates: list[Candidate] | None = None,
 ) -> list[tuple[Candidate, float, str]]:
-    candidates = visible_candidates(tenant)
+    candidates = visible_candidates(tenant, runtime_candidates=runtime_candidates)
     if candidate_aliases:
         candidates = [candidate for candidate in candidates if candidate.model_id in candidate_aliases]
     if required_capabilities:
@@ -5493,8 +5657,12 @@ def backend_capability(candidate: Candidate, *, health: dict[str, Any] | None = 
     return capability.model_dump(exclude_none=True)
 
 
-def visible_candidates(tenant: GatewayTenant) -> list[Candidate]:
-    return [candidate for candidate in load_candidates() if tenant.allows_model(candidate.model_id)]
+def visible_candidates(
+    tenant: GatewayTenant,
+    *,
+    runtime_candidates: list[Candidate] | None = None,
+) -> list[Candidate]:
+    return [candidate for candidate in candidate_pool(runtime_candidates) if tenant.allows_model(candidate.model_id)]
 
 
 def capability_diagnostics(
@@ -9670,6 +9838,16 @@ def execution_contract_error(request: EnsembleRequest, tenant: GatewayTenant) ->
 
 
 async def run_ensemble_stream(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
+    runtime_candidates = runtime_candidates_from_runner_config(request.runner_config)
+    token = RUNTIME_CANDIDATES_CONTEXT.set(tuple(runtime_candidates))
+    try:
+        async for event in run_ensemble_stream_inner(request, tenant):
+            yield event
+    finally:
+        RUNTIME_CANDIDATES_CONTEXT.reset(token)
+
+
+async def run_ensemble_stream_inner(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
     contract_error = execution_contract_error(request, tenant)
     if contract_error is not None:
         yield sse("error", contract_error)

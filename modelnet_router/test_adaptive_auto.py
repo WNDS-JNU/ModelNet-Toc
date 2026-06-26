@@ -361,6 +361,99 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ensemble.runner_config["allow_degraded"], False)
         self.assertEqual([source.model_alias for source in ensemble.sources], ["qwen-7b", "llama-8b"])
 
+
+    def runtime_candidate_payload(self, **overrides: Any) -> dict[str, Any]:
+        payload = {
+            "id": "user-provider:user-openai:user%2Fmodel-a",
+            "source": "user_provider",
+            "provider_id": "user-openai",
+            "provider_name": "User OpenAI",
+            "model_id": "user/model-a",
+            "display_name": "User Model A",
+            "backend": "openai_compatible",
+            "api_base": "https://user.example.com/v1",
+            "api_key": "user-secret",
+            "context_length": 32768,
+            "capabilities": ["chat", "streaming"],
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_runtime_candidates_parse_as_request_scoped_openai_candidates(self) -> None:
+        candidates = router.runtime_candidates_from_modelnet_options(
+            {"runtime_candidates": [self.runtime_candidate_payload()]}
+        )
+
+        self.assertEqual(len(candidates), 1)
+        candidate = candidates[0]
+        self.assertEqual(candidate.model_id, "user-provider:user-openai:user%2Fmodel-a")
+        self.assertEqual(candidate.backend_type, "openai_compatible")
+        self.assertEqual(candidate.backend_model, "user/model-a")
+        self.assertEqual(candidate.api_base, "https://user.example.com/v1")
+        self.assertEqual(candidate.api_key, "user-secret")
+        info = router.candidate_backend_info(candidate)
+        self.assertEqual(info["id"], candidate.model_id)
+        self.assertNotIn("api_key", json.dumps(info))
+        self.assertNotIn("user-secret", json.dumps(info))
+
+    def test_openai_chat_to_ir_redacts_runtime_candidate_credentials(self) -> None:
+        ir = router.openai_chat_to_ir(
+            {
+                "model": router.PUBLIC_AUTO_MODEL_NAME,
+                "messages": [{"role": "user", "content": "hello"}],
+                "modelnet": {"runtime_candidates": [self.runtime_candidate_payload()]},
+            }
+        )
+
+        metadata_text = json.dumps(ir.metadata, ensure_ascii=False)
+        self.assertNotIn("user-secret", metadata_text)
+        self.assertNotIn("api_key", metadata_text)
+        self.assertIn("runtime_candidates_redacted", metadata_text)
+
+    def test_runtime_candidates_reject_unsafe_base_urls(self) -> None:
+        with self.assertRaises(router.HTTPException):
+            router.runtime_candidates_from_modelnet_options(
+                {"runtime_candidates": [self.runtime_candidate_payload(api_base="http://127.0.0.1:8000/v1")]}
+            )
+
+    async def test_pick_candidate_can_select_runtime_candidate_alias(self) -> None:
+        original_load_candidates = router.load_candidates
+        original_load_k8s_snapshot = router.load_k8s_snapshot
+        original_load_prometheus_snapshot = router.load_prometheus_snapshot
+        original_endpoint_health = router.endpoint_health
+        try:
+            runtime_candidates = router.runtime_candidates_from_modelnet_options(
+                {"runtime_candidates": [self.runtime_candidate_payload()]}
+            )
+            router.load_candidates = lambda: [candidate("system-a", backend_type="openai_compatible")]
+
+            async def fake_k8s() -> router.K8sSnapshot:
+                return router.K8sSnapshot()
+
+            async def fake_prometheus() -> router.PrometheusSnapshot:
+                return router.PrometheusSnapshot()
+
+            async def fake_endpoint_health(_candidate: router.Candidate) -> router.EndpointHealth:
+                return router.EndpointHealth(ready=True, updated_at=1)
+
+            router.load_k8s_snapshot = fake_k8s
+            router.load_prometheus_snapshot = fake_prometheus
+            router.endpoint_health = fake_endpoint_health
+
+            selected, _score, reason = await router.pick_candidate(
+                tenant=self.tenant,
+                candidate_aliases={"user-provider:user-openai:user%2Fmodel-a"},
+                runtime_candidates=runtime_candidates,
+            )
+
+            self.assertEqual(selected.model_id, "user-provider:user-openai:user%2Fmodel-a")
+            self.assertEqual(reason, "endpoint-ready")
+        finally:
+            router.load_candidates = original_load_candidates
+            router.load_k8s_snapshot = original_load_k8s_snapshot
+            router.load_prometheus_snapshot = original_load_prometheus_snapshot
+            router.endpoint_health = original_endpoint_health
+
     def serial_dify_request(self, serial_topology: dict[str, Any]) -> router.EnsembleRequest:
         return router.EnsembleRequest(
             sources=[router.EnsembleSource(source_id="source-1", prompt="hello")],

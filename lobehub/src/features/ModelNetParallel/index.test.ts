@@ -1,9 +1,14 @@
 import { type AiModelForSelect } from 'model-bank';
 import { describe, expect, it } from 'vitest';
 
-import { type EnabledProviderWithModels } from '@/types/aiProvider';
+import {
+  type AiProviderRuntimeConfig,
+  AiProviderSourceEnum,
+  type EnabledProviderWithModels,
+} from '@/types/aiProvider';
 
 import {
+  createModelNetUserProviderAlias,
   getModelNetParallelCandidates,
   getModelNetParallelProvider,
   isModelNetParallelModel,
@@ -13,6 +18,7 @@ import {
   MODELNET_SERIAL_MODEL_ID,
   normalizeModelNetParallelModelIds,
   normalizeModelNetSerialTopology,
+  parseModelNetUserProviderAlias,
   withModelNetParallelModel,
 } from './index';
 
@@ -22,12 +28,27 @@ const model = (id: string, displayName?: string): AiModelForSelect => ({
   id,
 });
 
-const provider = (id: string, children: AiModelForSelect[]): EnabledProviderWithModels => ({
+const provider = (
+  id: string,
+  children: AiModelForSelect[],
+  source: EnabledProviderWithModels['source'] = AiProviderSourceEnum.Builtin,
+): EnabledProviderWithModels => ({
   children,
   id,
   name: id,
-  source: 'builtin',
+  source,
 });
+
+const runtimeConfig = (
+  sdkType: string,
+  overrides: Partial<AiProviderRuntimeConfig> = {},
+): AiProviderRuntimeConfig =>
+  ({
+    config: {},
+    keyVaults: {},
+    settings: { sdkType },
+    ...overrides,
+  }) as AiProviderRuntimeConfig;
 
 describe('ModelNetParallel helpers', () => {
   it('injects the parallel pseudo model under the OpenAI provider that hosts ModelNet aliases', () => {
@@ -109,5 +130,38 @@ describe('ModelNetParallel helpers', () => {
     expect(isModelNetSerialModel('openai', MODELNET_SERIAL_MODEL_ID)).toBe(true);
     expect(isModelNetSerialModel('lobehub', MODELNET_SERIAL_MODEL_ID)).toBe(true);
     expect(isModelNetSerialModel('anthropic', MODELNET_SERIAL_MODEL_ID)).toBe(false);
+  });
+
+  it('includes custom OpenAI-compatible providers as ModelNet runtime candidates', () => {
+    const customAlias = createModelNetUserProviderAlias('user-openai', 'user/model-a');
+    const enabledList = [
+      provider('openai', [model('inference-qwen3', 'ModelNet/Qwen3')]),
+      provider(
+        'user-openai',
+        [model('user/model-a', 'User Model A')],
+        AiProviderSourceEnum.Custom,
+      ),
+      provider('user-ollama', [model('ollama-a', 'Ollama A')], AiProviderSourceEnum.Custom),
+    ];
+    const configs = {
+      'user-openai': runtimeConfig('openai'),
+      'user-ollama': runtimeConfig('ollama'),
+    };
+
+    const result = withModelNetParallelModel(enabledList, configs);
+    const openai = result.find((item) => item.id === 'openai');
+
+    expect(openai?.children.map((item) => item.id).slice(0, 3)).toEqual([
+      MODELNET_PARALLEL_MODEL_ID,
+      MODELNET_SERIAL_MODEL_ID,
+      'inference-qwen3',
+    ]);
+    expect(getModelNetParallelCandidates(result, 'openai', configs).map((item) => item.id)).toEqual(
+      ['inference-qwen3', customAlias],
+    );
+    expect(parseModelNetUserProviderAlias(customAlias)).toEqual({
+      modelId: 'user/model-a',
+      providerId: 'user-openai',
+    });
   });
 });
