@@ -717,6 +717,19 @@ def runtime_candidates_from_modelnet_options(modelnet_options: dict[str, Any] | 
                 runtime_candidate_error("context_length must be an integer")
             if context_length <= 0:
                 runtime_candidate_error("context_length must be positive")
+        max_output_tokens_raw = None
+        for max_output_key in ("max_output_tokens", "max_output", "max_completion_tokens"):
+            if raw.get(max_output_key) is not None:
+                max_output_tokens_raw = raw.get(max_output_key)
+                break
+        max_output_tokens: int | None = None
+        if max_output_tokens_raw is not None:
+            try:
+                max_output_tokens = int(max_output_tokens_raw)
+            except (TypeError, ValueError):
+                runtime_candidate_error("max_output_tokens must be an integer")
+            if max_output_tokens <= 0:
+                runtime_candidate_error("max_output_tokens must be positive")
         capabilities = runtime_candidate_capabilities(raw.get("capabilities"))
         metadata: dict[str, Any] = {
             "runtime_candidate": True,
@@ -728,6 +741,8 @@ def runtime_candidates_from_modelnet_options(modelnet_options: dict[str, Any] | 
         }
         if context_length is not None:
             metadata["context_length"] = context_length
+        if max_output_tokens is not None:
+            metadata["max_output_tokens"] = max_output_tokens
         candidates.append(
             Candidate(
                 model_id=candidate_id,
@@ -5533,6 +5548,7 @@ def candidate_backend_info(
 
 
 CONTEXT_LENGTH_METADATA_KEYS = ("context_length", "max_context_length", "max_model_len", "n_ctx", "max_tokens")
+OUTPUT_TOKEN_METADATA_KEYS = ("max_output_tokens", "max_output", "max_completion_tokens")
 
 
 def positive_context_length(value: Any) -> int | None:
@@ -5547,6 +5563,14 @@ def positive_context_length(value: Any) -> int | None:
 
 def candidate_context_length(candidate: Candidate) -> int | None:
     for key in CONTEXT_LENGTH_METADATA_KEYS:
+        parsed = positive_context_length(candidate.metadata.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def candidate_max_output_tokens(candidate: Candidate) -> int | None:
+    for key in OUTPUT_TOKEN_METADATA_KEYS:
         parsed = positive_context_length(candidate.metadata.get(key))
         if parsed is not None:
             return parsed
@@ -6155,13 +6179,24 @@ async def resolve_generation_max_tokens(
     prefer_model_max: bool = False,
 ) -> int:
     explicit = explicit_generation_max_tokens(source)
+    output_cap = candidate_max_output_tokens(candidate)
     if explicit is None and not prefer_model_max:
-        return generation_max_tokens(source, default)
+        value = generation_max_tokens(source, default)
+        return min(value, output_cap) if output_cap is not None else value
 
     context_length = await discover_candidate_context_length(candidate)
     budget = usable_completion_token_budget(context_length, prompt_tokens)
     if explicit is not None:
-        return min(explicit, budget) if budget is not None else explicit
+        limits = [explicit]
+        if budget is not None:
+            limits.append(budget)
+        if output_cap is not None:
+            limits.append(output_cap)
+        return min(limits)
+    if budget is not None and output_cap is not None:
+        return min(budget, output_cap)
+    if output_cap is not None:
+        return output_cap
     if budget is not None:
         return budget
     return RESPONSE_PARALLEL_FALLBACK_MAX_TOKENS

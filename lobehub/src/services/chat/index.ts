@@ -145,6 +145,9 @@ const buildModelNetRuntimeCandidates = (modelIds: string[]) => {
         ...(typeof model.contextWindowTokens === 'number' && {
           context_length: model.contextWindowTokens,
         }),
+        ...(typeof model.maxOutput === 'number' && {
+          max_output_tokens: model.maxOutput,
+        }),
         api_base: runtimeInfo.apiBase,
         ...(runtimeInfo.apiKey && { api_key: runtimeInfo.apiKey }),
       },

@@ -396,6 +396,13 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("api_key", json.dumps(info))
         self.assertNotIn("user-secret", json.dumps(info))
 
+    def test_runtime_candidates_parse_max_output_tokens(self) -> None:
+        candidates = router.runtime_candidates_from_modelnet_options(
+            {"runtime_candidates": [self.runtime_candidate_payload(max_output_tokens=393216)]}
+        )
+
+        self.assertEqual(candidates[0].metadata["max_output_tokens"], 393216)
+
     def test_openai_chat_to_ir_redacts_runtime_candidate_credentials(self) -> None:
         ir = router.openai_chat_to_ir(
             {
@@ -1824,6 +1831,40 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(small_max, 512)
         self.assertEqual(huge_max, router.usable_completion_token_budget(8192, prompt_tokens))
 
+    async def test_response_source_caps_runtime_candidate_by_max_output_tokens(self) -> None:
+        source_candidate = candidate(
+            "user-provider:deepseek:deepseek-v4-flash",
+            backend_type="openai_compatible",
+            metadata={"context_length": 1_048_576, "max_output_tokens": 393_216},
+        )
+        source = router.EnsembleSource(
+            source_id="source-1",
+            prompt="Question?",
+            sampling_params={},
+        )
+        huge = router.EnsembleSource(
+            source_id="source-1",
+            prompt="Question?",
+            sampling_params={"max_tokens": 999_999},
+        )
+        prompt_tokens = router.estimate_token_count("Question?")
+
+        inferred_max = await router.resolve_generation_max_tokens(
+            source_candidate,
+            source,
+            prompt_tokens=prompt_tokens,
+            prefer_model_max=True,
+        )
+        explicit_max = await router.resolve_generation_max_tokens(
+            source_candidate,
+            huge,
+            prompt_tokens=prompt_tokens,
+            prefer_model_max=True,
+        )
+
+        self.assertEqual(inferred_max, 393_216)
+        self.assertEqual(explicit_max, 393_216)
+
     def test_response_synthesizer_prefers_strong_qwen_source_model(self) -> None:
         qwen_35b = "inference-qwen-qwen3-5-35b-a3b-gptq-int4"
         deepseek_14b = "inference-deepseek-r1-14b"
@@ -3049,6 +3090,34 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BackendAdapterTests(unittest.TestCase):
+    def test_prepare_chat_body_normalizes_gemma_messages_to_alternating_user_assistant(self) -> None:
+        source_candidate = candidate(
+            "inference-gaunernst-gemma-3-4b-it-int4-awq",
+            backend_type="vllm_chat",
+        )
+
+        body = backend_adapters.prepare_chat_body(
+            source_candidate,
+            {
+                "messages": [
+                    {"role": "system", "content": "Answer like a scientist."},
+                    {"role": "user", "content": "Question?"},
+                    {"role": "user", "content": "Extra context."},
+                    {"role": "assistant", "content": "Partial answer."},
+                    {"role": "assistant", "content": "More partial answer."},
+                ],
+                "stream": False,
+            },
+        )
+
+        messages = body["messages"]
+        self.assertEqual([message["role"] for message in messages], ["user", "assistant"])
+        self.assertIn("Answer like a scientist.", messages[0]["content"])
+        self.assertIn("Question?", messages[0]["content"])
+        self.assertIn("Extra context.", messages[0]["content"])
+        self.assertIn("Partial answer.", messages[1]["content"])
+        self.assertIn("More partial answer.", messages[1]["content"])
+
     def test_context_limit_retry_uses_backend_token_count(self) -> None:
         detail = (
             "This model's maximum context length is 8192 tokens. However, you requested "
