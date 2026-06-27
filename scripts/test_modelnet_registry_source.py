@@ -11,6 +11,8 @@ import yaml
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 SCRIPT_PATH = SCRIPT_DIR / "modelnet_registry_source.py"
 SPEC = importlib.util.spec_from_file_location("modelnet_registry_source", SCRIPT_PATH)
 assert SPEC is not None
@@ -125,10 +127,30 @@ class ModelNetRegistrySourceTest(unittest.TestCase):
             [
                 "inference-qwen-qwen3-4b-awq",
                 "llama-cpp-deploy-jetson-16g-1-meta-llama-31-8b-instruct-q80",
+                "siliconflow-tencent-hunyuan-mt-7b",
+                "siliconflow-thudm-glm-z1-9b-0414",
             ],
         )
         self.assertEqual(result["models"][0]["backend"], "vllm_chat")
         self.assertEqual(result["models"][1]["backend"], "llama_cpp")
+
+    def test_discover_model_registry_includes_default_siliconflow_models(self) -> None:
+        settings = modelnet_registry_source.K8sDiscoverySettings(namespaces=())
+
+        result = modelnet_registry_source.discover_model_registry(
+            settings,
+            client=FakeK8sClient([]),
+            probe_func=lambda _base_url, _timeout: "unused",
+        )
+        models = {model["id"]: model for model in result["models"]}
+
+        self.assertIn("siliconflow-thudm-glm-z1-9b-0414", models)
+        self.assertIn("siliconflow-tencent-hunyuan-mt-7b", models)
+        glm = models["siliconflow-thudm-glm-z1-9b-0414"]
+        self.assertEqual(glm["backend"], "openai_compatible")
+        self.assertEqual(glm["model_name"], "THUDM/GLM-Z1-9B-0414")
+        self.assertEqual(glm["model_url"], "https://api.siliconflow.cn")
+        self.assertEqual(glm["api_key_env"], "SILICONFLOW_API_KEY")
 
     def test_refresh_writes_source_registry_and_status(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -150,7 +172,7 @@ class ModelNetRegistrySourceTest(unittest.TestCase):
             self.assertEqual(payload["schema_version"], "modelnet.capabilities.v1")
             self.assertIn("chat.general", payload["capabilities"])
             self.assertEqual(payload["models"][0]["id"], "inference-qwen-qwen3-4b-awq")
-            self.assertEqual(json.loads(status_output.read_text(encoding="utf-8"))["model_count"], 1)
+            self.assertEqual(json.loads(status_output.read_text(encoding="utf-8"))["model_count"], 3)
 
     def test_dry_run_does_not_write_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

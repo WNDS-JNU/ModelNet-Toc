@@ -68,6 +68,28 @@ class LiteLLMLayeringTest(unittest.TestCase):
         self.assertNotIn("http://modelnet-router:8000/v1", llama_section)
         self.assertNotIn("http://modelnet-router:8000/v1", vllm_section)
 
+    def test_concrete_backend_entries_use_model_specific_api_key_env(self) -> None:
+        config, model_names = sync_modelnet_litellm.build_config(
+            [
+                {
+                    "backend": "openai_compatible",
+                    "id": "siliconflow-thudm-glm-z1-9b-0414",
+                    "model_name": "THUDM/GLM-Z1-9B-0414",
+                    "model_url": "https://api.siliconflow.cn",
+                    "api_key_env": "SILICONFLOW_API_KEY",
+                }
+            ]
+        )
+
+        self.assertEqual(
+            model_names,
+            ["modelnet", "modelnet-auto", "siliconflow-thudm-glm-z1-9b-0414"],
+        )
+        section = section_for(config, "siliconflow-thudm-glm-z1-9b-0414")
+        self.assertIn("api_base: 'https://api.siliconflow.cn/v1'", section)
+        self.assertIn("api_key: 'os.environ/SILICONFLOW_API_KEY'", section)
+        self.assertNotIn("api_key: 'os.environ/MODELNET_BACKEND_API_KEY'", section)
+
 
 if __name__ == "__main__":
     unittest.main()

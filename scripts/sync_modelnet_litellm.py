@@ -17,7 +17,7 @@ import yaml
 DEFAULT_SOURCE = Path("/home/duxianghe/modelnet-runtime/registry-source/capability-registry.yaml")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = REPO_ROOT / "litellm/modelnet-config.yaml"
-CHAT_BACKENDS = {"vllm_chat", "llama_cpp"}
+CHAT_BACKENDS = {"vllm_chat", "llama_cpp", "openai_compatible"}
 AGGREGATE_MODEL_NAME = "modelnet"
 AUTO_MODEL_NAME = "modelnet-auto"
 AGGREGATE_API_BASE = "http://modelnet-router:8000/v1"
@@ -101,6 +101,16 @@ def yaml_quote(value: Any) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
+def model_api_key_ref(model: dict[str, Any]) -> str:
+    api_key_env = str(model.get("api_key_env") or "").strip()
+    if api_key_env:
+        return f"os.environ/{api_key_env}"
+    api_key = str(model.get("api_key") or "").strip()
+    if api_key:
+        return api_key
+    return "os.environ/MODELNET_BACKEND_API_KEY"
+
+
 def build_config(models: list[dict[str, Any]]) -> tuple[str, list[str]]:
     chat_models: list[dict[str, Any]] = []
     for model in models:
@@ -117,6 +127,7 @@ def build_config(models: list[dict[str, Any]]) -> tuple[str, list[str]]:
         chat_models.append(
             {
                 "api_base": normalize_api_base(model_url),
+                "api_key": model_api_key_ref(model),
                 "backend_model": backend_model,
                 "model_name": model_id,
             }
@@ -148,7 +159,7 @@ def build_config(models: list[dict[str, Any]]) -> tuple[str, list[str]]:
                 "    litellm_params:",
                 f"      model: {yaml_quote('openai/' + model['backend_model'])}",
                 f"      api_base: {yaml_quote(model['api_base'])}",
-                "      api_key: 'os.environ/MODELNET_BACKEND_API_KEY'",
+                f"      api_key: {yaml_quote(model['api_key'])}",
             ]
         )
     lines.extend(

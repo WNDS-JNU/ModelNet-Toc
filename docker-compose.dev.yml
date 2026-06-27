@@ -77,6 +77,7 @@ services:
     restart: unless-stopped
     environment:
       MODELNET_BACKEND_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
+      SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
       MODELNET_ROUTER_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
       MODELNET_API_KEYS_JSON: ${MODELNET_API_KEYS_JSON:-}
       MODELNET_API_KEYS: ${MODELNET_API_KEYS:-}
@@ -134,6 +135,7 @@ services:
     environment:
       MODELNET_LITELLM_API_KEY: ${MODELNET_LITELLM_API_KEY}
       MODELNET_BACKEND_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
+      SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
     volumes:
       - type: bind
         source: ./litellm/modelnet-config.yaml

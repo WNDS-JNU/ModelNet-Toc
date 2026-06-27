@@ -51,6 +51,20 @@ class ModelDisplayNameTest(unittest.TestCase):
         self.assertEqual(entries.count("+deploy-a=Qwen3-8B-BF16"), 1)
         self.assertEqual(entries.count("+deploy-b=Qwen3-8B-BF16"), 1)
 
+    def test_openai_compatible_chat_models_are_included(self) -> None:
+        entries = sync_modelnet_lobehub.build_model_list(
+            [
+                {
+                    "backend": "openai_compatible",
+                    "id": "siliconflow-thudm-glm-z1-9b-0414",
+                    "model_name": "THUDM/GLM-Z1-9B-0414",
+                    "model_url": "https://api.siliconflow.cn",
+                }
+            ]
+        )
+
+        self.assertIn("+siliconflow-thudm-glm-z1-9b-0414=GLM-Z1-9B-0414", entries)
+
 
 if __name__ == "__main__":
     unittest.main()
