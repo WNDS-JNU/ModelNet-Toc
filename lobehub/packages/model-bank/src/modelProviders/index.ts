@@ -41,6 +41,7 @@ import LongCatProvider from './longcat';
 import MinimaxProvider from './minimax';
 import MinimaxCodingPlanProvider from './minimaxCodingPlan';
 import MistralProvider from './mistral';
+import ModelNetProvider from './modelnet';
 import ModelScopeProvider from './modelscope';
 import MoonshotProvider from './moonshot';
 import NebiusProvider from './nebius';
@@ -98,6 +99,7 @@ export const LOBE_DEFAULT_MODEL_LIST: ChatModelCard[] = [
   GithubProvider.chatModels,
   MinimaxProvider.chatModels,
   MistralProvider.chatModels,
+  ModelNetProvider.chatModels,
   ModelScopeProvider.chatModels,
   MoonshotProvider.chatModels,
   OllamaProvider.chatModels,
@@ -146,6 +148,7 @@ export const DEFAULT_MODEL_PROVIDER_LIST = [
   GoogleProvider,
   GLMCodingPlanProvider,
   KimiCodingPlanProvider,
+  ModelNetProvider,
   OpenAIProvider,
   DeepSeekProvider,
   XinferenceProvider,
@@ -274,6 +277,7 @@ export { default as LongCatProviderCard } from './longcat';
 export { default as MinimaxProviderCard } from './minimax';
 export { default as MinimaxCodingPlanProviderCard } from './minimaxCodingPlan';
 export { default as MistralProviderCard } from './mistral';
+export { default as ModelNetProviderCard } from './modelnet';
 export { default as ModelScopeProviderCard } from './modelscope';
 export { default as MoonshotProviderCard } from './moonshot';
 export { default as NebiusProviderCard } from './nebius';

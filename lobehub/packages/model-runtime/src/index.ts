@@ -28,6 +28,7 @@ export { LobeLongCatAI } from './providers/longcat';
 export { LobeMinimaxAI } from './providers/minimax';
 export { LobeMinimaxCodingPlanAI } from './providers/minimaxCodingPlan';
 export { LobeMistralAI } from './providers/mistral';
+export { LobeModelNetAI } from './providers/modelnet';
 export { LobeMoonshotAI } from './providers/moonshot';
 export { LobeNebiusAI } from './providers/nebius';
 export { LobeNewAPIAI } from './providers/newapi';

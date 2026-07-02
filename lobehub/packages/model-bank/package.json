@@ -44,6 +44,7 @@
     "./minimax": "./src/aiModels/minimax.ts",
     "./minimaxCodingPlan": "./src/aiModels/minimaxCodingPlan.ts",
     "./mistral": "./src/aiModels/mistral.ts",
+    "./modelnet": "./src/aiModels/modelnet.ts",
     "./modelscope": "./src/aiModels/modelscope.ts",
     "./moonshot": "./src/aiModels/moonshot.ts",
     "./nebius": "./src/aiModels/nebius.ts",

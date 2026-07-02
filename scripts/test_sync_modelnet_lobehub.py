@@ -65,6 +65,26 @@ class ModelDisplayNameTest(unittest.TestCase):
 
         self.assertIn("+siliconflow-thudm-glm-z1-9b-0414=GLM-Z1-9B-0414", entries)
 
+    def test_renders_modelnet_provider_env_keys(self) -> None:
+        content = sync_modelnet_lobehub.render_env_content(
+            "sk-modelnet",
+            [
+                "+modelnet=ModelNet",
+                "+modelnet-auto=Auto Network",
+                "+inference-qwen3=Qwen3",
+            ],
+        )
+
+        self.assertIn("MODELNET_API_KEY=sk-modelnet\n", content)
+        self.assertIn("MODELNET_PROXY_URL=http://modelnet-litellm:8000/v1\n", content)
+        self.assertIn(
+            "MODELNET_MODEL_LIST=-all,+modelnet=ModelNet,+modelnet-auto=Auto Network,+inference-qwen3=Qwen3\n",
+            content,
+        )
+        self.assertNotIn("OPENAI_API_KEY", content)
+        self.assertNotIn("OPENAI_PROXY_URL", content)
+        self.assertNotIn("OPENAI_MODEL_LIST", content)
+
 
 if __name__ == "__main__":
     unittest.main()

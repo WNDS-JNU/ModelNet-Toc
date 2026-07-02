@@ -3,6 +3,8 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import * as AiModels from './aiModels';
+
 // 本测试确保 packages/model-bank/package.json 的 exports 覆盖 src/aiModels 下的所有文件
 describe('model-bank package.json exports should cover all aiModels files', () => {
   const packageRoot = path.resolve(__dirname, '..');
@@ -33,5 +35,16 @@ describe('model-bank package.json exports should cover all aiModels files', () =
     }
 
     expect(missing).toEqual([]);
+  });
+});
+
+describe('model-bank root aiModels named exports', () => {
+  it('exports modelnet for server provider config discovery', () => {
+    expect(AiModels.modelnet).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'modelnet' }),
+        expect.objectContaining({ id: 'modelnet-auto' }),
+      ]),
+    );
   });
 });

@@ -29,6 +29,7 @@ import {
   MIN_MODELNET_PARALLEL_MODELS,
   MIN_MODELNET_SERIAL_MODELS,
   MODELNET_AUTO_MODEL_ID,
+  MODELNET_PROVIDER_ID,
   parseModelNetUserProviderAlias,
 } from '@/features/ModelNetParallel';
 import { getSearchConfig } from '@/helpers/getSearchConfig';
@@ -465,15 +466,17 @@ class ChatService {
     // This ensures the user's preference takes priority over provider's useResponseModels config
     // When user enables Responses API, set to 'responses' to force use Responses API
     const normalizedModel = model.toLowerCase();
-    const isModelNetAuto =
-      provider === ModelProvider.OpenAI && normalizedModel === MODELNET_AUTO_MODEL_ID;
+    const isModelNetProvider = provider === MODELNET_PROVIDER_ID || provider === ModelProvider.OpenAI;
+    const isModelNetAuto = isModelNetProvider && normalizedModel === MODELNET_AUTO_MODEL_ID;
     const isModelNetConcreteBackend =
-      provider === ModelProvider.OpenAI &&
-      (normalizedModel.startsWith('inference-') || normalizedModel.startsWith('llama-cpp-'));
+      isModelNetProvider &&
+      (normalizedModel.startsWith('inference-') ||
+        normalizedModel.startsWith('llama-cpp-') ||
+        normalizedModel.startsWith('siliconflow-'));
     const isModelNetAggregateEntrypoint =
       isModelNetParallel ||
       isModelNetSerial ||
-      (provider === ModelProvider.OpenAI &&
+      (isModelNetProvider &&
         (normalizedModel === 'modelnet' || normalizedModel === 'modelnet/modelnet'));
     const forceChatCompletions =
       isModelNetAggregateEntrypoint || isModelNetAuto || isModelNetConcreteBackend;
