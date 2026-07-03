@@ -59,6 +59,10 @@ export const getLLMConfig = () => {
       ENABLED_MISTRAL: z.boolean(),
       MISTRAL_API_KEY: z.string().optional(),
 
+      ENABLED_MODELNET: z.boolean(),
+      MODELNET_API_KEY: z.string().optional(),
+      MODELNET_PROXY_URL: z.string().optional(),
+
       ENABLED_GROQ: z.boolean(),
       GROQ_API_KEY: z.string().optional(),
 
@@ -292,6 +296,10 @@ export const getLLMConfig = () => {
 
       ENABLED_MISTRAL: !!process.env.MISTRAL_API_KEY,
       MISTRAL_API_KEY: process.env.MISTRAL_API_KEY,
+
+      ENABLED_MODELNET: process.env.ENABLED_MODELNET !== '0' && !!process.env.MODELNET_API_KEY,
+      MODELNET_API_KEY: process.env.MODELNET_API_KEY,
+      MODELNET_PROXY_URL: process.env.MODELNET_PROXY_URL,
 
       ENABLED_OPENROUTER: !!process.env.OPENROUTER_API_KEY,
       OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,

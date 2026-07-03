@@ -52,10 +52,9 @@ const runtimeConfig = (
   }) as AiProviderRuntimeConfig;
 
 describe('ModelNetParallel helpers', () => {
-  it('injects the parallel pseudo model under the OpenAI provider that hosts ModelNet aliases', () => {
+  it('injects the parallel pseudo model under the ModelNet provider that hosts ModelNet aliases', () => {
     const enabledList = [
-      provider('openai', [
-        model('gpt-4o', 'GPT-4o'),
+      provider('modelnet', [
         model('modelnet', 'ModelNet/ModelNet'),
         model('modelnet-auto', 'ModelNet/Auto Network'),
         model('inference-qwen3', 'ModelNet/Qwen3'),
@@ -64,18 +63,17 @@ describe('ModelNetParallel helpers', () => {
     ];
 
     const result = withModelNetParallelModel(enabledList);
-    const openai = result.find((item) => item.id === 'openai');
+    const modelnet = result.find((item) => item.id === 'modelnet');
 
-    expect(openai?.children.map((item) => item.id)).toEqual([
+    expect(modelnet?.children.map((item) => item.id)).toEqual([
       MODELNET_PARALLEL_MODEL_ID,
       MODELNET_SERIAL_MODEL_ID,
-      'gpt-4o',
       'modelnet',
       'modelnet-auto',
       'inference-qwen3',
       'inference-deepseek',
     ]);
-    expect(getModelNetParallelCandidates(result, 'openai').map((item) => item.id)).toEqual([
+    expect(getModelNetParallelCandidates(result, 'modelnet').map((item) => item.id)).toEqual([
       'inference-qwen3',
       'inference-deepseek',
     ]);
@@ -107,7 +105,7 @@ describe('ModelNetParallel helpers', () => {
     expect(topology.nodes.map((node) => node.modelId)).toEqual(serialIds);
   });
 
-  it('keeps legacy lobehub provider compatibility but prefers OpenAI when both exist', () => {
+  it('keeps legacy providers compatible but prefers ModelNet when present', () => {
     const enabledList = [
       provider('lobehub', [
         model('legacy-a', 'Legacy A'),
@@ -118,16 +116,22 @@ describe('ModelNetParallel helpers', () => {
         model('inference-qwen3', 'ModelNet/Qwen3'),
         model('inference-deepseek', 'ModelNet/DeepSeek'),
       ]),
+      provider('modelnet', [
+        model('modelnet-a', 'ModelNet/A'),
+        model('modelnet-b', 'ModelNet/B'),
+      ]),
     ];
 
-    expect(getModelNetParallelProvider(enabledList)?.id).toBe('openai');
+    expect(getModelNetParallelProvider(enabledList)?.id).toBe('modelnet');
     expect(getModelNetParallelCandidates(enabledList, 'lobehub').map((item) => item.id)).toEqual([
       'legacy-a',
       'legacy-b',
     ]);
+    expect(isModelNetParallelModel('modelnet', MODELNET_PARALLEL_MODEL_ID)).toBe(true);
     expect(isModelNetParallelModel('openai', MODELNET_PARALLEL_MODEL_ID)).toBe(true);
     expect(isModelNetParallelModel('lobehub', MODELNET_PARALLEL_MODEL_ID)).toBe(true);
     expect(isModelNetParallelModel('anthropic', MODELNET_PARALLEL_MODEL_ID)).toBe(false);
+    expect(isModelNetSerialModel('modelnet', MODELNET_SERIAL_MODEL_ID)).toBe(true);
     expect(isModelNetSerialModel('openai', MODELNET_SERIAL_MODEL_ID)).toBe(true);
     expect(isModelNetSerialModel('lobehub', MODELNET_SERIAL_MODEL_ID)).toBe(true);
     expect(isModelNetSerialModel('anthropic', MODELNET_SERIAL_MODEL_ID)).toBe(false);

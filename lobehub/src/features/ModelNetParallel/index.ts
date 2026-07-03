@@ -6,9 +6,11 @@ import {
   type EnabledProviderWithModels,
 } from '@/types/aiProvider';
 
+export const MODELNET_PROVIDER_ID = 'modelnet';
 export const MODELNET_OPENAI_PROVIDER_ID = 'openai';
 export const MODELNET_LEGACY_PROVIDER_ID = 'lobehub';
 export const MODELNET_PROVIDER_IDS = [
+  MODELNET_PROVIDER_ID,
   MODELNET_OPENAI_PROVIDER_ID,
   MODELNET_LEGACY_PROVIDER_ID,
 ] as const;
@@ -88,7 +90,10 @@ const isLikelyModelNetAlias = (id: string, providerId?: string) => {
   return (
     normalizedId.startsWith('modelnet/') ||
     normalizedId.startsWith('modelnet-') ||
-    (providerId === MODELNET_OPENAI_PROVIDER_ID && normalizedId.startsWith('inference-'))
+    ((providerId === MODELNET_PROVIDER_ID || providerId === MODELNET_OPENAI_PROVIDER_ID) &&
+      (normalizedId.startsWith('inference-') ||
+        normalizedId.startsWith('llama-cpp-') ||
+        normalizedId.startsWith('siliconflow-')))
   );
 };
 
@@ -117,7 +122,7 @@ export const getModelNetRuntimeProviderInfo = (
 
 export const isModelNetParallelCandidate = (model: AiModelForSelect, providerId?: string) => {
   if (MODELNET_SYSTEM_MODEL_IDS.has(model.id)) return false;
-  if (providerId === MODELNET_LEGACY_PROVIDER_ID) return true;
+  if (providerId === MODELNET_PROVIDER_ID || providerId === MODELNET_LEGACY_PROVIDER_ID) return true;
 
   return isModelNetDisplayName(model.displayName) || isLikelyModelNetAlias(model.id, providerId);
 };

@@ -249,6 +249,41 @@ def done_payload(events: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
     return [data for event, data in events if event == "done"][0]
 
 
+class BackendAdapterPrepareChatBodyTests(unittest.TestCase):
+    def test_strips_chat_template_kwargs_from_non_think_vllm_models(self) -> None:
+        prepared = backend_adapters.prepare_chat_body(
+            candidate("ministral", backend_type="vllm_chat", metadata={"type": "normal"}),
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+        )
+
+        self.assertNotIn("chat_template_kwargs", prepared)
+
+    def test_keeps_chat_template_kwargs_for_think_vllm_models(self) -> None:
+        prepared = backend_adapters.prepare_chat_body(
+            candidate("qwen", backend_type="vllm_chat", metadata={"type": "think"}),
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+        )
+
+        self.assertEqual(prepared["chat_template_kwargs"], {"enable_thinking": False})
+
+    def test_strips_chat_template_kwargs_from_openai_compatible_runtime_candidates(self) -> None:
+        prepared = backend_adapters.prepare_chat_body(
+            candidate("custom", backend_type="openai_compatible"),
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+        )
+
+        self.assertNotIn("chat_template_kwargs", prepared)
+
+
 class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.tenant = FakeTenant()

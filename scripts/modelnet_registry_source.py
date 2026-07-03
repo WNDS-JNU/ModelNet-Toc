@@ -79,6 +79,43 @@ class KubernetesAuth:
     verify: bool | str | ssl.SSLContext
 
 
+DEFAULT_EXTERNAL_MODELS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "siliconflow-thudm-glm-z1-9b-0414",
+        "backend": "openai_compatible",
+        "model_name": "THUDM/GLM-Z1-9B-0414",
+        "model_url": "https://api.siliconflow.cn",
+        "api_key_env": "SILICONFLOW_API_KEY",
+        "EOS": "<|endoftext|>",
+        "type": "normal",
+        "request_timeout_ms": 180000,
+        "capabilities": ["chat", "text_generation"],
+        "provider": "siliconflow",
+        "cost_weight": "free",
+    },
+    {
+        "id": "siliconflow-tencent-hunyuan-mt-7b",
+        "backend": "openai_compatible",
+        "model_name": "tencent/Hunyuan-MT-7B",
+        "model_url": "https://api.siliconflow.cn",
+        "api_key_env": "SILICONFLOW_API_KEY",
+        "EOS": "<|eos|>",
+        "type": "normal",
+        "request_timeout_ms": 180000,
+        "capabilities": ["chat", "text_generation"],
+        "provider": "siliconflow",
+        "cost_weight": "free",
+    },
+)
+
+
+def default_external_models() -> list[dict[str, Any]]:
+    return [dict(model) for model in DEFAULT_EXTERNAL_MODELS]
+
+
+DEFAULT_EXTERNAL_MODEL_IDS = {str(model["id"]) for model in DEFAULT_EXTERNAL_MODELS}
+
+
 class RegistrySourceError(RuntimeError):
     pass
 
@@ -507,7 +544,12 @@ def discover_model_registry(
     seen_ids: set[str] = set()
 
     if not settings.namespaces:
-        return DiscoveryResult(generated_at=generated_at, models=[], candidates=[], skipped=[])
+        return DiscoveryResult(
+            generated_at=generated_at,
+            models=default_external_models(),
+            candidates=[],
+            skipped=[],
+        )
 
     k8s = client or KubernetesDiscoveryClient(settings)
     probe = probe_func or probe_model_name
@@ -586,6 +628,13 @@ def discover_model_registry(
             for route in routes:
                 accept_route(route)
 
+    for entry in default_external_models():
+        model_id = str(entry.get("id") or "").strip()
+        if not model_id or model_id in seen_ids:
+            continue
+        seen_ids.add(model_id)
+        models.append(entry)
+
     models.sort(key=itemgetter("id"))
     return DiscoveryResult(generated_at=generated_at, models=models, candidates=candidates, skipped=skipped)
 
@@ -656,8 +705,15 @@ def should_preserve_existing_registry(
 ) -> tuple[bool, set[str], set[str]]:
     existing_ids = read_registry_model_ids(output)
     new_ids = {str(item.get("id") or "").strip() for item in models if str(item.get("id") or "").strip()}
-    missing_existing_ids = existing_ids - new_ids
-    should_preserve = bool(skipped and existing_ids and missing_existing_ids and len(new_ids) < len(existing_ids))
+    comparable_existing_ids = existing_ids - DEFAULT_EXTERNAL_MODEL_IDS
+    comparable_new_ids = new_ids - DEFAULT_EXTERNAL_MODEL_IDS
+    missing_existing_ids = comparable_existing_ids - comparable_new_ids
+    should_preserve = bool(
+        skipped
+        and comparable_existing_ids
+        and missing_existing_ids
+        and len(comparable_new_ids) < len(comparable_existing_ids)
+    )
     return should_preserve, existing_ids, missing_existing_ids
 
 

@@ -93,6 +93,15 @@ def candidate_requires_user_assistant_only_messages(candidate: Any) -> bool:
     return any("gemma" in str(name).lower() for name in names if name is not None)
 
 
+def candidate_supports_chat_template_kwargs(candidate: Any) -> bool:
+    if getattr(candidate, "backend_type", "") != "vllm_chat":
+        return False
+    metadata = getattr(candidate, "metadata", {}) or {}
+    if not isinstance(metadata, dict):
+        return False
+    return str(metadata.get("type") or "").strip().lower() == "think"
+
+
 def chat_content_text(content: Any) -> str:
     if content is None:
         return ""
@@ -169,6 +178,8 @@ def prepare_chat_body(candidate: Any, body: dict[str, Any]) -> dict[str, Any]:
 
     prepared = dict(body)
     prepared["model"] = candidate.backend_model
+    if "chat_template_kwargs" in prepared and not candidate_supports_chat_template_kwargs(candidate):
+        prepared.pop("chat_template_kwargs", None)
     if candidate_requires_user_assistant_only_messages(candidate):
         prepared["messages"] = normalize_user_assistant_messages(list(prepared.get("messages") or []))
     if candidate.backend_type == "llama_cpp":

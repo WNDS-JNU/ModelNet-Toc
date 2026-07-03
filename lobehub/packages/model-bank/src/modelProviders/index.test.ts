@@ -2,7 +2,26 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type ModelProviderCard } from '@/types/llm';
 
+import { ModelProvider } from '../const/modelProvider';
 import { DEFAULT_MODEL_PROVIDER_LIST, isProviderDisableBrowserRequest } from './index';
+
+describe('DEFAULT_MODEL_PROVIDER_LIST', () => {
+  it('registers ModelNet as a first-class provider', () => {
+    const modelnet = DEFAULT_MODEL_PROVIDER_LIST.find((item) => item.id === ModelProvider.ModelNet);
+
+    expect(modelnet).toMatchObject({
+      checkModel: 'modelnet-auto',
+      enabled: true,
+      id: ModelProvider.ModelNet,
+      name: 'ModelNet',
+    });
+    expect(modelnet?.settings).toMatchObject({
+      sdkType: 'openai',
+      showModelFetcher: true,
+    });
+    expect(modelnet?.chatModels.map((model) => model.id)).toEqual(['modelnet', 'modelnet-auto']);
+  });
+});
 
 describe('isProviderDisableBrowserRequest', () => {
   const originalProviders = [...DEFAULT_MODEL_PROVIDER_LIST];

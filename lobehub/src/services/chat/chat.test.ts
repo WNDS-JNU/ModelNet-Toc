@@ -1793,7 +1793,7 @@ describe('ChatService', () => {
         {
           messages: [],
           model: MODELNET_AUTO_MODEL_ID,
-          provider: ModelProvider.OpenAI,
+          provider: ModelProvider.ModelNet,
         } as any,
         {},
       );
@@ -1819,7 +1819,7 @@ describe('ChatService', () => {
     it('should keep concrete ModelNet backend aliases on chat completions', async () => {
       useAiInfraStore.setState({
         aiProviderRuntimeState: {
-          openai: { enabled: true, supportResponsesApi: true },
+          modelnet: { enabled: true, supportResponsesApi: true },
         },
       } as any);
 
@@ -1827,7 +1827,7 @@ describe('ChatService', () => {
         {
           messages: [],
           model: 'llama-cpp-deploy-jetson-64g-3-qwen3-8b-bf16',
-          provider: ModelProvider.OpenAI,
+          provider: ModelProvider.ModelNet,
         } as any,
         {},
       );
@@ -1847,7 +1847,7 @@ describe('ChatService', () => {
           messages: [],
           model: MODELNET_PARALLEL_MODEL_ID,
           modelnetParallelModelIds: modelIds,
-          provider: ModelProvider.OpenAI,
+          provider: ModelProvider.ModelNet,
         } as any,
         {},
       );

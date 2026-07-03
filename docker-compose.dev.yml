@@ -32,8 +32,8 @@ services:
       LOBE_DB_NAME: ${DEV_LOBE_DB_NAME:-lobechat_dev}
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgresql:5432/${DEV_LOBE_DB_NAME:-lobechat_dev}
       MODELNET_LEADERBOARD_DATA_DIR: /app/leaderboard/data
-      OPENAI_PROXY_URL: http://modelnet-router:8000/v1
-      OPENAI_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
+      MODELNET_PROXY_URL: http://modelnet-router:8000/v1
+      MODELNET_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
       S3_ENDPOINT: http://rustfs:9000
       S3_BUCKET: ${RUSTFS_LOBE_BUCKET}
       S3_ENABLE_PATH_STYLE: "1"
@@ -77,6 +77,7 @@ services:
     restart: unless-stopped
     environment:
       MODELNET_BACKEND_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
+      SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
       MODELNET_ROUTER_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
       MODELNET_API_KEYS_JSON: ${MODELNET_API_KEYS_JSON:-}
       MODELNET_API_KEYS: ${MODELNET_API_KEYS:-}
@@ -134,6 +135,7 @@ services:
     environment:
       MODELNET_LITELLM_API_KEY: ${MODELNET_LITELLM_API_KEY}
       MODELNET_BACKEND_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
+      SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
     volumes:
       - type: bind
         source: ./litellm/modelnet-config.yaml

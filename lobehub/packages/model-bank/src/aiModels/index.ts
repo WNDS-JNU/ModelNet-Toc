@@ -38,6 +38,7 @@ import { default as longcat } from './longcat';
 import { default as minimax } from './minimax';
 import { default as minimaxcodingplan } from './minimaxCodingPlan';
 import { default as mistral } from './mistral';
+import { default as modelnet } from './modelnet';
 import { default as modelscope } from './modelscope';
 import { default as moonshot } from './moonshot';
 import { default as nebius } from './nebius';
@@ -144,6 +145,7 @@ const staticModelMap: ModelsMap = {
   minimax,
   minimaxcodingplan,
   mistral,
+  modelnet,
   modelscope,
   moonshot,
   nebius,
@@ -257,6 +259,7 @@ export { default as longcat } from './longcat';
 export { default as minimax } from './minimax';
 export { default as minimaxcodingplan } from './minimaxCodingPlan';
 export { default as mistral } from './mistral';
+export { default as modelnet } from './modelnet';
 export { default as modelscope } from './modelscope';
 export { default as moonshot } from './moonshot';
 export { default as nebius } from './nebius';
