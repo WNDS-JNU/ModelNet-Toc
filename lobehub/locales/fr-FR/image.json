@@ -7,6 +7,7 @@
   "config.header.title": "Peinture",
   "config.height.label": "Hauteur",
   "config.imageNum.label": "Nombre d'images",
+  "config.imageUpload.maxCountReached": "Vous pouvez ajouter jusqu'à {{count}} images de référence",
   "config.imageUrl.label": "Image de référence",
   "config.imageUrls.label": "Images de référence",
   "config.model.label": "Modèle",
@@ -20,6 +21,7 @@
   "config.resolution.options.1K": "1K",
   "config.resolution.options.2K": "2K",
   "config.resolution.options.4K": "4K",
+  "config.resolution.options.512": "512px",
   "config.seed.label": "Graine",
   "config.seed.random": "Graine aléatoire",
   "config.size.label": "Taille",
@@ -61,6 +63,9 @@
   "topic.deleteConfirm": "Supprimer le sujet de génération",
   "topic.deleteConfirmDesc": "Vous êtes sur le point de supprimer ce sujet de génération. Cette action est irréversible, veuillez procéder avec prudence.",
   "topic.empty": "Aucun sujet de génération",
+  "topic.privateTitle": "Privé",
   "topic.title": "Thème de peinture",
-  "topic.untitled": "Sujet par défaut"
+  "topic.untitled": "Sujet par défaut",
+  "topic.visibility.existingLocked": "La visibilité est fixée pour le sujet actuel. Créez un nouveau sujet pour choisir un espace différent.",
+  "topic.workspaceTitle": "Espace de travail"
 }

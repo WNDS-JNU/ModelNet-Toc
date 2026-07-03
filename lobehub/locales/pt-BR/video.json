@@ -5,6 +5,7 @@
   "config.endImageUrl.label": "Quadro Final",
   "config.generateAudio.label": "Gerar Áudio",
   "config.header.title": "Vídeo",
+  "config.imageUpload.maxCountReached": "Você pode adicionar até {{count}} imagens de referência",
   "config.imageUrl.label": "Quadro Inicial",
   "config.prompt.placeholder": "Descreva o vídeo que você deseja gerar",
   "config.prompt.placeholderWithRef": "Descreva a cena que você deseja gerar com a imagem",
@@ -28,6 +29,9 @@
   "topic.createNew": "Criar Novo Tópico",
   "topic.deleteConfirm": "Excluir Tópico de Vídeo",
   "topic.deleteConfirmDesc": "Você está prestes a excluir este tópico de vídeo. Esta ação não poderá ser desfeita.",
+  "topic.privateTitle": "Privado",
   "topic.title": "Tópicos de Vídeo",
-  "topic.untitled": "Tópico Padrão"
+  "topic.untitled": "Tópico Padrão",
+  "topic.visibility.existingLocked": "A visibilidade está fixa para o tópico atual. Crie um novo tópico para escolher um espaço diferente.",
+  "topic.workspaceTitle": "Espaço de Trabalho"
 }

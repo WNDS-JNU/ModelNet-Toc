@@ -1,5 +1,12 @@
+import {
+  AGENT_DOCUMENT_CATEGORY,
+  AGENT_DOCUMENT_SKILL_CATEGORY,
+  CUSTOM_DOCUMENT_FILE_TYPE,
+  CUSTOM_FOLDER_FILE_TYPE,
+} from '@lobechat/const';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
+import { MemoryRouter } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ExplorerTreeNode } from '@/features/ExplorerTree';
@@ -7,15 +14,12 @@ import type { ExplorerTreeNode } from '@/features/ExplorerTree';
 import DocumentExplorerTree from './DocumentExplorerTree';
 import type { AgentDocumentItem } from './types';
 
-const { navigate, openDocument, useMatchMock } = vi.hoisted(() => ({
-  navigate: vi.fn(),
-  openDocument: vi.fn(),
-  useMatchMock: vi.fn(),
-}));
+const navigateMock = vi.hoisted(() => vi.fn());
 const messageError = vi.hoisted(() => vi.fn());
 const messageSuccess = vi.hoisted(() => vi.fn());
 const messageWarning = vi.hoisted(() => vi.fn());
 const modalConfirm = vi.hoisted(() => vi.fn());
+const openDocumentMock = vi.hoisted(() => vi.fn());
 const removeDocumentMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@lobehub/ui', () => ({
@@ -47,25 +51,20 @@ vi.mock('@/services/agentDocument', () => ({
   },
 }));
 
+vi.mock('@/features/Workspace/useWorkspaceAwareNavigate', () => ({
+  useWorkspaceAwareNavigate: () => navigateMock,
+}));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => key,
   }),
 }));
 
-vi.mock('react-router-dom', () => ({
-  useMatch: () => useMatchMock(),
-  useNavigate: () => navigate,
-}));
-
-vi.mock('@/store/chat', () => ({
-  useChatStore: (selector: (state: Record<string, unknown>) => unknown) =>
-    selector({ openDocument }),
-}));
-
 vi.mock('@/features/ExplorerTree', () => {
   interface MockExplorerTreeProps {
     canDrag?: (node: ExplorerTreeNode<unknown>) => boolean;
+    defaultExpandedIds?: string[];
     getContextMenuItems?: (node: ExplorerTreeNode<unknown>) => unknown[] | undefined;
     header?: ReactNode;
     nodes: ExplorerTreeNode<unknown>[];
@@ -80,6 +79,7 @@ vi.mock('@/features/ExplorerTree', () => {
 
   const ExplorerTree = ({
     canDrag,
+    defaultExpandedIds,
     getContextMenuItems,
     header,
     nodes,
@@ -123,14 +123,22 @@ vi.mock('@/features/ExplorerTree', () => {
         });
 
     return (
-      <div data-testid="explorer-tree">
+      <div
+        data-default-expanded-ids={JSON.stringify(defaultExpandedIds ?? [])}
+        data-testid="explorer-tree"
+      >
         {header}
         {renderNodes(null)}
       </div>
     );
   };
 
-  return { ExplorerTree, FOLDER_ICON_CSS: '' };
+  return {
+    ExplorerTree,
+    FOLDER_ICON_CSS: '',
+    HIDE_POINTER_FOCUS_RING_CSS: '',
+    getExplorerTreeStyleVars: () => ({}),
+  };
 });
 
 const createDocument = (overrides: Partial<AgentDocumentItem>): AgentDocumentItem =>
@@ -139,7 +147,7 @@ const createDocument = (overrides: Partial<AgentDocumentItem>): AgentDocumentIte
     accessSelf: 0,
     accessShared: 0,
     agentId: 'agent-1',
-    category: 'document',
+    category: AGENT_DOCUMENT_CATEGORY,
     content: '',
     createdAt: new Date('2026-05-09T00:00:00Z'),
     deletedAt: null,
@@ -150,7 +158,7 @@ const createDocument = (overrides: Partial<AgentDocumentItem>): AgentDocumentIte
     documentId: 'doc-1',
     editorData: null,
     filename: 'document.md',
-    fileType: 'custom/document',
+    fileType: CUSTOM_DOCUMENT_FILE_TYPE,
     id: 'agent-doc-1',
     isFolder: false,
     isSkillBundle: false,
@@ -174,22 +182,20 @@ const createDocument = (overrides: Partial<AgentDocumentItem>): AgentDocumentIte
 
 describe('DocumentExplorerTree', () => {
   beforeEach(() => {
-    navigate.mockReset();
     messageError.mockReset();
     messageSuccess.mockReset();
     messageWarning.mockReset();
     modalConfirm.mockReset();
-    openDocument.mockReset();
+    navigateMock.mockReset();
+    openDocumentMock.mockReset();
     removeDocumentMock.mockReset();
     removeDocumentMock.mockResolvedValue({ deleted: true, id: 'skill-bundle-row' });
-    useMatchMock.mockReset();
-    useMatchMock.mockReturnValue(null);
   });
 
   it('renders managed skill bundle as a folder with SKILL.md underneath', () => {
     const data = [
       createDocument({
-        category: 'skill',
+        category: AGENT_DOCUMENT_SKILL_CATEGORY,
         documentId: 'skill-bundle-doc',
         fileType: 'skills/bundle',
         filename: 'youtube-comment-retrieval-workflow',
@@ -200,7 +206,7 @@ describe('DocumentExplorerTree', () => {
         title: 'YouTube Comment Retrieval Workflow',
       }),
       createDocument({
-        category: 'skill',
+        category: AGENT_DOCUMENT_SKILL_CATEGORY,
         documentId: 'skill-index-doc',
         fileType: 'skills/index',
         filename: 'SKILL.md',
@@ -212,7 +218,7 @@ describe('DocumentExplorerTree', () => {
       }),
       createDocument({
         documentId: 'folder-doc',
-        fileType: 'custom/folder',
+        fileType: CUSTOM_FOLDER_FILE_TYPE,
         filename: 'Notes',
         id: 'folder-row',
         isFolder: true,
@@ -220,7 +226,9 @@ describe('DocumentExplorerTree', () => {
       }),
     ];
 
-    render(<DocumentExplorerTree agentId="agent-1" data={data} mutate={vi.fn()} />);
+    render(<DocumentExplorerTree agentId="agent-1" data={data} mutate={vi.fn()} />, {
+      wrapper: MemoryRouter,
+    });
 
     const bundleNode = screen.getByTestId('tree-node-skill-bundle-row');
     expect(bundleNode).toHaveAttribute('data-folder', 'true');
@@ -234,10 +242,10 @@ describe('DocumentExplorerTree', () => {
     expect(skillIndexNode).toHaveAttribute('data-menu-count', '0');
   });
 
-  it('opens SKILL.md but does not open the empty skill bundle', () => {
+  it('opens SKILL.md in the document page but does not open the empty skill bundle', () => {
     const data = [
       createDocument({
-        category: 'skill',
+        category: AGENT_DOCUMENT_SKILL_CATEGORY,
         documentId: 'skill-bundle-doc',
         fileType: 'skills/bundle',
         filename: 'youtube-comment-retrieval-workflow',
@@ -248,7 +256,7 @@ describe('DocumentExplorerTree', () => {
         title: 'YouTube Comment Retrieval Workflow',
       }),
       createDocument({
-        category: 'skill',
+        category: AGENT_DOCUMENT_SKILL_CATEGORY,
         documentId: 'skill-index-doc',
         fileType: 'skills/index',
         filename: 'SKILL.md',
@@ -260,20 +268,77 @@ describe('DocumentExplorerTree', () => {
       }),
     ];
 
-    render(<DocumentExplorerTree agentId="agent-1" data={data} mutate={vi.fn()} />);
+    render(<DocumentExplorerTree agentId="agent-1" data={data} mutate={vi.fn()} />, {
+      wrapper: MemoryRouter,
+    });
 
     fireEvent.click(screen.getByTestId('tree-node-button-skill-bundle-row'));
-    expect(openDocument).not.toHaveBeenCalled();
+    expect(navigateMock).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByTestId('tree-node-button-skill-index-row'));
-    expect(openDocument).toHaveBeenCalledWith('skill-index-doc');
+    expect(navigateMock).toHaveBeenCalledWith('/agent/agent-1/docs/skill-index-doc');
+  });
+
+  it('delegates document opening to the caller when provided', () => {
+    const data = [
+      createDocument({
+        documentId: 'doc-content-1',
+        id: 'agent-doc-row-1',
+        title: 'Brief',
+      }),
+    ];
+
+    render(
+      <DocumentExplorerTree
+        agentId="agent-1"
+        data={data}
+        mutate={vi.fn()}
+        onOpenDocument={openDocumentMock}
+      />,
+      {
+        wrapper: MemoryRouter,
+      },
+    );
+
+    fireEvent.click(screen.getByTestId('tree-node-button-agent-doc-row-1'));
+
+    expect(openDocumentMock).toHaveBeenCalledWith('doc-content-1', 'agent-doc-row-1');
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it('does not default-expand document folders', () => {
+    const data = [
+      createDocument({
+        documentId: 'folder-doc',
+        fileType: CUSTOM_FOLDER_FILE_TYPE,
+        filename: 'Notes',
+        id: 'folder-row',
+        isFolder: true,
+        title: 'Notes',
+      }),
+      createDocument({
+        documentId: 'nested-folder-doc',
+        fileType: CUSTOM_FOLDER_FILE_TYPE,
+        filename: 'Archive',
+        id: 'nested-folder-row',
+        isFolder: true,
+        parentId: 'folder-doc',
+        title: 'Archive',
+      }),
+    ];
+
+    render(<DocumentExplorerTree agentId="agent-1" data={data} mutate={vi.fn()} />, {
+      wrapper: MemoryRouter,
+    });
+
+    expect(screen.getByTestId('explorer-tree')).toHaveAttribute('data-default-expanded-ids', '[]');
   });
 
   it('shows delete recovery action for a managed skill bundle without SKILL.md', async () => {
     const mutate = vi.fn().mockResolvedValue(undefined);
     const data = [
       createDocument({
-        category: 'skill',
+        category: AGENT_DOCUMENT_SKILL_CATEGORY,
         documentId: 'skill-bundle-doc',
         fileType: 'skills/bundle',
         filename: 'youtube-comment-retrieval-workflow',
@@ -285,7 +350,9 @@ describe('DocumentExplorerTree', () => {
       }),
     ];
 
-    render(<DocumentExplorerTree agentId="agent-1" data={data} mutate={mutate} />);
+    render(<DocumentExplorerTree agentId="agent-1" data={data} mutate={mutate} />, {
+      wrapper: MemoryRouter,
+    });
 
     const bundleNode = screen.getByTestId('tree-node-skill-bundle-row');
     expect(bundleNode).toHaveAttribute('data-folder', 'true');

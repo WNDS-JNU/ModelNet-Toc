@@ -12,17 +12,18 @@ import {
 } from 'lucide-react';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 
 import useBusinessMeCells from '@/business/client/features/User/useBusinessMeCells';
 import { type CellProps } from '@/components/Cell';
+import { openChangelogModal } from '@/components/ChangelogModal';
 import { DOCUMENTS, FEEDBACK } from '@/const/index';
 import { usePlatform } from '@/hooks/usePlatform';
 import { featureFlagsSelectors, useServerConfigStore } from '@/store/serverConfig';
 import { useUserStore } from '@/store/user';
 import { authSelectors } from '@/store/user/selectors';
 
-export const useCategory = (onOpenChangelogModal: () => void) => {
+export const useCategory = () => {
   const navigate = useNavigate();
   const { t } = useTranslation(['common', 'setting', 'auth']);
   const { showCloudPromotion, hideDocs } = useServerConfigStore(featureFlagsSelectors);
@@ -98,7 +99,7 @@ export const useCategory = (onOpenChangelogModal: () => void) => {
       icon: FileClockIcon,
       key: 'changelog',
       label: t('changelog'),
-      onClick: onOpenChangelogModal,
+      onClick: () => openChangelogModal(),
     },
   ].filter(Boolean) as CellProps[];
 

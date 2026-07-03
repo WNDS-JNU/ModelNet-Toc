@@ -2,9 +2,10 @@ import { Flexbox, Popover } from '@lobehub/ui';
 import { createStaticStyles } from 'antd-style';
 import { type PropsWithChildren } from 'react';
 import { memo, Suspense, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
 
 import SkeletonList from '@/features/NavPanel/components/SkeletonList';
+import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
+import { useFetchAgentList } from '@/hooks/useFetchAgentList';
 import AgentListContent from '@/routes/(main)/home/_layout/Body/Agent/List/AgentListContent';
 import { AgentModalProvider } from '@/routes/(main)/home/_layout/Body/Agent/ModalProvider';
 
@@ -17,7 +18,10 @@ const styles = createStaticStyles(({ cssVar, css }) => ({
 }));
 
 const SwitchPanel = memo<PropsWithChildren>(({ children }) => {
-  const navigate = useNavigate();
+  const navigate = useWorkspaceAwareNavigate();
+  // AgentListContent no longer owns the SWR subscription; subscribe here so
+  // the standalone switcher still triggers a fetch when opened.
+  useFetchAgentList();
 
   const content = useMemo(
     () => (

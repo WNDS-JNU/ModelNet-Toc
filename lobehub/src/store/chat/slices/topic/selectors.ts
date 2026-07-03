@@ -10,6 +10,7 @@ import {
 } from '@/types/topic';
 import {
   groupTopicsByProject,
+  groupTopicsByStatus,
   groupTopicsByTime,
   groupTopicsByUpdatedTime,
 } from '@/utils/client/topic';
@@ -117,15 +118,26 @@ const displayTopicsForSidebar =
     return [...sortTopics(favTopics, sortBy), ...sortTopics(rest, sortBy)].slice(0, pageSize);
   };
 
-const getGroupFn = (groupMode: TopicGroupMode, sortBy: TopicSortBy) => {
+const getGroupFn = (
+  groupMode: TopicGroupMode,
+  sortBy: TopicSortBy,
+  loadingTopicIds?: ReadonlySet<string>,
+) => {
+  const field: 'createdAt' | 'updatedAt' = sortBy === 'createdAt' ? 'createdAt' : 'updatedAt';
   if (groupMode === 'byProject') {
-    const field: 'createdAt' | 'updatedAt' = sortBy === 'createdAt' ? 'createdAt' : 'updatedAt';
     return (topics: ChatTopic[]) =>
       groupTopicsByProject(topics, field).map((group) =>
         group.id === 'no-project'
           ? { ...group, title: t('groupTitle.byProject.noProject', { ns: 'topic' }) }
           : group,
       );
+  }
+  if (groupMode === 'byStatus') {
+    return (topics: ChatTopic[]) =>
+      groupTopicsByStatus(topics, field, loadingTopicIds).map((group) => ({
+        ...group,
+        title: t(`groupTitle.byStatus.${group.id}` as any, { ns: 'topic' }),
+      }));
   }
   return sortBy === 'updatedAt' ? groupTopicsByUpdatedTime : groupTopicsByTime;
 };
@@ -140,6 +152,9 @@ const buildGroupedTopics = (
   const favTopics = topics.filter((topic) => topic.favorite);
   const unfavTopics = topics.filter((topic) => !topic.favorite);
 
+  // Favorites stay pinned at the very top. The "needs attention" bucket
+  // (byStatus mode only) follows right below, ahead of the remaining status
+  // groups, since groupTopicsByStatus emits `pending` first (STATUS_GROUP_ORDER).
   return favTopics.length > 0
     ? [
         {
@@ -165,7 +180,12 @@ const groupedTopicsForSidebar =
   (s: ChatStoreState): GroupedTopic[] => {
     const limitedTopics = displayTopicsForSidebar(pageSize, sortBy)(s);
     if (!limitedTopics) return [];
-    return buildGroupedTopics(limitedTopics, getGroupFn(groupMode, sortBy));
+    // Topics actively streaming on this client surface under "running" even
+    // though their persisted status says otherwise — that's the one client-only
+    // overlay (see resolveStatusBucket). Unread is now a persisted status, so it
+    // buckets straight from `topic.status`.
+    const loadingTopicIds = groupMode === 'byStatus' ? new Set(s.topicLoadingIds) : undefined;
+    return buildGroupedTopics(limitedTopics, getGroupFn(groupMode, sortBy, loadingTopicIds));
   };
 
 const hasMoreTopics = (s: ChatStoreState): boolean => {
@@ -185,10 +205,35 @@ const hasMoreTopicsForSidebar = (s: ChatStoreState): boolean => {
 const isLoadingMoreTopics = (s: ChatStoreState): boolean =>
   currentTopicData(s)?.isLoadingMore ?? false;
 
+const loadMoreTopicsError = (s: ChatStoreState): unknown => currentTopicData(s)?.loadMoreError;
+
 const isExpandingPageSize = (s: ChatStoreState): boolean =>
   currentTopicData(s)?.isExpandingPageSize ?? false;
 
+// Selectors for the Agent Topics management page's dedicated bucket.
+// Always agent-scoped (no group), keyed by `agentId` via `topicMapKey`.
+const agentTopicsViewData = (s: ChatStoreState): TopicData | undefined => {
+  if (!s.activeAgentId) return undefined;
+  return s.agentTopicsViewMap[topicMapKey({ agentId: s.activeAgentId })];
+};
+
+const agentTopicsViewTopics = (s: ChatStoreState): ChatTopic[] =>
+  agentTopicsViewData(s)?.items ?? [];
+
+const agentTopicsViewHasMore = (s: ChatStoreState): boolean =>
+  agentTopicsViewData(s)?.hasMore ?? false;
+
+const agentTopicsViewIsLoadingMore = (s: ChatStoreState): boolean =>
+  agentTopicsViewData(s)?.isLoadingMore ?? false;
+
+const agentTopicsViewLoadMoreError = (s: ChatStoreState): unknown =>
+  agentTopicsViewData(s)?.loadMoreError;
+
 export const topicSelectors = {
+  agentTopicsViewHasMore,
+  agentTopicsViewIsLoadingMore,
+  agentTopicsViewLoadMoreError,
+  agentTopicsViewTopics,
   currentActiveTopic,
   currentActiveTopicSummary,
   currentTopicCount,
@@ -213,5 +258,6 @@ export const topicSelectors = {
   isLoadingMoreTopics,
   isSearchingTopic,
   isUndefinedTopics,
+  loadMoreTopicsError,
   searchTopics,
 };

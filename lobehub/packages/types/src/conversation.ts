@@ -119,6 +119,14 @@ export interface MessageMapContext {
  * ```
  */
 export interface ConversationContext {
+  /**
+   * Agent document row id (`agent_documents.id`) that the user is currently
+   * viewing. When set, callers can skip the `listDocumentsForTopic` reverse
+   * lookup in `ActiveTopicDocumentContextInjector` and the `<document>` block
+   * is guaranteed to carry `agent_document_id` for downstream tool calls
+   * (`readDocument`, `modifyNodes`).
+   */
+  agentDocumentId?: string;
   agentId: string;
   /**
    * Optional default assignee candidate for task manager conversations.
@@ -149,12 +157,23 @@ export interface ConversationContext {
    */
   isolatedTopic?: boolean;
   /**
+   * Whether this conversation is an isolated sub-agent execution spawned by
+   * another agent. Used to disable recursive sub-agent dispatch.
+   */
+  isSubAgent?: boolean;
+  /**
    * Whether the current agent is the Supervisor in group orchestration
    * - Used to mark assistant messages with metadata.isSupervisor
    * - conversation-flow will transform role to 'supervisor' for UI rendering
    * - context-engine will restore role back to 'assistant' for model
    */
   isSupervisor?: boolean;
+  /**
+   * Orchestration role of the current agent within a group conversation.
+   * Canonical replacement for {@link isSupervisor} — stamped onto the assistant
+   * message's `metadata.orchestrationRole` so the role snapshot persists.
+   */
+  orchestrationRole?: 'supervisor' | 'member';
   /**
    * Scope type for the conversation
    * - 'main': Agent main conversation (default)

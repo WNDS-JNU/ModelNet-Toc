@@ -43,6 +43,7 @@ import type {
   HeterogeneousTerminalErrorData,
   StreamChunkData,
   SubagentEventContext,
+  SubagentSpawnMetadata,
   ToolCallPayload,
   ToolResultData,
   UsageData,
@@ -183,13 +184,62 @@ const CLI_AUTH_REQUIRED_PATTERNS = [
   /\b401\b/,
 ] as const;
 
-const CLI_RATE_LIMIT_PATTERNS = [/you'?ve hit your limit/i, /rate limit/i] as const;
+/**
+ * Genuinely user-side limit wording. Used only as the text fallback for
+ * batch CLI / sandbox runs that don't emit a structured `rate_limit_event`
+ * (so {@link isUserQuotaRateLimit} can't fire). The ambiguous bare
+ * `rate limit` / `rate limited` substring is deliberately NOT here — it also
+ * appears in Anthropic's transient server throttle, so leaning on it would
+ * reintroduce the very misclassification this set exists to avoid.
+ */
+const CLI_USER_RATE_LIMIT_PATTERNS = [
+  /you'?ve hit your limit/i,
+  /usage limit reached/i,
+  /\blimit reached\b/i,
+] as const;
+
+/**
+ * Anthropic's server-side transient throttle. CC surfaces this as a 429 with
+ * a message that explicitly disclaims the user's plan limit ("not your usage
+ * limit") — e.g. `API Error: Server is temporarily limiting requests (not your
+ * usage limit) · Rate limited`. It clears on its own in moments, so it must be
+ * classified as `overloaded` (retry UX), NOT `rate_limit` (which renders a
+ * misleading "usage limit reached" reset-time guide).
+ */
+const CLI_SERVER_THROTTLE_PATTERNS = [
+  /not your usage limit/i,
+  /server is temporarily limiting requests/i,
+] as const;
 
 const CLI_OVERLOADED_PATTERNS = [
   /overloaded_error/i,
   /\boverloaded\b/i,
   /api error:\s*529\b/i,
+  ...CLI_SERVER_THROTTLE_PATTERNS,
 ] as const;
+
+/**
+ * Discriminates a user-side plan/quota limit from everything else.
+ *
+ * Two signals must BOTH hold:
+ *  1. The request was actually `status: 'rejected'`. Anthropic stamps a
+ *     `rate_limit_info` onto its events even when the request goes through
+ *     (`status: 'allowed'`) — that block is just the rolling-window metadata
+ *     (`resetsAt`, `rateLimitType`) for an *allowed* call, NOT evidence the
+ *     limit was hit. Leaning on the presence of a reset window alone made a
+ *     later unrelated terminal failure (e.g. an `ECONNRESET` network drop)
+ *     inherit the last allowed event's window and render a bogus "usage limit
+ *     reached, resets at X" guide. The `status` is the gate.
+ *  2. A concrete reset window (`resetsAt` epoch seconds and/or a named
+ *     `rateLimitType` such as `seven_day`). A bare `rejected` with no window is
+ *     Anthropic's transient server throttle — left to the overloaded (retry)
+ *     classifier, not the usage-limit guide.
+ *
+ * Status codes (429 / 529) and message text are deliberately not consulted
+ * here — only this structured signal decides the "usage limit reached" guide.
+ */
+const isUserQuotaRateLimit = (info?: HeterogeneousRateLimitInfo): boolean =>
+  !!info && info.status === 'rejected' && (info.resetsAt != null || info.rateLimitType != null);
 
 const getCliResultMessage = (result: unknown): string | undefined => {
   if (typeof result === 'string') return result;
@@ -248,10 +298,18 @@ const toRateLimitInfo = (value: unknown): HeterogeneousRateLimitInfo | undefined
 const getOverloadedTerminalError = (
   result: unknown,
   apiErrorStatus?: unknown,
+  rateLimitInfo?: HeterogeneousRateLimitInfo,
 ): HeterogeneousTerminalErrorData | undefined => {
   const rawMessage = getCliResultMessage(result);
+  // A real user-quota limit is the rate-limit classifier's job — never steal
+  // it here, even if it happened to ride in on a 429/529.
+  if (isUserQuotaRateLimit(rateLimitInfo)) return;
+
   const looksOverloaded =
+    // Both 529 (upstream overloaded) and a 429 with no quota signal (transient
+    // server throttle) are momentary server-side conditions — same retry UX.
     apiErrorStatus === 529 ||
+    apiErrorStatus === 429 ||
     (!!rawMessage && CLI_OVERLOADED_PATTERNS.some((pattern) => pattern.test(rawMessage)));
 
   if (!looksOverloaded || !rawMessage) return;
@@ -269,15 +327,24 @@ const getOverloadedTerminalError = (
 const getRateLimitTerminalError = (
   result: unknown,
   rateLimitInfo?: HeterogeneousRateLimitInfo,
-  apiErrorStatus?: unknown,
 ): HeterogeneousTerminalErrorData | undefined => {
   const rawMessage = getCliResultMessage(result);
-  const looksLikeRateLimit =
-    apiErrorStatus === 429 ||
-    !!rateLimitInfo ||
-    (!!rawMessage && CLI_RATE_LIMIT_PATTERNS.some((pattern) => pattern.test(rawMessage)));
 
-  if (!looksLikeRateLimit || !rawMessage) return;
+  // Primary signal: the structured rate_limit_event carries a concrete reset
+  // window → this is the user's plan/quota limit. Fallback (batch runs with no
+  // rate_limit_event): clearly user-side wording that doesn't disclaim the
+  // limit. Everything else — bare 429, "rate limited", server throttle — is
+  // left to the overloaded classifier so it gets the retry UX, not a
+  // misleading "usage limit reached, resets at X" guide.
+  const looksLikeServerThrottle =
+    !!rawMessage && CLI_SERVER_THROTTLE_PATTERNS.some((pattern) => pattern.test(rawMessage));
+  const looksLikeUserLimit =
+    isUserQuotaRateLimit(rateLimitInfo) ||
+    (!!rawMessage &&
+      !looksLikeServerThrottle &&
+      CLI_USER_RATE_LIMIT_PATTERNS.some((pattern) => pattern.test(rawMessage)));
+
+  if (!looksLikeUserLimit || !rawMessage) return;
 
   return {
     agentType: 'claude-code',
@@ -398,8 +465,27 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
   private pendingToolCalls = new Set<string>();
   private started = false;
   private stepIndex = 0;
+  /**
+   * True once any `stream_event` wrapper is seen — i.e. CC was spawned with
+   * `--include-partial-messages` (desktop driver). The `lh hetero exec` CLI
+   * used by device + sandbox runs spawns in BATCH mode (no partial flag), so
+   * this stays false and `handleAssistant` owns per-turn usage instead of
+   * `message_delta`.
+   */
+  private sawStreamEvent = false;
   /** Track current message.id to detect step boundaries */
   private currentMessageId: string | undefined;
+  /**
+   * Whether the current turn (the in-flight `currentMessageId`) has already
+   * emitted a `tool_use`. When CC reuses the SAME `message.id` to stream the
+   * model's post-tool answer (it continues after the `tool_result` without
+   * minting a fresh id — seen on device/batch `lh hetero exec` runs), that
+   * trailing text must NOT coalesce onto the tool-issuing assistant. We force a
+   * step boundary so the answer anchors to its own assistant, chained after the
+   * tool results — otherwise text + `tool_use` share one message and the
+   * renderer drops the tool block below the answer.
+   */
+  private currentTurnHadToolUse = false;
   /** message.id of the stream_event delta flow currently in flight */
   private currentStreamEventMessageId: string | undefined;
   /**
@@ -472,11 +558,32 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
   /**
    * Set of parent tool_use ids whose spawn metadata has already been
    * announced on a subagent event. Guarantees `spawnMetadata` appears
-   * exactly once per subagent run — on the first subagent chunk for that
+   * exactly once per subagent run — on the first subagent event for that
    * parent — so the executor's lazy-create logic isn't tempted to
    * recreate the Thread on every chunk.
    */
   private announcedSpawns = new Set<string>();
+
+  /**
+   * Build the spawn metadata (`description` / `prompt` / `subagent_type`) for a
+   * subagent's parent tool_use from the cached Task/Agent input. Pure: it neither
+   * reads nor mutates {@link announcedSpawns} — the caller gates "exactly once"
+   * and only marks the parent announced when the metadata is actually attached to
+   * an EMITTED chunk (see `handleSubagentAssistant`). Returns undefined when the
+   * parent's args were never cached.
+   */
+  private buildSpawnMetadata(parentToolCallId: string): SubagentSpawnMetadata | undefined {
+    const args = this.mainToolInputsById.get(parentToolCallId);
+    if (!args) return undefined;
+    // CC's subagent-spawn tools (Task, Agent, ...) share the same input shape
+    // (`description`, `prompt`, `subagent_type`). Pull the fields defensively —
+    // any unknown spawn-tool variant matching this shape benefits automatically.
+    return {
+      description: typeof args.description === 'string' ? args.description : undefined,
+      prompt: typeof args.prompt === 'string' ? args.prompt : undefined,
+      subagentType: typeof args.subagent_type === 'string' ? args.subagent_type : undefined,
+    };
+  }
   /**
    * Tool name keyed by main-agent `tool_use.id`. Used to label the
    * resulting {@link ExternalSignalContext} when a Monitor-style task
@@ -598,8 +705,19 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
       // task-ended notification) can be tagged with `task-completion`.
       // Last-task-wins if multiple tasks end before a summary fires — in
       // practice CC summarizes once per LLM call.
+      //
+      // Gate on `callbackCount > 0`: only a task that actually fired out-of-band
+      // callback turns while alive is a genuine long-running task whose ending
+      // produces a post-task summary (the summary "keeps it inside the same
+      // AssistantGroup as the preceding callbacks" — so there must BE preceding
+      // callbacks). A task that fires `task_started` and `task_notification`
+      // back-to-back with no intervening callback turn was an inline synchronous
+      // tool that CC merely tracked as a task (e.g. a slow `git commit` running a
+      // lint-staged hook); its `tool_result` is consumed by the next turn in the
+      // normal main chain. Tagging that turn `task-completion` mis-anchors it and
+      // drops it from the rendered chain — so leave it untagged.
       const ending = this.activeTasks.get(raw.task_id);
-      if (ending) {
+      if (ending && ending.callbackCount > 0) {
         this.pendingTaskCompletion = {
           sourceToolCallId: ending.toolUseId,
           sourceToolName: ending.sourceToolName,
@@ -620,6 +738,9 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
       this.makeEvent('stream_start', {
         model: raw.model,
         provider: 'claude-code',
+        // The CC session id every message this run produces belongs to. A
+        // change in this value across a topic means CC forked a new session.
+        sessionId: this.sessionId,
       }),
     ];
   }
@@ -646,7 +767,22 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
     const events: HeterogeneousAgentEvent[] = [];
     const messageId = raw.message?.id;
 
-    events.push(...this.openMainMessage(messageId, raw.message?.model));
+    // Detect a post-tool answer that REUSES the tool turn's message.id: a
+    // text-only continuation (no tool_use of its own) on the in-flight id that
+    // already emitted a tool_use. CC does this on device/batch runs where the
+    // model keeps the same id after a tool_result; left unsplit, the answer text
+    // lands on the tool-issuing assistant. An event carrying its OWN tool_use is
+    // a normal preamble-then-tool turn and must stay on the same step.
+    const hasTextBlock = content.some((b: any) => b?.type === 'text' && b.text);
+    const hasToolUseBlock = content.some((b: any) => b?.type === 'tool_use');
+    const isPostToolTextReusingId =
+      hasTextBlock &&
+      !hasToolUseBlock &&
+      messageId !== undefined &&
+      messageId === this.currentMessageId &&
+      this.currentTurnHadToolUse;
+
+    events.push(...this.openMainMessage(messageId, raw.message?.model, isPostToolTextReusingId));
 
     // Track the latest model — emitted alongside authoritative usage on the
     // matching `message_delta`. We deliberately do NOT emit turn_metadata
@@ -725,7 +861,12 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
     // (since it fires on `message_start`, before tool_use blocks
     // arrive); MessageCollector ignores `metadata.signal` on messages
     // with `tools.length > 0` so that mismatch is benign.
-    if (newToolCalls.length > 0) this.pendingExternalSignal = undefined;
+    if (newToolCalls.length > 0) {
+      this.pendingExternalSignal = undefined;
+      // Mark the in-flight turn so a later same-id text-only event is recognized
+      // as a post-tool answer and split into its own step (see openMainMessage).
+      this.currentTurnHadToolUse = true;
+    }
 
     // Under `--include-partial-messages`, CC may emit deltas first and then a
     // final full assistant block for the SAME message.id. If the full block is
@@ -741,11 +882,16 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
       reasoningParts.join(''),
       this.streamedThinkingByMessageId,
     );
-    if (textCompletion) {
-      events.push(this.makeChunkEvent({ chunkType: 'text', content: textCompletion }));
-    }
+    // Emit reasoning before text so the gateway event handler starts the
+    // reasoning operation first — matching Claude's natural output order
+    // (thinking → response). Without this, batch-mode runs (CLI / sandbox
+    // without --include-partial-messages) emit text first, causing the
+    // brain icon to appear below the already-rendered text content.
     if (thinkingCompletion) {
       events.push(this.makeChunkEvent({ chunkType: 'reasoning', reasoning: thinkingCompletion }));
+    }
+    if (textCompletion) {
+      events.push(this.makeChunkEvent({ chunkType: 'text', content: textCompletion }));
     }
     if (messageId) {
       this.clearStreamedBuffers(messageId, {
@@ -754,6 +900,29 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
       });
     }
     events.push(...this.emitToolChunk(newToolCalls, messageId));
+
+    // BATCH mode (no `--include-partial-messages`, e.g. the `lh hetero exec`
+    // CLI used by device + sandbox runs): there is no `message_delta` to carry
+    // per-turn usage, and the `assistant` event's usage is NOT a stale
+    // message_start echo — it's the real per-message total. Emit it as
+    // turn_metadata so usage (token counts) AND the canonical model id (the
+    // `assistant` event reports a clean `claude-opus-4-8`, unlike `system init`
+    // which appends a `[1m]` beta marker) land on the assistant message. In
+    // partial mode (`sawStreamEvent`) `message_delta` owns this — skip here to
+    // avoid double-counting the stale snapshot.
+    if (!this.sawStreamEvent) {
+      const usage = toUsageData(raw.message?.usage);
+      if (usage) {
+        events.push(
+          this.makeEvent('step_complete', {
+            model: raw.message?.model,
+            phase: 'turn_metadata',
+            provider: 'claude-code',
+            usage,
+          }),
+        );
+      }
+    }
 
     return events;
   }
@@ -767,13 +936,9 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
    * Handle a subagent assistant event (tagged with `parent_tool_use_id`).
    *
    * Subagent events are a side-channel of the main agent's stream and have
-   * two hard constraints:
-   *  - no main-agent step boundary (each subagent turn introduces a new
-   *    `message.id`; flushing that as a newStep would orphan main-agent
-   *    bubbles)
-   *  - no model / usage tracking on the main agent (CC's `result` event
-   *    carries the authoritative grand total; re-summing per-turn deltas
-   *    here would double-count against the main agent)
+   * one hard constraint: no main-agent step boundary (each subagent turn
+   * introduces a new `message.id`; flushing that as a newStep would orphan
+   * main-agent bubbles).
    *
    * Text / reasoning from subagent events ARE emitted — as `stream_chunk`
    * events tagged with the `subagent` peer field — so the executor can
@@ -781,6 +946,17 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
    * Thread view a readable subagent conversation (user → assistant text
    * → tools → assistant text → ...). Without this the thread only ever
    * shows tool calls with no closing reasoning / summary.
+   *
+   * Usage on `raw.message.usage` is also emitted, as a
+   * `step_complete{phase:turn_metadata, subagent}` event so the executor
+   * can route the per-turn delta onto the subagent's in-thread assistant
+   * (and bump the subagent run's running totalTokens for the inspector
+   * chip). Note this is the FULL message.usage (subagent assistant events
+   * are not partial-streamed, unlike main-agent assistant events which
+   * carry stale `message_start` snapshots), so no de-stale logic is
+   * needed here. The subagent ctx tag prevents the executor from writing
+   * the same usage to the main agent's assistant — CC's `result` event
+   * remains the grand total across main + subagents.
    *
    * Subagent lineage lives as event-level **peer fields** on each chunk
    * (`subagent.parentToolCallId` + `subagent.subagentMessageId`), not on
@@ -792,9 +968,32 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
     if (!Array.isArray(content)) return [];
 
     const messageId: string | undefined = raw.message?.id;
-    const subagentCtx = {
+    const baseCtx: SubagentEventContext = {
       parentToolCallId: parentToolUseId,
       subagentMessageId: messageId ?? '',
+    };
+
+    // Build spawn metadata once per parent and hand it to the FIRST chunk this
+    // event emits (reasoning, text, OR tool). The executor lazy-creates +
+    // titles the Thread off whichever subagent event it sees first, so a
+    // reasoning/text-first subagent must carry the metadata too — not just the
+    // tool path — or the Thread is born with the generic "Subagent" title.
+    //
+    // `announcedSpawns` is marked only when the metadata is ACTUALLY attached to
+    // an emitted chunk (inside `nextSubagentCtx`), not merely built here. A first
+    // event that emits nothing the reducer consumes (empty text/thinking block,
+    // an unsupported block, or a usage-only `content: []`) must NOT burn the
+    // one-shot — otherwise the next real chunk would create the Thread with the
+    // fallback title, the exact bug this guards against.
+    let pendingSpawnMetadata = this.announcedSpawns.has(parentToolUseId)
+      ? undefined
+      : this.buildSpawnMetadata(parentToolUseId);
+    const nextSubagentCtx = (): SubagentEventContext => {
+      if (!pendingSpawnMetadata) return baseCtx;
+      const ctx: SubagentEventContext = { ...baseCtx, spawnMetadata: pendingSpawnMetadata };
+      pendingSpawnMetadata = undefined;
+      this.announcedSpawns.add(parentToolUseId);
+      return ctx;
     };
 
     const textParts: string[] = [];
@@ -838,25 +1037,48 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
     // `messagesWithStreamedText` (unlike the main-agent path) because
     // subagent events don't arrive via `stream_event` partial-messages
     // deltas; the full block IS the only emission.
-    if (textParts.length > 0) {
-      events.push(
-        this.makeChunkEvent({
-          chunkType: 'text',
-          content: textParts.join(''),
-          subagent: subagentCtx,
-        }),
-      );
-    }
+    // Reasoning before text — same ordering fix as the main-agent batch path.
     if (reasoningParts.length > 0) {
       events.push(
         this.makeChunkEvent({
           chunkType: 'reasoning',
           reasoning: reasoningParts.join(''),
-          subagent: subagentCtx,
+          subagent: nextSubagentCtx(),
         }),
       );
     }
-    events.push(...this.emitToolChunk(newToolCalls, messageId, subagentCtx));
+    if (textParts.length > 0) {
+      events.push(
+        this.makeChunkEvent({
+          chunkType: 'text',
+          content: textParts.join(''),
+          subagent: nextSubagentCtx(),
+        }),
+      );
+    }
+    // Only consume the pending spawn metadata for the tool chunk when this
+    // event actually carries tools (else it would be lost on the no-op chunk).
+    events.push(
+      ...this.emitToolChunk(
+        newToolCalls,
+        messageId,
+        newToolCalls.length > 0 ? nextSubagentCtx() : baseCtx,
+      ),
+    );
+
+    const usage = toUsageData(raw.message?.usage);
+    if (usage) {
+      events.push(
+        this.makeEvent('step_complete', {
+          model: raw.message?.model,
+          phase: 'turn_metadata',
+          provider: 'claude-code',
+          subagent: baseCtx,
+          usage,
+        }),
+      );
+    }
+
     return events;
   }
 
@@ -872,15 +1094,14 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
    * so an echoed tool_use does not re-open a closed lifecycle.
    *
    * When `subagentCtx` is provided, the chunk + each tool_start event
-   * gets the context stamped as a peer field. The FIRST chunk for a new
-   * parent (tracked via `announcedSpawns`) also carries `spawnMetadata`
-   * built from the cached Task args, so the executor can lazy-create
-   * the Thread without knowing about CC-specific argument shapes.
+   * gets the context stamped as a peer field — including any `spawnMetadata`
+   * the caller already attached (`handleSubagentAssistant` builds it once per
+   * parent and hands it to the first emitted chunk, tool or otherwise).
    */
   private emitToolChunk(
     newToolCalls: ToolCallPayload[],
     messageId: string | undefined,
-    subagentCtx?: { parentToolCallId: string; subagentMessageId: string },
+    subagentCtx?: SubagentEventContext,
   ): HeterogeneousAgentEvent[] {
     if (newToolCalls.length === 0) return [];
 
@@ -891,30 +1112,10 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
     const cumulative = [...existing, ...freshTools];
     this.toolCallsByMessageId.set(msgKey, cumulative);
 
-    // Build the `subagent` peer field — stamped on the chunk + each
-    // tool_start. Only the first emission for a new parent carries
-    // spawnMetadata; subsequent ones carry just the lineage ids.
-    const subagent: SubagentEventContext | undefined = subagentCtx
-      ? {
-          parentToolCallId: subagentCtx.parentToolCallId,
-          subagentMessageId: subagentCtx.subagentMessageId,
-        }
-      : undefined;
-    if (subagent && !this.announcedSpawns.has(subagent.parentToolCallId)) {
-      const args = this.mainToolInputsById.get(subagent.parentToolCallId);
-      if (args) {
-        // CC's subagent-spawn tools (Task, Agent, ...) share the same
-        // input shape (`description`, `prompt`, `subagent_type`). We pull
-        // the fields defensively — any unknown spawn-tool variant that
-        // happens to match this shape benefits automatically.
-        subagent.spawnMetadata = {
-          description: typeof args.description === 'string' ? args.description : undefined,
-          prompt: typeof args.prompt === 'string' ? args.prompt : undefined,
-          subagentType: typeof args.subagent_type === 'string' ? args.subagent_type : undefined,
-        };
-      }
-      this.announcedSpawns.add(subagent.parentToolCallId);
-    }
+    // The `subagent` peer field — stamped on the chunk + each tool_start —
+    // is passed through verbatim (carrying `spawnMetadata` when the caller
+    // designated this the first emission for the parent).
+    const subagent: SubagentEventContext | undefined = subagentCtx;
 
     const chunkData: StreamChunkData = {
       chunkType: 'tools_calling',
@@ -1160,16 +1361,16 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
     }
 
     const resultMessage = getCliResultMessage(raw.result) || 'Agent execution failed';
-    const rateLimitError = getRateLimitTerminalError(
-      raw.result,
-      this.pendingRateLimitInfo,
-      raw.api_error_status,
-    );
+    const rateLimitError = getRateLimitTerminalError(raw.result, this.pendingRateLimitInfo);
     const finalEvent: HeterogeneousAgentEvent = raw.is_error
       ? this.makeEvent(
           'error',
           rateLimitError ||
-            getOverloadedTerminalError(raw.result, raw.api_error_status) ||
+            getOverloadedTerminalError(
+              raw.result,
+              raw.api_error_status,
+              this.pendingRateLimitInfo,
+            ) ||
             getAuthRequiredTerminalError(raw.result) || {
               error: resultMessage,
               message: resultMessage,
@@ -1185,7 +1386,12 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
     // wrongly inherit the previous run's task-completion tag).
     this.pendingTaskCompletion = undefined;
 
-    return [...events, this.makeEvent('stream_end', {}), finalEvent];
+    return [
+      ...events,
+      this.makeEvent('stream_end', {}),
+      this.makeEvent('visible_output_end', {}),
+      finalEvent,
+    ];
   }
 
   /**
@@ -1201,6 +1407,12 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
   private handleStreamEvent(raw: any): HeterogeneousAgentEvent[] {
     const event = raw?.event;
     if (!event) return [];
+
+    // Seeing any stream_event proves CC is running with
+    // `--include-partial-messages` — `message_delta` owns authoritative usage,
+    // so `handleAssistant` must NOT also emit it (the assistant block echoes a
+    // stale message_start usage snapshot in this mode).
+    this.sawStreamEvent = true;
 
     switch (event.type) {
       case 'message_start': {
@@ -1271,24 +1483,82 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
   private openMainMessage(
     messageId: string | undefined,
     model: string | undefined,
+    forcePostToolBoundary = false,
   ): HeterogeneousAgentEvent[] {
     if (!messageId) return [];
 
     if (!this.started) {
       this.started = true;
       this.currentMessageId = messageId;
-      return [this.makeEvent('stream_start', { model, provider: 'claude-code' })];
+      this.currentTurnHadToolUse = false;
+      return [
+        this.makeEvent('stream_start', {
+          model,
+          provider: 'claude-code',
+          sessionId: this.sessionId,
+        }),
+      ];
     }
 
-    if (messageId === this.currentMessageId) return [];
+    if (messageId === this.currentMessageId) {
+      // Same message.id ⇒ normally the same step (CC streams a turn's blocks
+      // across several assistant events). EXCEPT when the model answers AFTER
+      // its tools while reusing the id: that post-tool text must get its own
+      // step, or it coalesces onto the tool-issuing assistant and the renderer
+      // drops the tool block below the answer. This is a natural main-chain
+      // continuation, NOT a signal callback, so emit a plain boundary without
+      // the task-callback / external-signal tagging below.
+      if (!forcePostToolBoundary) return [];
+      this.stepIndex++;
+      this.currentTurnHadToolUse = false;
+      // The post-tool answer is the natural follow-up to the preceding
+      // tool_result — consume the user-input flag exactly like the normal turn
+      // boundary does (below), or a later signal callback (e.g. a Monitor stdout
+      // turn opened while a task is active) would see a stale `true` and skip
+      // its external-signal tag.
+      this.hasUnhandledUserInput = false;
+      this.pendingExternalSignal = undefined;
+      // Reusing the tool turn's message.id as the newStep id would make the
+      // reducer treat this as a REPLAY and drop it (it ignores a `newStep` whose
+      // id === currentMainMessageId). For any tool turn opened by a prior
+      // newStep that id already IS currentMainMessageId, so the split would be
+      // dropped and the text would coalesce anyway. Stamp a DISTINCT,
+      // replay-stable idempotency key — suffixed by stepIndex, so it is unique
+      // per split and deterministic across cold-replica reprocessing — so a
+      // fresh assistant is actually opened.
+      return [
+        this.makeEvent('stream_end', {}),
+        this.makeEvent('stream_start', {
+          messageId: `${messageId}:s${this.stepIndex}`,
+          model,
+          newStep: true,
+          provider: 'claude-code',
+          sessionId: this.sessionId,
+        }),
+      ];
+    }
 
     if (this.currentMessageId === undefined) {
       // First assistant/delta after system init — record without step boundary.
+      // Emit a non-newStep stream_start carrying this turn's CC message.id so
+      // the reducer records `currentMainMessageId` for the SEEDED assistant.
+      // system:init opened the seed with no id, so without this the first turn's
+      // rows (assistant / tools / usage) would carry no `heteroMessageId` — the
+      // exact first turn of a resumed/forked operation this provenance targets.
       this.currentMessageId = messageId;
-      return [];
+      this.currentTurnHadToolUse = false;
+      return [
+        this.makeEvent('stream_start', {
+          messageId,
+          model,
+          provider: 'claude-code',
+          sessionId: this.sessionId,
+        }),
+      ];
     }
 
     this.currentMessageId = messageId;
+    this.currentTurnHadToolUse = false;
     this.stepIndex++;
     // Signal-callback detection (): if this turn opened
     // WITHOUT a preceding `user` event AND a long-running task is
@@ -1332,9 +1602,15 @@ export class ClaudeCodeAdapter implements AgentEventAdapter {
       this.makeEvent('stream_end', {}),
       this.makeEvent('stream_start', {
         externalSignal: this.pendingExternalSignal,
+        // The turn's CC message.id — the server stamps it on the new assistant
+        // (`metadata.mainMessageId`) as a turn idempotency key, so a cold-replica
+        // batch retry that reprocesses this `newStep` recognizes the same turn
+        // instead of forking a duplicate + usage-only empty shell.
+        messageId,
         model,
         newStep: true,
         provider: 'claude-code',
+        sessionId: this.sessionId,
       }),
     ];
   }

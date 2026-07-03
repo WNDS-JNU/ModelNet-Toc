@@ -1,9 +1,12 @@
-import { Button, Flexbox, Icon, Modal } from '@lobehub/ui';
+import { CUSTOM_FOLDER_FILE_TYPE } from '@lobechat/const';
+import { Flexbox, Icon } from '@lobehub/ui';
+import { Button } from '@lobehub/ui/base-ui';
 import { App } from 'antd';
 import { FolderIcon } from 'lucide-react';
 import { memo, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import ImperativeModal from '@/components/ImperativeModal';
 import { type FolderTreeItem } from '@/features/ResourceManager/components/FolderTree';
 import FolderTree from '@/features/ResourceManager/components/FolderTree';
 import { fileService } from '@/services/file';
@@ -25,8 +28,8 @@ const MoveToFolderModal = memo<MoveToFolderModalProps>(
     const [folders, setFolders] = useState<FolderTreeItem[]>([]);
     const [loading, setLoading] = useState(false);
     const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
-    const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
-    const [loadedFolders, setLoadedFolders] = useState<Set<string>>(new Set());
+    const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
+    const [loadedFolders, setLoadedFolders] = useState<Set<string>>(() => new Set());
     const [isCreatingFolder, setIsCreatingFolder] = useState(false);
 
     const createFolder = useFileStore((s) => s.createFolder);
@@ -49,7 +52,7 @@ const MoveToFolderModal = memo<MoveToFolderModalProps>(
 
         // Filter only folders
         const folderItems = response.items
-          .filter((item) => item.fileType === 'custom/folder')
+          .filter((item) => item.fileType === CUSTOM_FOLDER_FILE_TYPE)
           .map((item) => ({
             children: undefined,
             id: item.id,
@@ -85,7 +88,7 @@ const MoveToFolderModal = memo<MoveToFolderModalProps>(
 
           // Filter only folders
           const childFolders: FolderTreeItem[] = response.items
-            .filter((item) => item.fileType === 'custom/folder')
+            .filter((item) => item.fileType === CUSTOM_FOLDER_FILE_TYPE)
             .map((item) => ({
               children: undefined,
               id: item.id,
@@ -131,7 +134,7 @@ const MoveToFolderModal = memo<MoveToFolderModalProps>(
 
           // Filter only folders
           const childFolders: FolderTreeItem[] = response.items
-            .filter((item) => item.fileType === 'custom/folder')
+            .filter((item) => item.fileType === CUSTOM_FOLDER_FILE_TYPE)
             .map((item) => ({
               children: undefined,
               id: item.id,
@@ -255,7 +258,7 @@ const MoveToFolderModal = memo<MoveToFolderModalProps>(
     };
 
     return (
-      <Modal
+      <ImperativeModal
         open={open}
         title={t('FileManager.actions.moveToFolder')}
         footer={
@@ -303,7 +306,7 @@ const MoveToFolderModal = memo<MoveToFolderModalProps>(
             />
           )}
         </Flexbox>
-      </Modal>
+      </ImperativeModal>
     );
   },
 );

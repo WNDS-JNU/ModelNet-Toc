@@ -2,7 +2,7 @@
 
 import { useUnmount } from 'ahooks';
 import { memo, Suspense } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router';
 import { createStoreUpdater } from 'zustand-utils';
 
 import Loading from '@/components/Loading/BrandTextLoading';
@@ -15,11 +15,12 @@ const PagesPage = memo(() => {
   const params = useParams<{ id: string }>();
 
   const pageId = getIdFromIdentifier(params.id ?? '', 'docs');
-  storeUpdater('selectedPageId', pageId);
 
   useUnmount(() => {
     usePageStore.setState({ selectedPageId: undefined });
   });
+
+  storeUpdater('selectedPageId', pageId);
 
   return (
     <Suspense fallback={<Loading debugId="PagesPage" />}>

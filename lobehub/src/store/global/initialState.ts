@@ -1,4 +1,4 @@
-import { type NavigateFunction } from 'react-router-dom';
+import { type NavigateFunction } from 'react-router';
 
 import { type MigrationSQL, type MigrationTableItem } from '@/types/clientDB';
 import { DatabaseLoadingState } from '@/types/clientDB';
@@ -23,6 +23,7 @@ export enum SidebarTabKey {
 }
 
 export enum ChatSettingsTabs {
+  Connector = 'connector',
   Opening = 'opening',
   Plugin = 'plugin',
   Prompt = 'prompt',
@@ -52,6 +53,7 @@ export enum SettingsTabs {
   Common = 'common',
   Credits = 'credits',
   Creds = 'creds',
+  Devices = 'devices',
   Hotkey = 'hotkey',
   /** @deprecated Use ServiceModel instead */
   Image = 'image',
@@ -103,7 +105,7 @@ export const DEFAULT_MODEL_DETAIL_PANEL_EXPANDED_KEYS = [
   'config',
 ] as const satisfies readonly ModelDetailPanelExpandedKey[];
 
-export const DEFAULT_HOME_SIDEBAR_EXPANDED_KEYS = ['recents', 'agent'];
+export const DEFAULT_HOME_SIDEBAR_EXPANDED_KEYS = ['recents', 'agent', 'private'];
 
 export interface SystemStatus {
   /**
@@ -122,6 +124,14 @@ export interface SystemStatus {
    * so dismissing the current one does not hide future ones.
    */
   dismissedBannerIds?: string[];
+  /**
+   * Per-agent expanded state of the agent sidebar's top-level sections
+   * (Tasks / Topic), keyed by agentId. Lets each agent remember its own
+   * collapse/expand state so switching agents doesn't share one accordion.
+   * Nested booleans (not a key array) so the lodash `merge` in
+   * `updateSystemStatus` replaces scalars cleanly instead of index-merging arrays.
+   */
+  expandAgentSidebarSectionsByAgent?: Record<string, Record<string, boolean>>;
   expandInputActionbar?: boolean;
   // which sessionGroup should expand
   expandSessionGroupKeys: string[];
@@ -190,6 +200,10 @@ export interface SystemStatus {
    */
   pagePageSize?: number;
   portalWidth: number;
+  /**
+   * number of private agents (ungrouped) to display in the Private sidebar bucket
+   */
+  privateAgentPageSize?: number;
   readNotificationSlugs?: string[];
   /**
    * number of recent items to display
@@ -210,6 +224,12 @@ export interface SystemStatus {
   showAgentBuilderPanel?: boolean;
   showCommandMenu?: boolean;
   showFilePanel?: boolean;
+  /**
+   * Collapse state of the nav panel while the Fleet (Observation Mode) view is active.
+   * Persisted independently from `showLeftPanel` so collapsing the running-task list
+   * does not carry over to / from the standard chat nav rail (and vice versa).
+   */
+  showFleetPanel?: boolean;
   showHotkeyHelper?: boolean;
   showImagePanel?: boolean;
   showImageTopicPanel?: boolean;
@@ -279,8 +299,34 @@ export interface SystemStatus {
    * can switch the panel to "review" when revealing the right panel.
    */
   workingSidebarTab?: WorkingSidebarTab;
-  zenMode?: boolean;
+  /**
+   * Workspace-mode overlay for sidebar layout/visibility preferences.
+   * When the user is inside a workspace (see `useActiveWorkspaceId`), reads
+   * fall back to these values instead of the top-level fields, and writes
+   * to whitelisted fields land here. Top-level fields stay as the personal
+   * (no-workspace) preference, so switching modes does not bleed state.
+   * Single shared bucket across all workspaces — not keyed by workspaceId.
+   */
+  workspace?: Partial<Pick<SystemStatus, WorkspaceOverridableField>>;
 }
+
+/**
+ * Fields whose preference is meaningfully different between personal mode
+ * and workspace mode (e.g. workspace-only sidebar entries like the Private
+ * group, or product-driven defaults like hiding Recents in a workspace).
+ * Writes to these fields are routed to `status.workspace.*` when the user is
+ * inside a workspace; reads fall back to the top-level value when the
+ * overlay is empty.
+ */
+export type WorkspaceOverridableField =
+  'expandSessionGroupKeys' | 'hiddenSidebarSections' | 'sidebarExpandedKeys' | 'sidebarItems';
+
+export const WORKSPACE_OVERRIDABLE_FIELDS = [
+  'expandSessionGroupKeys',
+  'hiddenSidebarSections',
+  'sidebarExpandedKeys',
+  'sidebarItems',
+] as const satisfies readonly WorkspaceOverridableField[];
 
 export interface GlobalNavigationRef {
   current: NavigateFunction | null;
@@ -325,6 +371,7 @@ export interface GlobalState {
 export const INITIAL_STATUS = {
   agentBuilderPanelWidth: 360,
   agentPageSize: 5,
+  privateAgentPageSize: 5,
   chatInputHeight: 64,
   recentPageSize: 5,
   taskListViewOptions: {
@@ -369,6 +416,7 @@ export const INITIAL_STATUS = {
   },
   showCommandMenu: false,
   showFilePanel: true,
+  showFleetPanel: true,
   showHotkeyHelper: false,
   showImagePanel: true,
   showImageTopicPanel: true,
@@ -387,7 +435,6 @@ export const INITIAL_STATUS = {
   videoPanelWidth: 320,
   videoTopicViewMode: 'grid' as const,
   videoTopicPanelWidth: 80,
-  zenMode: false,
 } satisfies SystemStatus;
 
 export const initialState: GlobalState = {

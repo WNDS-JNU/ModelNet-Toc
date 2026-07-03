@@ -1,7 +1,10 @@
+import path from 'node:path';
+
 import type { MenuItemConstructorOptions } from 'electron';
-import { app, BrowserWindow, clipboard, dialog, Menu, shell } from 'electron';
+import { app, clipboard, dialog, Menu, shell } from 'electron';
 
 import { isDev } from '@/const/env';
+import { HETERO_AGENT_DIR } from '@/const/heteroAgent';
 
 import type { ContextMenuData, IMenuPlatform, MenuOptions } from '../types';
 import { BaseMenuPlatform } from './BaseMenuPlatform';
@@ -119,16 +122,7 @@ export class LinuxMenu extends BaseMenuPlatform implements IMenuPlatform {
           { type: 'separator' },
           {
             accelerator: 'CmdOrCtrl+W',
-            click: () => {
-              const focused = BrowserWindow.getFocusedWindow();
-              if (!focused) return;
-              const mainWindow = this.app.browserManager.getMainWindow();
-              if (focused === mainWindow.browserWindow) {
-                mainWindow.broadcast('closeCurrentTabOrWindow');
-              } else {
-                focused.close();
-              }
-            },
+            click: (_item, targetWindow) => this.closeFocusedTabOrWindow(targetWindow),
             label: t('window.close'),
           },
           { label: t('window.minimize'), role: 'minimize' },
@@ -152,11 +146,11 @@ export class LinuxMenu extends BaseMenuPlatform implements IMenuPlatform {
       {
         label: t('view.title'),
         submenu: [
-          { accelerator: 'F12', label: t('dev.devTools'), role: 'toggleDevTools' },
+          this.buildDevToolsMenuItem(t('dev.devTools'), 'F12'),
           { type: 'separator' },
-          { label: t('view.resetZoom'), role: 'resetZoom' },
-          { label: t('view.zoomIn'), role: 'zoomIn' },
-          { label: t('view.zoomOut'), role: 'zoomOut' },
+          this.buildZoomMenuItem('reset', t('view.resetZoom'), 'CmdOrCtrl+0'),
+          ...this.buildZoomMenuItems('in', t('view.zoomIn'), 'CmdOrCtrl+=', ['CmdOrCtrl+Plus']),
+          this.buildZoomMenuItem('out', t('view.zoomOut'), 'CmdOrCtrl+-'),
           { type: 'separator' },
           { label: t('view.toggleFullscreen'), role: 'togglefullscreen' },
         ],
@@ -216,6 +210,25 @@ export class LinuxMenu extends BaseMenuPlatform implements IMenuPlatform {
           { type: 'separator' },
           {
             click: () => {
+              const heteroAgentPath = path.join(this.app.appStoragePath, HETERO_AGENT_DIR);
+              console.info(`[Menu] Opening HeteroAgent directory: ${heteroAgentPath}`);
+              shell.openPath(heteroAgentPath).catch((err) => {
+                console.error(`[Menu] Error opening path ${heteroAgentPath}:`, err);
+              });
+            },
+            label: t('help.openHeteroAgentDir'),
+          },
+          {
+            checked: this.app.storeManager.get('heteroTracingEnabled', false),
+            click: (item) => {
+              this.app.storeManager.set('heteroTracingEnabled', item.checked);
+            },
+            label: t('help.toggleHeteroTracing'),
+            type: 'checkbox',
+          },
+          { type: 'separator' },
+          {
+            click: () => {
               const commonT = this.app.i18n.ns('common');
               const dialogT = this.app.i18n.ns('dialog');
 
@@ -242,7 +255,7 @@ export class LinuxMenu extends BaseMenuPlatform implements IMenuPlatform {
         submenu: [
           { label: t('dev.reload'), role: 'reload' },
           { label: t('dev.forceReload'), role: 'forceReload' },
-          { label: t('dev.devTools'), role: 'toggleDevTools' },
+          this.buildDevToolsMenuItem(t('dev.devTools')),
           { type: 'separator' },
           {
             click: () => {

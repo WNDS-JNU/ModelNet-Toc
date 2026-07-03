@@ -1,7 +1,18 @@
-import { type AgentItem, type LobeAgentConfig } from '@lobechat/types';
+import { type AgentItem, type AgentRankItem, type LobeAgentConfig } from '@lobechat/types';
 import { type PartialDeep } from 'type-fest';
 
 import { lambdaClient } from '@/libs/trpc/client';
+
+export const AVAILABLE_AGENTS_CONTEXT_LIMIT = 10;
+export const AVAILABLE_AGENTS_CONTEXT_QUERY_LIMIT = AVAILABLE_AGENTS_CONTEXT_LIMIT + 2;
+
+export interface AvailableAgentItem {
+  avatar: string | null;
+  backgroundColor: string | null;
+  description: string | null;
+  id: string;
+  title: string | null;
+}
 
 /**
  * Market agent model can be either a string or an object with model details
@@ -51,6 +62,14 @@ const normalizeMarketAgentModel = (config?: PartialDeep<AgentItem>): PartialDeep
 export interface CreateAgentParams {
   config?: PartialDeep<AgentItem>;
   groupId?: string;
+  /**
+   * `private` keeps the agent visible only to its creator within the active
+   * workspace; `public` (default) makes it visible to every member. The
+   * router enforces this — sidebar "Create in Private" forwards `'private'`
+   * verbatim, all other creators (templates, marketplace import, etc.)
+   * default to `'public'`.
+   */
+  visibility?: 'private' | 'public';
 }
 
 export interface CreateAgentResult {
@@ -100,7 +119,19 @@ class AgentService {
     return lambdaClient.agent.createAgent.mutate({
       config: normalizedConfig as any,
       groupId: params.groupId,
+      visibility: params.visibility,
     });
+  };
+
+  /**
+   * Publish a private agent to the workspace. One-way action — `private`
+   * agents cannot be re-privatized once shared, because other workspace
+   * members may already be using them. Caller should refresh the sidebar
+   * list afterwards so the agent moves from the Private bucket to the
+   * shared list.
+   */
+  publishAgentToWorkspace = async (id: string): Promise<void> => {
+    await lambdaClient.agent.publishAgentToWorkspace.mutate({ id });
   };
 
   /**
@@ -156,8 +187,10 @@ class AgentService {
     });
   };
 
-  getFilesAndKnowledgeBases = async (agentId: string) => {
-    return lambdaClient.agent.getKnowledgeBasesAndFiles.query({ agentId });
+  getFilesAndKnowledgeBases = async (agentId: string, visibility?: 'private' | 'public') => {
+    return lambdaClient.agent.getKnowledgeBasesAndFiles.query(
+      visibility ? { agentId, visibility } : { agentId },
+    );
   };
 
   getAgentConfigById = async (agentId: string) => {
@@ -211,8 +244,25 @@ class AgentService {
    * Query non-virtual agents with optional keyword filter.
    * Returns agents with minimal info (id, title, description, avatar, backgroundColor).
    */
-  queryAgents = async (params?: { keyword?: string; limit?: number; offset?: number }) => {
+  queryAgents = async (params?: {
+    keyword?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<AvailableAgentItem[]> => {
     return lambdaClient.agent.queryAgents.query(params);
+  };
+
+  /**
+   * Count non-virtual agents with optional keyword and date filters,
+   * matching queryAgents conditions.
+   */
+  countAgents = async (params?: {
+    endDate?: string;
+    keyword?: string;
+    range?: [string, string];
+    startDate?: string;
+  }) => {
+    return lambdaClient.agent.countAgents.query(params);
   };
 
   /**
@@ -231,6 +281,20 @@ class AgentService {
     newTitle?: string,
   ): Promise<{ agentId: string } | null> => {
     return lambdaClient.agent.duplicateAgent.mutate({ agentId, newTitle });
+  };
+
+  /**
+   * Rank the user's agents by topic count (agent usage ranking).
+   */
+  rankAgents = async (limit?: number): Promise<AgentRankItem[]> => {
+    return lambdaClient.agent.rankAgents.query(limit);
+  };
+
+  transferAgent = async (
+    agentId: string,
+    targetWorkspaceId: string | null,
+  ): Promise<{ agentId: string; slug: string | null }> => {
+    return lambdaClient.agent.transferAgent.mutate({ agentId, targetWorkspaceId });
   };
 }
 

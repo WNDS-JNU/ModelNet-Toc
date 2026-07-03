@@ -4,10 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { App } from '@/core/App';
 import GatewayConnectionService from '@/services/gatewayConnectionSrv';
+import ImessageBridgeService from '@/services/imessageBridgeSrv';
 
 import GatewayConnectionCtr from '../GatewayConnectionCtr';
 import HeterogeneousAgentCtr from '../HeterogeneousAgentCtr';
 import LocalFileCtr from '../LocalFileCtr';
+import McpCtr from '../McpCtr';
 import RemoteServerConfigCtr from '../RemoteServerConfigCtr';
 import ShellCommandCtr from '../ShellCommandCtr';
 
@@ -34,6 +36,7 @@ const { ipcMainHandleMock, MockGatewayClient } = vi.hoisted(() => {
     });
 
     sendToolCallResponse = vi.fn();
+    sendMessageApiResponse = vi.fn();
     sendAgentRunAck = vi.fn();
 
     constructor(options: any) {
@@ -67,6 +70,39 @@ const { ipcMainHandleMock, MockGatewayClient } = vi.hoisted(() => {
       });
     }
 
+    simulateMcpCallRequest(
+      apiName: string,
+      args: object,
+      params: object,
+      requestId = 'mcp-req-1',
+      identifier = 'kimi-datasource',
+    ) {
+      this.emit('tool_call_request', {
+        requestId,
+        toolCall: {
+          apiName,
+          arguments: JSON.stringify(args),
+          identifier,
+          params,
+          type: 'mcp',
+        },
+        type: 'tool_call_request',
+      });
+    }
+
+    simulateMessageApiRequest(
+      platform: string,
+      apiName: string,
+      payload: Record<string, unknown>,
+      requestId = 'msg-req-1',
+    ) {
+      this.emit('message_api_request', {
+        api: { apiName, payload, platform },
+        requestId,
+        type: 'message_api_request',
+      });
+    }
+
     simulateAuthExpired() {
       this.emit('auth_expired');
     }
@@ -80,6 +116,7 @@ const { ipcMainHandleMock, MockGatewayClient } = vi.hoisted(() => {
       operationId = 'op-1',
       prompt = 'hello',
       jwt = 'mock-jwt',
+      extra: Record<string, unknown> = {},
     ) {
       this.emit('agent_run_request', {
         agentType,
@@ -88,6 +125,7 @@ const { ipcMainHandleMock, MockGatewayClient } = vi.hoisted(() => {
         prompt,
         topicId: 'topic-1',
         type: 'agent_run_request',
+        ...extra,
       });
     }
 
@@ -106,7 +144,9 @@ const { ipcMainHandleMock, MockGatewayClient } = vi.hoisted(() => {
 
 vi.mock('electron', () => ({
   app: {
+    getAppPath: vi.fn(() => '/mock/app'),
     getPath: vi.fn((name: string) => `/mock/${name}`),
+    getVersion: vi.fn(() => '1.2.3'),
   },
   ipcMain: { handle: ipcMainHandleMock },
   powerSaveBlocker: {
@@ -153,11 +193,15 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 vi.mock('node:os', () => ({
-  default: { hostname: vi.fn(() => 'mock-hostname') },
+  default: { hostname: vi.fn(() => 'mock-hostname'), tmpdir: vi.fn(() => '/tmp') },
 }));
 
 vi.mock('@lobechat/device-gateway-client', () => ({
   GatewayClient: MockGatewayClient,
+}));
+
+vi.mock('@/services/imessageBridgeSrv', () => ({
+  default: class ImessageBridgeService {},
 }));
 
 vi.mock('execa', () => ({
@@ -204,6 +248,14 @@ const mockHeterogeneousAgentCtr = {
   startSession: vi.fn().mockResolvedValue({ sessionId: 'mock-session-id' }),
 } as unknown as HeterogeneousAgentCtr;
 
+const mockImessageBridgeSrv = {
+  handleGatewayMessageApi: vi.fn().mockResolvedValue({ ok: true }),
+} as unknown as ImessageBridgeService;
+
+const mockMcpCtr = {
+  runStdioMcpTool: vi.fn().mockResolvedValue({ content: 'mcp result', state: {}, success: true }),
+} as unknown as McpCtr;
+
 const mockRemoteServerConfigCtr = {
   getAccessToken: vi.fn().mockResolvedValue('mock-access-token'),
   getRemoteServerUrl: vi.fn().mockResolvedValue('https://server.example.com'),
@@ -222,10 +274,12 @@ const mockApp = {
     if (Cls === LocalFileCtr) return mockLocalFileCtr;
     if (Cls === ShellCommandCtr) return mockShellCommandCtr;
     if (Cls === HeterogeneousAgentCtr) return mockHeterogeneousAgentCtr;
+    if (Cls === McpCtr) return mockMcpCtr;
     return null;
   }),
   getService: vi.fn((Cls) => {
     if (Cls === GatewayConnectionService) return mockGatewayConnectionSrv;
+    if (Cls === ImessageBridgeService) return mockImessageBridgeSrv;
     return null;
   }),
   storeManager: { get: mockStoreGet, set: mockStoreSet },
@@ -279,6 +333,7 @@ describe('GatewayConnectionCtr', () => {
       expect(options.deviceId).toBe('stored-device-id');
       expect(options.gatewayUrl).toBe('https://device-gateway.lobehub.com');
       expect(options.logger).toBeDefined();
+      expect(options.userAgent).toBe('LobeHub Desktop/1.2.3');
     });
 
     it('should use custom gateway URL from store when set', async () => {
@@ -500,15 +555,18 @@ describe('GatewayConnectionCtr', () => {
       ['renameLocalFile', 'handleRenameFile', mockLocalFileCtr],
     ] as const)('should route %s to %s', async (apiName, methodName, controller) => {
       const client = await connectAndOpen();
-      const args = { test: 'arg' };
 
-      client.simulateToolCallRequest(apiName, args);
+      // Each tool's args are domain-shaped (path, file_path, items, etc.).
+      // The runtime denormalizes them before calling the controller, so this
+      // test only asserts that the *right* controller method runs — see the
+      // envelope-shape test below for end-to-end content/state coverage.
+      client.simulateToolCallRequest(apiName, { test: 'arg' });
       await vi.advanceTimersByTimeAsync(0);
 
-      expect((controller as any)[methodName]).toHaveBeenCalledWith(args);
+      expect((controller as any)[methodName]).toHaveBeenCalled();
     });
 
-    it('should send tool_call_response with success result', async () => {
+    it('should send tool_call_response with content + state envelope on success', async () => {
       vi.mocked(mockLocalFileCtr.readFile).mockResolvedValueOnce({
         charCount: 5,
         content: 'hello',
@@ -526,23 +584,20 @@ describe('GatewayConnectionCtr', () => {
       client.simulateToolCallRequest('readFile', { path: '/a.txt' }, 'req-42');
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(client.sendToolCallResponse).toHaveBeenCalledWith({
-        requestId: 'req-42',
-        result: {
-          content: JSON.stringify({
-            charCount: 5,
-            content: 'hello',
-            createdTime: new Date('2024-01-01'),
-            filename: 'a.txt',
-            fileType: '.txt',
-            lineCount: 1,
-            loc: [1, 1],
-            modifiedTime: new Date('2024-01-01'),
-            totalCharCount: 5,
-            totalLineCount: 1,
-          }),
-          success: true,
-        },
+      // The runtime produces a formatted prompt string for `content` and a
+      // structured snapshot for `state`. We only assert envelope shape here
+      // — the exact prompt format is owned by the runtime/prompts packages.
+      expect(client.sendToolCallResponse).toHaveBeenCalledTimes(1);
+      const response = client.sendToolCallResponse.mock.calls[0][0];
+      expect(response.requestId).toBe('req-42');
+      expect(response.result.success).toBe(true);
+      expect(typeof response.result.content).toBe('string');
+      expect(response.result.content.length).toBeGreaterThan(0);
+      expect(response.result.content).toContain('hello');
+      expect(response.result.state).toMatchObject({
+        content: 'hello',
+        filename: 'a.txt',
+        path: '/a.txt',
       });
     });
 
@@ -573,6 +628,149 @@ describe('GatewayConnectionCtr', () => {
         'Tool "unknownApi" is not available on this device. It may not be supported in the current desktop version. Please skip this tool and try alternative approaches.';
       expect(client.sendToolCallResponse).toHaveBeenCalledWith({
         requestId: 'req-unknown',
+        result: {
+          content: errorMsg,
+          error: errorMsg,
+          success: false,
+        },
+      });
+    });
+
+    it('should route tunneled stdio MCP calls to McpCtr.runStdioMcpTool', async () => {
+      const client = await connectAndOpen();
+
+      client.simulateMcpCallRequest(
+        'getStock',
+        { symbol: 'AAPL' },
+        { args: ['stock-mcp'], command: 'npx', env: { TOKEN: 'secret' }, name: 'kimi-datasource' },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      // The builtin local-system switch is keyed on apiName and would reject
+      // 'getStock'; the `type: 'mcp'` discriminator routes to the MCP client.
+      expect(mockMcpCtr.runStdioMcpTool).toHaveBeenCalledWith({
+        args: '{"symbol":"AAPL"}',
+        env: { TOKEN: 'secret' },
+        params: { args: ['stock-mcp'], command: 'npx', name: 'kimi-datasource' },
+        toolName: 'getStock',
+      });
+    });
+
+    it('should NOT route to MCP when params are present but type is not mcp', async () => {
+      // Regression: routing must follow the explicit `type` discriminator, not
+      // the mere presence of `params`. A builtin call that happens to carry a
+      // `params` field must still go to the builtin switch.
+      const client = await connectAndOpen();
+
+      client.emit('tool_call_request', {
+        requestId: 'tool-with-params',
+        toolCall: {
+          apiName: 'readFile',
+          arguments: JSON.stringify({ path: '/a.txt' }),
+          identifier: 'lobe-local-system',
+          params: { args: [], command: 'npx', name: 'x' },
+          type: 'tool',
+        },
+        type: 'tool_call_request',
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(mockMcpCtr.runStdioMcpTool).not.toHaveBeenCalled();
+      expect(mockLocalFileCtr.readFile).toHaveBeenCalled();
+    });
+
+    it('should send tool_call_response envelope for a successful MCP call', async () => {
+      vi.mocked(mockMcpCtr.runStdioMcpTool).mockResolvedValueOnce({
+        content: 'stock: 100',
+        state: { rows: 1 },
+        success: true,
+      });
+      const client = await connectAndOpen();
+
+      client.simulateMcpCallRequest(
+        'getStock',
+        {},
+        { args: [], command: 'npx', name: 'kimi-datasource' },
+        'mcp-ok',
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(client.sendToolCallResponse).toHaveBeenCalledWith({
+        requestId: 'mcp-ok',
+        result: { content: 'stock: 100', state: { rows: 1 }, success: true },
+      });
+    });
+
+    it('should send error response when the MCP call throws', async () => {
+      vi.mocked(mockMcpCtr.runStdioMcpTool).mockRejectedValueOnce(new Error('spawn ENOENT'));
+      const client = await connectAndOpen();
+
+      client.simulateMcpCallRequest(
+        'getStock',
+        {},
+        { args: [], command: 'missing-bin', name: 'kimi-datasource' },
+        'mcp-err',
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(client.sendToolCallResponse).toHaveBeenCalledWith({
+        requestId: 'mcp-err',
+        result: { content: 'spawn ENOENT', error: 'spawn ENOENT', success: false },
+      });
+    });
+  });
+
+  describe('message API routing', () => {
+    async function connectAndOpen() {
+      ctr.afterAppReady();
+      await vi.advanceTimersByTimeAsync(0);
+      const client = MockGatewayClient.lastInstance!;
+      client.simulateConnected();
+      return client;
+    }
+
+    it('should route iMessage message API requests to the iMessage bridge service', async () => {
+      vi.mocked(mockImessageBridgeSrv.handleGatewayMessageApi).mockResolvedValueOnce({
+        guid: 'sent-1',
+      });
+      const client = await connectAndOpen();
+
+      client.simulateMessageApiRequest(
+        'imessage',
+        'sendText',
+        {
+          applicationId: 'home-mac-mini',
+          chatGuid: 'iMessage;-;chat-1',
+          message: 'hello',
+        },
+        'msg-req-42',
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(mockImessageBridgeSrv.handleGatewayMessageApi).toHaveBeenCalledWith('sendText', {
+        applicationId: 'home-mac-mini',
+        chatGuid: 'iMessage;-;chat-1',
+        message: 'hello',
+      });
+      expect(client.sendMessageApiResponse).toHaveBeenCalledWith({
+        requestId: 'msg-req-42',
+        result: {
+          content: JSON.stringify({ guid: 'sent-1' }),
+          success: true,
+        },
+      });
+    });
+
+    it('should send message_api_response with error for unsupported platforms', async () => {
+      const client = await connectAndOpen();
+
+      client.simulateMessageApiRequest('unsupported', 'sendText', {}, 'msg-req-err');
+      await vi.advanceTimersByTimeAsync(0);
+
+      const errorMsg =
+        'Message API "unsupported/sendText" is not available on this device. It may not be supported in the current desktop version.';
+      expect(client.sendMessageApiResponse).toHaveBeenCalledWith({
+        requestId: 'msg-req-err',
         result: {
           content: errorMsg,
           error: errorMsg,
@@ -649,6 +847,36 @@ describe('GatewayConnectionCtr', () => {
       },
     );
 
+    it('forwards cwd and systemContext from the request to spawnLhHeteroExec', async () => {
+      const client = await connectAndOpen();
+      client.simulateAgentRunRequest('claude-code', 'op-ctx', 'hi', 'mock-jwt', {
+        cwd: '/Users/alice/repo',
+        systemContext: 'WORKSPACE CONTEXT',
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(mockHeterogeneousAgentCtr.spawnLhHeteroExec).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cwd: '/Users/alice/repo',
+          systemContext: 'WORKSPACE CONTEXT',
+        }),
+      );
+    });
+
+    it('forwards resolved selector args from the request to spawnLhHeteroExec', async () => {
+      const client = await connectAndOpen();
+      client.simulateAgentRunRequest('claude-code', 'op-args', 'hi', 'mock-jwt', {
+        args: ['--model', 'opus', '--effort', 'high'],
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(mockHeterogeneousAgentCtr.spawnLhHeteroExec).toHaveBeenCalledWith(
+        expect.objectContaining({
+          args: ['--model', 'opus', '--effort', 'high'],
+        }),
+      );
+    });
+
     it('sends accepted ack and spawns lh hetero exec', async () => {
       const client = await connectAndOpen();
       client.simulateAgentRunRequest('openclaw', 'op-xyz');
@@ -661,12 +889,42 @@ describe('GatewayConnectionCtr', () => {
       expect(mockHeterogeneousAgentCtr.spawnLhHeteroExec).toHaveBeenCalledWith(
         expect.objectContaining({
           agentType: 'openclaw',
-          jwt: 'mock-jwt',
+          // Reuses the device's own session token as the run identity, not the
+          // dispatched operation jwt.
+          jwt: 'mock-access-token',
           operationId: 'op-xyz',
           prompt: 'hello',
           serverUrl: 'https://server.example.com',
           topicId: 'topic-1',
         }),
+      );
+    });
+
+    it('reuses the device access token as the run jwt instead of request.jwt', async () => {
+      const client = await connectAndOpen();
+      client.simulateAgentRunRequest('claude-code', 'op-auth', 'hi', 'dispatched-operation-jwt');
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(mockHeterogeneousAgentCtr.spawnLhHeteroExec).toHaveBeenCalledWith(
+        expect.objectContaining({ jwt: 'mock-access-token' }),
+      );
+    });
+
+    it('falls back to request.jwt when the device has no access token', async () => {
+      const client = await connectAndOpen();
+      // Set after connect so the auto-connect getAccessToken call isn't the one
+      // that returns null — only the executeAgentRun lookup should see no token.
+      vi.mocked(mockRemoteServerConfigCtr.getAccessToken).mockResolvedValueOnce(null);
+      client.simulateAgentRunRequest(
+        'claude-code',
+        'op-fallback',
+        'hi',
+        'dispatched-operation-jwt',
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(mockHeterogeneousAgentCtr.spawnLhHeteroExec).toHaveBeenCalledWith(
+        expect.objectContaining({ jwt: 'dispatched-operation-jwt' }),
       );
     });
 
@@ -874,6 +1132,7 @@ describe('GatewayConnectionCtr', () => {
         requestId: 'req-cap',
         result: {
           content: JSON.stringify({ available: true, version: 'openclaw 1.2.3' }),
+          state: { available: true, version: 'openclaw 1.2.3' },
           success: true,
         },
       });
@@ -898,6 +1157,7 @@ describe('GatewayConnectionCtr', () => {
         requestId: 'req-cap-nover',
         result: {
           content: JSON.stringify({ available: true }),
+          state: { available: true },
           success: true,
         },
       });
@@ -923,6 +1183,10 @@ describe('GatewayConnectionCtr', () => {
             available: false,
             reason: 'openclaw is not installed on this device',
           }),
+          state: {
+            available: false,
+            reason: 'openclaw is not installed on this device',
+          },
           success: true,
         },
       });
@@ -941,6 +1205,7 @@ describe('GatewayConnectionCtr', () => {
         requestId: 'req-unknown-plat',
         result: {
           content: JSON.stringify({ available: false, reason: 'Unknown platform: unknownBot' }),
+          state: { available: false, reason: 'Unknown platform: unknownBot' },
           success: true,
         },
       });
@@ -955,6 +1220,7 @@ describe('GatewayConnectionCtr', () => {
         requestId: 'req-profile',
         result: {
           content: JSON.stringify({}),
+          state: {},
           success: true,
         },
       });

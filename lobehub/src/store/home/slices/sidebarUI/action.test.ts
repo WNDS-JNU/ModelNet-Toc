@@ -40,6 +40,7 @@ vi.mock('@/store/agent', async (importOriginal) => {
   return {
     ...actual,
     getAgentStoreState: vi.fn(() => ({
+      invalidateAvailableAgents: vi.fn(),
       setActiveAgentId: vi.fn(),
     })),
     useAgentStore: actual.useAgentStore,
@@ -162,6 +163,7 @@ describe('createSidebarUISlice', () => {
       const mockSetActiveAgentId = vi.fn();
 
       vi.mocked(getAgentStoreState).mockReturnValue({
+        invalidateAvailableAgents: vi.fn(),
         setActiveAgentId: mockSetActiveAgentId,
       } as any);
 
@@ -200,6 +202,7 @@ describe('createSidebarUISlice', () => {
       const mockNewAgentId = 'new-agent-456';
 
       vi.mocked(getAgentStoreState).mockReturnValue({
+        invalidateAvailableAgents: vi.fn(),
         setActiveAgentId: vi.fn(),
       } as any);
 
@@ -263,7 +266,11 @@ describe('createSidebarUISlice', () => {
         returnedId = await result.current.addGroup(mockName);
       });
 
-      expect(sessionService.createSessionGroup).toHaveBeenCalledWith(mockName);
+      expect(sessionService.createSessionGroup).toHaveBeenCalledWith(
+        mockName,
+        undefined,
+        undefined,
+      );
       expect(spyOnRefresh).toHaveBeenCalled();
       expect(returnedId!).toBe(mockId);
     });

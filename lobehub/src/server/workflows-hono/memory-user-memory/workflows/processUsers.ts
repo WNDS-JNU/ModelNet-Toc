@@ -12,6 +12,8 @@ import {
   normalizeMemoryExtractionPayload,
 } from '@/server/services/memory/userMemory/extract';
 
+import { serializeWorkflowCursor } from './utils';
+
 const USER_PAGE_SIZE = 50;
 const USER_BATCH_SIZE = 10;
 
@@ -29,9 +31,11 @@ export const processUsersHandler = async (
     // If root task has cancelRequestedAt, this stage stops scheduling child workflows.
     const cancelled = await context.run('memory:user-memory:extract:cancel-check:root', () =>
       getServerDB().then((db) =>
-        new AsyncTaskModel(db, params.userIds[0]!).isUserMemoryExtractionCancellationRequested(
-          params.asyncTaskId!,
-        ),
+        new AsyncTaskModel(
+          db,
+          params.userIds[0]!,
+          params.workspaceId,
+        ).isUserMemoryExtractionCancellationRequested(params.asyncTaskId!),
       ),
     );
     if (cancelled) {
@@ -84,7 +88,10 @@ export const processUsersHandler = async (
         {
           ...buildWorkflowPayloadInput({
             ...params,
-            userCursor: { createdAt: cursor.createdAt.toISOString(), id: cursor.id },
+            userCursor: serializeWorkflowCursor(
+              cursor,
+              'Invalid cursor date when scheduling next user page',
+            ),
           }),
         },
         { extraHeaders: upstashWorkflowExtraHeaders },

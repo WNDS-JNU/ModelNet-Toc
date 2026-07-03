@@ -71,6 +71,7 @@ export interface RenameFileParams {
 
 export interface GlobFilesParams {
   directory?: string;
+  limit?: number;
   pattern: string;
 }
 
@@ -82,6 +83,12 @@ export interface RunCommandParams {
 
 export interface GetCommandOutputParams {
   commandId: string;
+  /**
+   * Max time to wait for this observation before returning (does not kill the
+   * process). Forwarded to the service so callers polling a running command can
+   * honor a per-call/gateway budget instead of the service's default wait.
+   */
+  timeout?: number;
 }
 
 export interface KillCommandParams {
@@ -181,15 +188,26 @@ export interface RunCommandState {
   exitCode?: number;
   isBackground: boolean;
   output?: string;
+  outputFiles?: {
+    stderr: { path: string; size: number; truncated: boolean };
+    stdout: { path: string; size: number; truncated: boolean };
+  };
   stderr?: string;
   stdout?: string;
   success: boolean;
 }
 
 export interface GetCommandOutputState {
+  durationMs?: number;
   error?: string;
-  newOutput?: string;
-  running: boolean;
+  exitCode?: number;
+  outputFiles?: {
+    stderr: { path: string; size: number; truncated: boolean };
+    stdout: { path: string; size: number; truncated: boolean };
+  };
+  running?: boolean;
+  stderr?: string;
+  stdout?: string;
   success: boolean;
 }
 

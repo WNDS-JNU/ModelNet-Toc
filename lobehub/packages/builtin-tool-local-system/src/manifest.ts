@@ -9,46 +9,6 @@ export const LocalSystemManifest: BuiltinToolManifest = {
     {
       defaultTimeoutMs: 30_000,
       description:
-        'List files and folders in a specified directory. Input should be a path. Output is a JSON array of file/folder names.',
-      humanIntervention: {
-        dynamic: {
-          default: 'never',
-          policy: 'required',
-          type: 'pathScopeAudit',
-        },
-      },
-      name: LocalSystemApiName.listFiles,
-      parameters: {
-        properties: {
-          limit: {
-            default: 100,
-            description: 'Maximum number of items to return (default: 100)',
-            type: 'number',
-          },
-          path: {
-            description: 'The directory path to list',
-            type: 'string',
-          },
-          sortBy: {
-            default: 'modifiedTime',
-            description: 'Field to sort by (default: modifiedTime)',
-            enum: ['name', 'modifiedTime', 'createdTime', 'size'],
-            type: 'string',
-          },
-          sortOrder: {
-            default: 'desc',
-            description: 'Sort order (default: desc)',
-            enum: ['asc', 'desc'],
-            type: 'string',
-          },
-        },
-        required: ['path'],
-        type: 'object',
-      },
-    },
-    {
-      defaultTimeoutMs: 30_000,
-      description:
         'Read the content of a text or document file (txt/md/json/source code/pdf/docx/etc.). Binary files (.bin/.exe/.zip/.b64/encoded blobs) are rejected with a structured error — use runCommand with file/hexdump/strings to inspect those instead. Output is capped at 500K chars total and 8K chars per line; for larger files, use a narrower line range or grepContent.',
       humanIntervention: {
         dynamic: {
@@ -126,7 +86,7 @@ export const LocalSystemManifest: BuiltinToolManifest = {
           },
           scope: {
             description:
-              'Working directory scope. Limits the search to this directory. Defaults to the current working directory.',
+              'Working directory scope. Limits the search to this directory. If you are searching the current project or are unsure, use "." for the current working directory. Use a specific path when the user names one explicitly.',
             type: 'string',
           },
           limit: {
@@ -263,9 +223,9 @@ export const LocalSystemManifest: BuiltinToolManifest = {
       },
     },
     {
-      defaultTimeoutMs: 120_000,
+      defaultTimeoutMs: 30_000,
       description:
-        'Execute a shell command and return its output. Supports both synchronous and background execution with timeout control.',
+        'Start a terminal session to execute a shell command and return console output collected during the wait window (up to 30 seconds by default). If the command is still running after the wait window, the result includes `shell_id` for later observation or termination.',
       humanIntervention: 'required',
       name: LocalSystemApiName.runCommand,
       parameters: {
@@ -286,13 +246,9 @@ export const LocalSystemManifest: BuiltinToolManifest = {
             type: 'object',
           },
           run_in_background: {
-            description: 'Set to true to run command in background and return shell_id',
-            type: 'boolean',
-          },
-          timeout: {
             description:
-              'Timeout in milliseconds for this command. Default 120000ms. Server clamps to [1000, 800000]; raise this for long-running tasks (builds, large searches) instead of letting them hit the default and fail.',
-            type: 'number',
+              'Set to true to return immediately after starting the terminal session. The result will include a `shell_id` for later observation or termination.',
+            type: 'boolean',
           },
         },
         required: ['description', 'command'],
@@ -302,7 +258,7 @@ export const LocalSystemManifest: BuiltinToolManifest = {
     {
       defaultTimeoutMs: 30_000,
       description:
-        'Retrieve output from a running or completed background shell command. Returns only new output since the last check.',
+        'Retrieve output from a running or completed background shell command. Waits for one output window (up to 30 seconds by default).',
       name: LocalSystemApiName.getCommandOutput,
       parameters: {
         properties: {
@@ -422,6 +378,11 @@ export const LocalSystemManifest: BuiltinToolManifest = {
       name: LocalSystemApiName.globFiles,
       parameters: {
         properties: {
+          limit: {
+            description:
+              'Maximum number of matches to collect during execution. When omitted, the runtime applies a conservative default limit.',
+            type: 'number',
+          },
           pattern: {
             description:
               'The glob pattern to match files against (e.g. "**/*.js", "src/**/*.ts"). Relative patterns are resolved against the scope.',
@@ -429,7 +390,7 @@ export const LocalSystemManifest: BuiltinToolManifest = {
           },
           scope: {
             description:
-              'Working directory scope. When `pattern` is relative, it is joined with this scope. Defaults to the current working directory.',
+              'Working directory scope. When `pattern` is relative, it is joined with this scope. If you are searching the current project or are unsure, use "." for the current working directory. Use a specific path when the user names one explicitly.',
             type: 'string',
           },
         },

@@ -1,6 +1,5 @@
 import { expo } from '@better-auth/expo';
 import { passkey } from '@better-auth/passkey';
-import { ENABLE_BUSINESS_FEATURES } from '@lobechat/business-const';
 import { createNanoId, idGenerator, serverDB } from '@lobechat/database';
 import * as schema from '@lobechat/database/schemas';
 import bcrypt from 'bcryptjs';
@@ -10,11 +9,8 @@ import { type BetterAuthOptions } from 'better-auth/minimal';
 import { betterAuth } from 'better-auth/minimal';
 import { admin, emailOTP, genericOAuth, magicLink } from 'better-auth/plugins';
 import { type BetterAuthPlugin } from 'better-auth/types';
-import { emailHarmony } from 'better-auth-harmony';
-import { validateEmail } from 'better-auth-harmony/email';
-import { ProxyAgent, setGlobalDispatcher } from 'undici';
+import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici';
 
-import { businessEmailValidator } from '@/business/server/better-auth';
 import { appEnv } from '@/envs/app';
 import { authEnv } from '@/envs/auth';
 import {
@@ -31,18 +27,39 @@ import { parseSSOProviders } from '@/libs/better-auth/utils/server';
 import { EmailService } from '@/server/services/email';
 import { UserService } from '@/server/services/user';
 
-// Configure HTTP proxy for OAuth provider requests in development (e.g., Google token exchange)
-// Node.js native fetch doesn't respect system proxy settings
+const LOCAL_NO_PROXY_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
+
+export const mergeLocalNoProxy = (noProxy?: string): string => {
+  const entries = new Set(
+    (noProxy || '')
+      .split(/[,\s]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  );
+
+  if (entries.has('*')) return '*';
+
+  for (const host of LOCAL_NO_PROXY_HOSTS) {
+    entries.add(host);
+  }
+
+  return [...entries].join(',');
+};
+
+// Configure HTTP proxy for OAuth provider requests in development (e.g., Google token exchange).
+// Node.js native fetch doesn't respect system proxy settings. Keep localhost direct so Next can
+// fetch local Vite templates such as /index.auth.html without depending on the system proxy.
 // Ref: https://github.com/better-auth/better-auth/issues/7396
 if (process.env.NODE_ENV === 'development') {
-  const proxyUrl =
-    process.env.HTTPS_PROXY ||
-    process.env.https_proxy ||
-    process.env.HTTP_PROXY ||
-    process.env.http_proxy;
+  const httpProxy = process.env.HTTP_PROXY || process.env.http_proxy;
+  const httpsProxy = process.env.HTTPS_PROXY || process.env.https_proxy || httpProxy;
 
-  if (proxyUrl) {
-    const proxyAgent = new ProxyAgent(proxyUrl);
+  if (httpProxy || httpsProxy) {
+    const proxyAgent = new EnvHttpProxyAgent({
+      ...(httpProxy && { httpProxy }),
+      ...(httpsProxy && { httpsProxy }),
+      noProxy: mergeLocalNoProxy(process.env.NO_PROXY || process.env.no_proxy),
+    });
     setGlobalDispatcher(proxyAgent);
   }
 }
@@ -83,10 +100,6 @@ const enableMagicLink = authEnv.AUTH_ENABLE_MAGIC_LINK;
 const enabledSSOProviders = parseSSOProviders(authEnv.AUTH_SSO_PROVIDERS);
 
 const { socialProviders, genericOAuthProviders } = initBetterAuthSSOProviders();
-
-async function customEmailValidator(email: string): Promise<boolean> {
-  return ENABLE_BUSINESS_FEATURES ? businessEmailValidator(email) : validateEmail(email);
-}
 
 interface CustomBetterAuthOptions {
   plugins: BetterAuthPlugin[];
@@ -264,7 +277,6 @@ export function defineConfig(customOptions: CustomBetterAuthOptions) {
       ...customOptions.plugins,
       emailWhitelist(),
       expo(),
-      emailHarmony({ allowNormalizedSignin: false, validator: customEmailValidator }),
       admin(),
       // Email OTP plugin for mobile verification
       emailOTP({

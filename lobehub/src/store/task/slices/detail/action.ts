@@ -1,9 +1,10 @@
-import type { TaskDetailData } from '@lobechat/types';
+import type { TaskDetailData, TaskDetailSubtask } from '@lobechat/types';
 import isEqual from 'fast-deep-equal';
 import { t } from 'i18next';
 
 import { message } from '@/components/AntdStaticMethods';
 import { mutate, useClientDataSWR } from '@/libs/swr';
+import { taskKeys } from '@/libs/swr/keys';
 import { taskService } from '@/services/task';
 import type { StoreSetter } from '@/store/types';
 
@@ -19,18 +20,27 @@ type DeletedTask = NonNullable<Awaited<ReturnType<typeof taskService.delete>>['d
 // - model/provider goes through configSlice.updateTaskModelConfig
 // - checkpoint goes through configSlice.updateCheckpoint
 // - review goes through configSlice.updateReview
-// - heartbeat config will get a dedicated action once the upstream infra in is complete
+// - heartbeat config will get a dedicated action once the upstream task scheduler infra is complete
 export interface TaskUpdatePayload {
   assigneeAgentId?: string | null;
   description?: string;
+  editorData?: unknown;
   instruction?: string;
   name?: string;
   parentTaskId?: string | null;
   priority?: number;
 }
 
-const FETCH_TASK_DETAIL_KEY = 'fetchTaskDetail';
 const TASK_DETAIL_POLL_INTERVAL = 10_000;
+
+const hasInFlightSubtask = (subtasks: TaskDetailSubtask[] | undefined): boolean =>
+  subtasks?.some(
+    (subtask) =>
+      Boolean(subtask.runningTopic) ||
+      subtask.status === 'running' ||
+      subtask.status === 'pending' ||
+      hasInFlightSubtask(subtask.children),
+  ) ?? false;
 
 // Poll while the task itself or any topic activity is still in flight, so the
 // UI picks up status transitions (running → completed/failed) without needing
@@ -38,6 +48,7 @@ const TASK_DETAIL_POLL_INTERVAL = 10_000;
 const hasInFlightActivity = (detail: TaskDetailData | undefined): boolean => {
   if (!detail) return false;
   if (detail.status === 'running' || detail.status === 'pending') return true;
+  if (hasInFlightSubtask(detail.subtasks)) return true;
   return (
     detail.activities?.some(
       (a) => a.type === 'topic' && (a.status === 'running' || a.status === 'pending'),
@@ -65,7 +76,12 @@ export class TaskDetailSliceActionImpl {
   addComment = async (
     taskId: string,
     content: string,
-    opts?: { authorAgentId?: string; briefId?: string; topicId?: string },
+    opts?: {
+      authorAgentId?: string;
+      briefId?: string;
+      editorData?: unknown;
+      topicId?: string;
+    },
   ): Promise<Awaited<ReturnType<typeof taskService.addComment>>> => {
     const result = await taskService.addComment(taskId, content, opts);
     await this.internal_refreshTaskDetail(taskId);
@@ -78,8 +94,13 @@ export class TaskDetailSliceActionImpl {
     if (id) await this.internal_refreshTaskDetail(id);
   };
 
-  updateComment = async (commentId: string, content: string, taskId?: string): Promise<void> => {
-    await taskService.updateComment(commentId, content);
+  updateComment = async (
+    commentId: string,
+    content: string,
+    opts?: { editorData?: unknown; taskId?: string },
+  ): Promise<void> => {
+    const { taskId, ...rest } = opts ?? {};
+    await taskService.updateComment(commentId, content, rest);
     const id = taskId ?? this.#get().activeTaskId;
     if (id) await this.internal_refreshTaskDetail(id);
   };
@@ -104,7 +125,13 @@ export class TaskDetailSliceActionImpl {
     const detail = result.data;
 
     if (!detail) {
-      throw new Error(`Task not found: ${resolvedId}`);
+      // Mark the *resolved* not-found so the read side can tell it apart from a
+      // network / 500 rejection (which propagates from `taskService.getDetail`
+      // above with an HTTP status). Without this tag both would render the same
+      // terminal 404, telling the user a merely-errored task was deleted.
+      const notFound = new Error(`Task not found: ${resolvedId}`) as Error & { code?: string };
+      notFound.code = 'TASK_NOT_FOUND';
+      throw notFound;
     }
 
     this.internal_dispatchTaskDetail({
@@ -131,12 +158,14 @@ export class TaskDetailSliceActionImpl {
     automationMode?: 'heartbeat' | 'schedule';
     createdByAgentId?: string;
     description?: string;
+    editorData?: unknown;
     instruction: string;
     name?: string;
     parentTaskId?: string;
     priority?: number;
     schedulePattern?: string;
     scheduleTimezone?: string;
+    visibility?: 'private' | 'public';
   }): Promise<CreatedTask | null> => {
     this.#set({ isCreatingTask: true }, false, 'createTask/start');
     try {
@@ -228,6 +257,33 @@ export class TaskDetailSliceActionImpl {
     }
   };
 
+  updateTaskVisibility = async (id: string, visibility: 'private' | 'public'): Promise<void> => {
+    try {
+      await taskService.updateVisibility(id, visibility);
+      await Promise.all([this.#get().refreshTaskList(), this.internal_refreshTaskDetail(id)]);
+    } catch (error) {
+      // LOBE-10961 surfaces a specific actionable error when the task's assignee
+      // is a private agent. The generic "failed" toast hides what the user must
+      // do next; substitute a targeted one so they know to either reassign or
+      // publish the agent first.
+      const raw = (error as { message?: string })?.message ?? '';
+      const isPrivateAgentBlock = /public task cannot be assigned to a private agent/i.test(raw);
+      message.error(
+        isPrivateAgentBlock
+          ? t('taskDetail.publishToWorkspace.errorPrivateAgent', {
+              defaultValue:
+                'This task is assigned to a private agent. Reassign to a workspace agent, or publish the agent first.',
+              ns: 'chat',
+            })
+          : t('createTask.visibility.changeFailed', {
+              defaultValue: 'Failed to change task visibility',
+              ns: 'chat',
+            }),
+      );
+      throw error;
+    }
+  };
+
   updateTask = async (id: string, data: TaskUpdatePayload): Promise<void> => {
     const { assigneeAgentId, ...rest } = data;
     const optimisticRest = { ...rest };
@@ -286,7 +342,7 @@ export class TaskDetailSliceActionImpl {
     });
 
     return useClientDataSWR(
-      taskId ? [FETCH_TASK_DETAIL_KEY, taskId] : null,
+      taskId ? taskKeys.detail(taskId) : null,
       async ([, id]: [string, string]) => this.fetchTaskDetail(id),
       { refreshInterval: shouldPoll ? TASK_DETAIL_POLL_INTERVAL : 0 },
     );
@@ -304,7 +360,7 @@ export class TaskDetailSliceActionImpl {
   };
 
   internal_refreshTaskDetail = async (id: string): Promise<void> => {
-    await mutate([FETCH_TASK_DETAIL_KEY, id]);
+    await mutate(taskKeys.detail(id));
   };
 }
 

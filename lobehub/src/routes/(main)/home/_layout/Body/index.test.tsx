@@ -48,7 +48,7 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
-vi.mock('react-router-dom', () => ({
+vi.mock('react-router', () => ({
   Link: ({ children, to }: { children: React.ReactNode; to: string }) => (
     <a href={to}>{children}</a>
   ),
@@ -76,6 +76,10 @@ vi.mock('@/routes/(main)/home/features/Recents', () => ({
 }));
 
 vi.mock('./Agent', () => ({
+  default: ({ itemKey }: { itemKey: string }) => <div data-testid={`sidebar-item-${itemKey}`} />,
+}));
+
+vi.mock('./Private', () => ({
   default: ({ itemKey }: { itemKey: string }) => <div data-testid={`sidebar-item-${itemKey}`} />,
 }));
 
@@ -127,15 +131,26 @@ describe('Home sidebar body', () => {
     expect(mocks.updateSystemStatus).toHaveBeenCalledWith({ sidebarExpandedKeys: ['agent'] });
   });
 
-  it('keeps custom top ordering above the bottom spacer', () => {
+  it('renders items strictly in sidebarItems order with the spacer at its stored position', () => {
     mocks.navLayout = {
       bottomMenuItems: [
         { key: 'image', title: 'Image', url: '/image' },
         { key: 'resource', title: 'Resource', url: '/resource' },
       ],
-      topNavItems: [{ key: 'pages', title: 'Pages', url: '/page' }],
+      topNavItems: [
+        { key: 'pages', title: 'Pages', url: '/page' },
+        { key: 'tasks', title: 'Tasks', url: '/tasks' },
+      ],
     };
-    mocks.globalState.status.sidebarItems = ['image', 'pages', 'recents', 'agent', 'resource'];
+    mocks.globalState.status.sidebarItems = [
+      'pages',
+      'recents',
+      'agent',
+      '__spacer__',
+      'image',
+      'tasks',
+      'resource',
+    ];
 
     render(<Body />);
 
@@ -148,6 +163,25 @@ describe('Home sidebar body', () => {
     expect(children[0]).toHaveTextContent('Pages');
     expect(children[1]).toHaveAttribute('data-testid', 'sidebar-accordion');
     expect(children[3]).toHaveTextContent('Image');
-    expect(children[4]).toHaveTextContent('Resource');
+    expect(children[4]).toHaveTextContent('Tasks');
+    expect(children[5]).toHaveTextContent('Resource');
+  });
+
+  it('keeps a top item that was dragged past the spacer in its new position', () => {
+    mocks.navLayout = {
+      bottomMenuItems: [{ key: 'image', title: 'Image', url: '/image' }],
+      topNavItems: [{ key: 'tasks', title: 'Tasks', url: '/tasks' }],
+    };
+    // User dragged `tasks` from the top section to sit after `image`.
+    mocks.globalState.status.sidebarItems = ['recents', 'agent', '__spacer__', 'image', 'tasks'];
+
+    render(<Body />);
+
+    const children = Array.from(screen.getByTestId('sidebar-body').children);
+
+    expect(children[0]).toHaveAttribute('data-testid', 'sidebar-accordion');
+    expect(children[1]).toHaveAttribute('data-sidebar-bottom-spacer');
+    expect(children[2]).toHaveTextContent('Image');
+    expect(children[3]).toHaveTextContent('Tasks');
   });
 });

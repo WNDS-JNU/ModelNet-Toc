@@ -7,12 +7,20 @@ import type {
 } from '../schemas/llmGenerationTracing';
 import { llmGenerationTracing } from '../schemas/llmGenerationTracing';
 import type { LobeChatDatabase } from '../type';
+import { buildWorkspaceWhere } from '../utils/workspace';
 
 export interface RecordLlmGenerationParams {
   agentId?: string | null;
   costUsd?: number | null;
   errorCode?: string | null;
   errorDetail?: string | null;
+  /**
+   * Caller-supplied row id. When omitted the DB autogenerates one. Pass an
+   * explicit UUID when the id needs to be known **before** the insert
+   * completes (e.g. so a tRPC route can return it in the response and the
+   * client can wire feedback against it).
+   */
+  id?: string;
   inputHash?: string | null;
   inputHint?: string | null;
   inputTokens?: number | null;
@@ -45,10 +53,19 @@ export interface UpdateLlmGenerationFeedbackParams {
 export class LlmGenerationTracingModel {
   private readonly db: LobeChatDatabase;
   private readonly userId: string;
+  private readonly workspaceId?: string;
 
-  constructor(db: LobeChatDatabase, userId: string) {
+  constructor(db: LobeChatDatabase, userId: string, workspaceId?: string) {
     this.db = db;
     this.userId = userId;
+    this.workspaceId = workspaceId;
+  }
+
+  private ownership() {
+    return buildWorkspaceWhere(
+      { userId: this.userId, workspaceId: this.workspaceId },
+      llmGenerationTracing,
+    );
   }
 
   async record(params: RecordLlmGenerationParams): Promise<{ id: string }> {
@@ -57,6 +74,7 @@ export class LlmGenerationTracingModel {
       costUsd: params.costUsd ?? null,
       errorCode: params.errorCode ?? null,
       errorDetail: params.errorDetail ?? null,
+      ...(params.id ? { id: params.id } : {}),
       inputHash: params.inputHash ?? null,
       inputHint: params.inputHint ?? null,
       inputTokens: params.inputTokens ?? null,
@@ -78,6 +96,7 @@ export class LlmGenerationTracingModel {
       trigger: params.trigger ?? null,
       userId: this.userId,
       validationFailed: params.validationFailed ?? false,
+      workspaceId: this.workspaceId ?? null,
     };
 
     const [row] = await this.db
@@ -88,8 +107,18 @@ export class LlmGenerationTracingModel {
     return { id: row.id };
   }
 
-  async updateFeedback(id: string, params: UpdateLlmGenerationFeedbackParams): Promise<void> {
-    await this.db
+  /**
+   * Returns `{ updated: true }` when a row matched `id + this.userId` and was
+   * patched. `{ updated: false }` means no row matched — either the id doesn't
+   * exist, or it belongs to a different user. Callers (e.g. the tracing
+   * service / tRPC router) must treat the `false` case as a NOT_FOUND so the
+   * client doesn't see a misleading success.
+   */
+  async updateFeedback(
+    id: string,
+    params: UpdateLlmGenerationFeedbackParams,
+  ): Promise<{ updated: boolean }> {
+    const rows = await this.db
       .update(llmGenerationTracing)
       .set({
         feedbackData: params.data,
@@ -98,14 +127,16 @@ export class LlmGenerationTracingModel {
         feedbackSource: params.source,
         feedbackUpdatedAt: new Date(),
       })
-      .where(and(eq(llmGenerationTracing.id, id), eq(llmGenerationTracing.userId, this.userId)));
+      .where(and(eq(llmGenerationTracing.id, id), this.ownership()))
+      .returning({ id: llmGenerationTracing.id });
+    return { updated: rows.length > 0 };
   }
 
   async findById(id: string) {
     const [row] = await this.db
       .select()
       .from(llmGenerationTracing)
-      .where(and(eq(llmGenerationTracing.id, id), eq(llmGenerationTracing.userId, this.userId)))
+      .where(and(eq(llmGenerationTracing.id, id), this.ownership()))
       .limit(1);
     return row ?? null;
   }
@@ -114,7 +145,7 @@ export class LlmGenerationTracingModel {
     return this.db
       .select()
       .from(llmGenerationTracing)
-      .where(eq(llmGenerationTracing.userId, this.userId))
+      .where(this.ownership())
       .orderBy(desc(llmGenerationTracing.createdAt))
       .limit(limit);
   }

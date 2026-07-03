@@ -7,6 +7,7 @@
   "config.header.title": "Resim",
   "config.height.label": "Yükseklik",
   "config.imageNum.label": "Görüntü Sayısı",
+  "config.imageUpload.maxCountReached": "En fazla {{count}} referans görseli ekleyebilirsiniz",
   "config.imageUrl.label": "Referans Görsel",
   "config.imageUrls.label": "Referans Görseller",
   "config.model.label": "Model",
@@ -20,6 +21,7 @@
   "config.resolution.options.1K": "1K",
   "config.resolution.options.2K": "2K",
   "config.resolution.options.4K": "4K",
+  "config.resolution.options.512": "512px",
   "config.seed.label": "Tohum",
   "config.seed.random": "Rastgele Tohum",
   "config.size.label": "Boyut",
@@ -61,6 +63,9 @@
   "topic.deleteConfirm": "Oluşturma Konusunu Sil",
   "topic.deleteConfirmDesc": "Bu oluşturma konusunu silmek üzeresiniz. Bu işlem geri alınamaz, lütfen dikkatli olun.",
   "topic.empty": "Henüz oluşturma konusu yok",
+  "topic.privateTitle": "Özel",
   "topic.title": "Resim Teması",
-  "topic.untitled": "Varsayılan Konu"
+  "topic.untitled": "Varsayılan Konu",
+  "topic.visibility.existingLocked": "Mevcut konunun görünürlüğü sabitlenmiştir. Farklı bir alan seçmek için yeni bir konu oluşturun.",
+  "topic.workspaceTitle": "Çalışma Alanı"
 }

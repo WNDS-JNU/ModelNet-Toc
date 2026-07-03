@@ -7,6 +7,7 @@
   "config.header.title": "Картина",
   "config.height.label": "Височина",
   "config.imageNum.label": "Брой изображения",
+  "config.imageUpload.maxCountReached": "Можете да добавите до {{count}} референтни изображения",
   "config.imageUrl.label": "Референтно изображение",
   "config.imageUrls.label": "Референтни изображения",
   "config.model.label": "Модел",
@@ -20,6 +21,7 @@
   "config.resolution.options.1K": "1K",
   "config.resolution.options.2K": "2K",
   "config.resolution.options.4K": "4K",
+  "config.resolution.options.512": "512px",
   "config.seed.label": "Сийд",
   "config.seed.random": "Случаен сийд",
   "config.size.label": "Размер",
@@ -61,6 +63,9 @@
   "topic.deleteConfirm": "Изтриване на тема за генериране",
   "topic.deleteConfirmDesc": "Ще изтриете тази тема за генериране. Това действие не може да бъде отменено, моля, бъдете внимателни.",
   "topic.empty": "Няма теми за генериране",
+  "topic.privateTitle": "Частно",
   "topic.title": "Тема на картината",
-  "topic.untitled": "Тема по подразбиране"
+  "topic.untitled": "Тема по подразбиране",
+  "topic.visibility.existingLocked": "Видимостта е фиксирана за текущата тема. Създайте нова тема, за да изберете различно пространство.",
+  "topic.workspaceTitle": "Работно пространство"
 }

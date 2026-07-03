@@ -1,12 +1,12 @@
 import { useEditor } from '@lobehub/editor/react';
-import { type ModalProps } from '@lobehub/ui';
-import { createRawModal, Modal } from '@lobehub/ui';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import ImperativeModal, { type ImperativeModalProps } from '@/components/ImperativeModal';
+
 import EditorCanvas from './EditorCanvas';
 
-interface EditorModalProps extends ModalProps {
+interface EditorModalProps extends ImperativeModalProps {
   editorData?: unknown;
   onConfirm?: (value: string, editorData?: unknown) => Promise<void>;
   value?: string;
@@ -19,7 +19,7 @@ export const EditorModal = memo<EditorModalProps>(
     const editor = useEditor();
 
     return (
-      <Modal
+      <ImperativeModal
         destroyOnHidden
         cancelText={t('cancel')}
         closable={false}
@@ -43,9 +43,7 @@ export const EditorModal = memo<EditorModalProps>(
         {...rest}
       >
         <EditorCanvas defaultValue={value} editor={editor} editorData={initialEditorData} />
-      </Modal>
+      </ImperativeModal>
     );
   },
 );
-
-export const createEditorModal = (props: EditorModalProps) => createRawModal(EditorModal, props);

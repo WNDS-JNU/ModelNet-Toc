@@ -1,16 +1,21 @@
+import { AGENT_CHAT_TOPIC_URL } from '@lobechat/const';
 import { BarList } from '@lobehub/charts';
-import { ActionIcon, Icon, Modal } from '@lobehub/ui';
+import { ActionIcon, Icon } from '@lobehub/ui';
 import { cssVar } from 'antd-style';
 import { MaximizeIcon, MessageSquareIcon } from 'lucide-react';
 import qs from 'query-string';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
 
-import { INBOX_SESSION_ID } from '@/const/session';
+import AsyncBoundary from '@/components/AsyncBoundary';
+import ImperativeModal from '@/components/ImperativeModal';
+import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import Link from '@/libs/router/Link';
 import { useClientDataSWR } from '@/libs/swr';
+import { statsKeys } from '@/libs/swr/keys';
 import { topicService } from '@/services/topic';
+import { useAgentStore } from '@/store/agent';
+import { builtinAgentSelectors } from '@/store/agent/selectors';
 import { type TopicRankItem } from '@/types/topic';
 
 import StatsFormGroup from '../components/StatsFormGroup';
@@ -18,22 +23,23 @@ import StatsFormGroup from '../components/StatsFormGroup';
 export const TopicsRank = memo<{ mobile?: boolean }>(({ mobile }) => {
   const [open, setOpen] = useState(false);
   const { t } = useTranslation('auth');
-  const navigate = useNavigate();
-  const { data, isLoading } = useClientDataSWR('rank-topics', async () =>
+  const navigate = useWorkspaceAwareNavigate();
+  const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
+  const { data, isLoading, error, mutate } = useClientDataSWR(statsKeys.rankTopics(), async () =>
     topicService.rankTopics(),
   );
 
   const showExtra = Boolean(data && data?.length > 5);
 
   const mapData = (item: TopicRankItem) => {
-    const link = qs.stringifyUrl({
-      query: {
-        session: item.sessionId || INBOX_SESSION_ID,
-        topic: item.id,
-        ...(mobile ? { showMobileWorkspace: true } : {}),
-      },
-      url: '/agent',
-    });
+    // Topics without an agentId fall back to the inbox agent, mirroring the
+    // previous `sessionId || INBOX` behavior in the agent-centric model.
+    const agentId = item.agentId ?? inboxAgentId;
+    const path = agentId ? AGENT_CHAT_TOPIC_URL(agentId, item.id) : '/';
+    const link =
+      mobile && agentId
+        ? qs.stringifyUrl({ query: { showMobileWorkspace: true }, url: path })
+        : path;
     return {
       icon: <Icon color={cssVar.colorTextDescription} icon={MessageSquareIcon} size={16} />,
       link,
@@ -57,21 +63,23 @@ export const TopicsRank = memo<{ mobile?: boolean }>(({ mobile }) => {
           )
         }
       >
-        <BarList
-          data={data?.slice(0, 5).map((item) => mapData(item)) || []}
-          height={220}
-          leftLabel={t('stats.topicsRank.left')}
-          loading={isLoading || !data}
-          rightLabel={t('stats.topicsRank.right')}
-          noDataText={{
-            desc: t('stats.empty.desc'),
-            title: t('stats.empty.title'),
-          }}
-          onValueChange={(item) => navigate(item.link)}
-        />
+        <AsyncBoundary data={data} error={error} errorVariant={'block'} onRetry={() => mutate()}>
+          <BarList
+            data={data?.slice(0, 5).map((item) => mapData(item)) || []}
+            height={220}
+            leftLabel={t('stats.topicsRank.left')}
+            loading={isLoading || !data}
+            rightLabel={t('stats.topicsRank.right')}
+            noDataText={{
+              desc: t('stats.empty.desc'),
+              title: t('stats.empty.title'),
+            }}
+            onValueChange={(item) => navigate(item.link)}
+          />
+        </AsyncBoundary>
       </StatsFormGroup>
       {showExtra && (
-        <Modal
+        <ImperativeModal
           footer={null}
           loading={isLoading || !data}
           open={open}
@@ -86,7 +94,7 @@ export const TopicsRank = memo<{ mobile?: boolean }>(({ mobile }) => {
             rightLabel={t('stats.topicsRank.right')}
             onValueChange={(item) => navigate(item.link)}
           />
-        </Modal>
+        </ImperativeModal>
       )}
     </>
   );

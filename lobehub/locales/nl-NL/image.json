@@ -7,6 +7,7 @@
   "config.header.title": "Schilderij",
   "config.height.label": "Hoogte",
   "config.imageNum.label": "Aantal afbeeldingen",
+  "config.imageUpload.maxCountReached": "Je kunt maximaal {{count}} referentieafbeeldingen toevoegen",
   "config.imageUrl.label": "Referentieafbeelding",
   "config.imageUrls.label": "Referentieafbeeldingen",
   "config.model.label": "Model",
@@ -20,6 +21,7 @@
   "config.resolution.options.1K": "1K",
   "config.resolution.options.2K": "2K",
   "config.resolution.options.4K": "4K",
+  "config.resolution.options.512": "512px",
   "config.seed.label": "Seed",
   "config.seed.random": "Willekeurige seed",
   "config.size.label": "Formaat",
@@ -61,6 +63,9 @@
   "topic.deleteConfirm": "Generatieonderwerp verwijderen",
   "topic.deleteConfirmDesc": "Je staat op het punt dit generatieonderwerp te verwijderen. Deze actie kan niet ongedaan worden gemaakt, wees voorzichtig.",
   "topic.empty": "Geen generatieonderwerpen",
+  "topic.privateTitle": "Privé",
   "topic.title": "Schilderthema",
-  "topic.untitled": "Standaardonderwerp"
+  "topic.untitled": "Standaardonderwerp",
+  "topic.visibility.existingLocked": "De zichtbaarheid is vastgezet voor het huidige onderwerp. Maak een nieuw onderwerp om een andere ruimte te kiezen.",
+  "topic.workspaceTitle": "Werkruimte"
 }

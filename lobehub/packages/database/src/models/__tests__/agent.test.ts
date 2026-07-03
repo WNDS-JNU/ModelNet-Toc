@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { INBOX_SESSION_ID } from '@lobechat/const';
+import { DEFAULT_INBOX_AVATAR, DEFAULT_INBOX_TITLE, INBOX_SESSION_ID } from '@lobechat/const';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -15,7 +15,9 @@ import {
   knowledgeBases,
   sessionGroups,
   sessions,
+  topics,
   users,
+  workspaces,
 } from '../../schemas';
 import type { LobeChatDatabase } from '../../type';
 import { AgentModel } from '../agent';
@@ -226,6 +228,40 @@ describe('AgentModel', () => {
         .values({ id: agentId, model: 'gpt-4o', provider: 'openai', userId: userId2 });
 
       const result = await agentModel.getAgentModelConfig(agentId);
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('getAgentSnapshotForTaskCreate', () => {
+    it('returns model/provider snapshot + visibility in one call', async () => {
+      const agentId = 'snap-task-create-1';
+      await serverDB.insert(agents).values({
+        id: agentId,
+        model: 'claude-sonnet-4-6',
+        provider: 'anthropic',
+        userId,
+        visibility: 'private',
+      });
+
+      const result = await agentModel.getAgentSnapshotForTaskCreate(agentId);
+
+      expect(result).toEqual({
+        snapshot: { model: 'claude-sonnet-4-6', provider: 'anthropic' },
+        visibility: 'private',
+      });
+    });
+
+    it('returns null when the agent is not visible to the current caller', async () => {
+      const agentId = 'snap-task-create-other-user';
+      await serverDB.insert(agents).values({
+        id: agentId,
+        model: 'gpt-4o',
+        provider: 'openai',
+        userId: userId2,
+      });
+
+      const result = await agentModel.getAgentSnapshotForTaskCreate(agentId);
 
       expect(result).toBeNull();
     });
@@ -1183,6 +1219,8 @@ describe('AgentModel', () => {
         expect(result).toBeDefined();
         expect(result?.id).toBe(agent.id);
         expect(result?.slug).toBe(INBOX_SESSION_ID);
+        expect(result?.title).toBe(DEFAULT_INBOX_TITLE);
+        expect(result?.avatar).toBe(DEFAULT_INBOX_AVATAR);
       });
 
       it('should find inbox from legacy session and update agent slug', async () => {
@@ -1306,6 +1344,52 @@ describe('AgentModel', () => {
         expect(result).toBeDefined();
         expect(result?.slug).toBe('task-agent');
         expect(result?.virtual).toBe(true);
+      });
+    });
+
+    describe('workspace mode', () => {
+      it('should create workspace-scoped inbox agent', async () => {
+        const [workspace] = await serverDB
+          .insert(workspaces)
+          .values({ name: 'ws', primaryOwnerId: userId, slug: 'ws-slug' })
+          .returning();
+
+        const wsAgentModel = new AgentModel(serverDB, userId, workspace.id);
+        const result = await wsAgentModel.getBuiltinAgent(INBOX_SESSION_ID);
+
+        expect(result).toBeDefined();
+        expect(result?.slug).toBe(INBOX_SESSION_ID);
+        expect(result?.workspaceId).toBe(workspace.id);
+        expect(result?.userId).toBe(userId);
+      });
+
+      it('should allow workspace inbox to coexist with personal inbox for the same user', async () => {
+        const personal = await agentModel.getBuiltinAgent(INBOX_SESSION_ID);
+        expect(personal?.workspaceId).toBeNull();
+
+        const [workspace] = await serverDB
+          .insert(workspaces)
+          .values({ name: 'ws2', primaryOwnerId: userId, slug: 'ws2-slug' })
+          .returning();
+
+        const wsAgentModel = new AgentModel(serverDB, userId, workspace.id);
+        const ws = await wsAgentModel.getBuiltinAgent(INBOX_SESSION_ID);
+
+        expect(ws?.id).not.toBe(personal?.id);
+        expect(ws?.workspaceId).toBe(workspace.id);
+      });
+
+      it('should be idempotent in workspace mode', async () => {
+        const [workspace] = await serverDB
+          .insert(workspaces)
+          .values({ name: 'ws3', primaryOwnerId: userId, slug: 'ws3-slug' })
+          .returning();
+
+        const wsAgentModel = new AgentModel(serverDB, userId, workspace.id);
+        const first = await wsAgentModel.getBuiltinAgent(INBOX_SESSION_ID);
+        const second = await wsAgentModel.getBuiltinAgent(INBOX_SESSION_ID);
+
+        expect(first?.id).toBe(second?.id);
       });
     });
   });
@@ -1635,6 +1719,26 @@ describe('AgentModel', () => {
       expect(result[0]).toHaveProperty('backgroundColor');
     });
 
+    it('should derive heteroType from agencyConfig.heterogeneousProvider', async () => {
+      await serverDB.insert(agents).values({
+        agencyConfig: { heterogeneousProvider: { type: 'claude-code' } },
+        id: 'hetero-agent',
+        title: 'CC 2号机',
+        userId,
+        virtual: false,
+      });
+      await agentModel.create({ title: 'Normal Agent', virtual: false });
+
+      const result = await agentModel.queryAgents();
+
+      const hetero = result.find((a) => a.id === 'hetero-agent');
+      const normal = result.find((a) => a.title === 'Normal Agent');
+      expect(hetero?.heteroType).toBe('claude-code');
+      expect(normal?.heteroType).toBeUndefined();
+      // raw agencyConfig must not leak into the result payload
+      expect(hetero).not.toHaveProperty('agencyConfig');
+    });
+
     it('should exclude virtual agents', async () => {
       // Create a virtual agent
       await agentModel.create({
@@ -1701,6 +1805,25 @@ describe('AgentModel', () => {
       );
     });
 
+    it('should fallback inbox agent meta by slug', async () => {
+      await serverDB.insert(agents).values({
+        avatar: null,
+        id: 'inbox-agent-query',
+        slug: INBOX_SESSION_ID,
+        title: null,
+        userId,
+        virtual: null as unknown as boolean,
+      });
+
+      const result = await agentModel.queryAgents();
+      const inbox = result.find((agent) => agent.id === 'inbox-agent-query');
+
+      expect(inbox).toMatchObject({
+        avatar: DEFAULT_INBOX_AVATAR,
+        title: DEFAULT_INBOX_TITLE,
+      });
+    });
+
     it('should filter by keyword in title and description', async () => {
       await agentModel.create({
         title: 'Code Assistant',
@@ -1745,6 +1868,100 @@ describe('AgentModel', () => {
 
       const offsetResults = await agentModel.queryAgents({ limit: 2, offset: 2 });
       expect(offsetResults.length).toBe(2);
+    });
+  });
+
+  describe('countAgents', () => {
+    it('should count all non-virtual agents regardless of pagination', async () => {
+      for (let i = 1; i <= 5; i++) {
+        await agentModel.create({
+          title: `Agent ${i}`,
+          virtual: false,
+        });
+      }
+      await agentModel.create({
+        title: 'Virtual Agent',
+        virtual: true,
+      });
+
+      const total = await agentModel.countAgents();
+
+      expect(total).toBe(5);
+      // count stays the full total even when queryAgents is limited
+      const limitedResults = await agentModel.queryAgents({ limit: 2 });
+      expect(limitedResults.length).toBe(2);
+    });
+
+    it('should apply the same keyword filter as queryAgents', async () => {
+      await agentModel.create({
+        title: 'Code Assistant',
+        description: 'Helps with coding',
+        virtual: false,
+      });
+      await agentModel.create({
+        title: 'Writer',
+        description: 'Helps with writing tasks',
+        virtual: false,
+      });
+      await agentModel.create({
+        title: 'Designer',
+        description: 'Helps with design code review',
+        virtual: false,
+      });
+
+      // matches 'Code Assistant' (title) and 'Designer' (description)
+      expect(await agentModel.countAgents({ keyword: 'code' })).toBe(2);
+      expect(await agentModel.countAgents({ keyword: 'writing' })).toBe(1);
+      expect(await agentModel.countAgents({ keyword: 'nonexistent' })).toBe(0);
+    });
+
+    it('should only count agents for the current user', async () => {
+      await agentModel.create({ title: 'User1 Agent', virtual: false });
+      await agentModel2.create({ title: 'User2 Agent', virtual: false });
+
+      expect(await agentModel.countAgents()).toBe(1);
+      expect(await agentModel2.countAgents()).toBe(1);
+    });
+
+    it('should count agents with null virtual field (treat as non-virtual)', async () => {
+      await serverDB.insert(agents).values({
+        id: 'null-virtual-agent-count',
+        title: 'Null Virtual Agent',
+        userId,
+        virtual: null as unknown as boolean,
+      });
+
+      expect(await agentModel.countAgents()).toBe(1);
+    });
+
+    it('should apply endDate / startDate / range filters against createdAt', async () => {
+      await serverDB.insert(agents).values([
+        {
+          id: 'old-agent',
+          title: 'Old Agent',
+          userId,
+          virtual: false,
+          createdAt: new Date('2024-01-01T00:00:00Z'),
+        },
+        {
+          id: 'mid-agent',
+          title: 'Mid Agent',
+          userId,
+          virtual: false,
+          createdAt: new Date('2024-06-01T00:00:00Z'),
+        },
+        {
+          id: 'new-agent',
+          title: 'New Agent',
+          userId,
+          virtual: false,
+          createdAt: new Date('2024-12-01T00:00:00Z'),
+        },
+      ]);
+
+      expect(await agentModel.countAgents({ endDate: '2024-03-01' })).toBe(1);
+      expect(await agentModel.countAgents({ startDate: '2024-07-01' })).toBe(1);
+      expect(await agentModel.countAgents({ range: ['2024-05-01', '2024-07-01'] })).toBe(1);
     });
   });
 
@@ -2004,6 +2221,197 @@ describe('AgentModel', () => {
 
       expect((result?.params as any)?.temperature).toBeNull();
       expect((result?.params as any)?.topP).toBe(0.5);
+    });
+
+    it('should delete a workingDirByDevice entry when value is undefined', async () => {
+      const [agent] = await serverDB
+        .insert(agents)
+        .values({
+          userId,
+          title: 'Cwd Agent',
+          agencyConfig: {
+            executionTarget: 'local',
+            workingDirByDevice: { 'device-a': '/a', 'device-b': '/b' },
+          },
+        } as NewAgent)
+        .returning();
+
+      await agentModel.updateConfig(agent.id, {
+        agencyConfig: { workingDirByDevice: { 'device-a': undefined } } as any,
+      });
+
+      const result = await serverDB.query.agents.findFirst({
+        where: eq(agents.id, agent.id),
+      });
+
+      // device-a cleared; device-b and sibling fields preserved
+      expect((result?.agencyConfig as any)?.workingDirByDevice).toEqual({ 'device-b': '/b' });
+      expect((result?.agencyConfig as any)?.executionTarget).toBe('local');
+    });
+
+    it('should still upsert a workingDirByDevice entry when value is a path', async () => {
+      const [agent] = await serverDB
+        .insert(agents)
+        .values({
+          userId,
+          title: 'Cwd Agent',
+          agencyConfig: { workingDirByDevice: { 'device-a': '/a' } },
+        } as NewAgent)
+        .returning();
+
+      await agentModel.updateConfig(agent.id, {
+        agencyConfig: { workingDirByDevice: { 'device-a': '/a', 'device-b': '/b' } } as any,
+      });
+
+      const result = await serverDB.query.agents.findFirst({
+        where: eq(agents.id, agent.id),
+      });
+
+      expect((result?.agencyConfig as any)?.workingDirByDevice).toEqual({
+        'device-a': '/a',
+        'device-b': '/b',
+      });
+    });
+  });
+
+  describe('rank', () => {
+    it('should rank agents by topic count, excluding agents with no topics', async () => {
+      await serverDB.insert(agents).values([
+        { avatar: 'av1', backgroundColor: 'bg1', id: 'ra1', title: 'Agent 1', userId },
+        { id: 'ra2', title: 'Agent 2', userId },
+        { id: 'ra3', title: 'Agent 3', userId }, // no topics → excluded
+      ]);
+      await serverDB.insert(topics).values([
+        { agentId: 'ra1', id: 'rt1', userId },
+        { agentId: 'ra1', id: 'rt2', userId },
+        { agentId: 'ra1', id: 'rt3', userId },
+        { agentId: 'ra2', id: 'rt4', userId },
+        { agentId: 'ra2', id: 'rt5', userId },
+      ]);
+
+      const result = await agentModel.rank();
+
+      expect(result).toHaveLength(2);
+      expect(result[0]).toMatchObject({
+        avatar: 'av1',
+        backgroundColor: 'bg1',
+        count: 3,
+        id: 'ra1',
+        title: 'Agent 1',
+      });
+      expect(result[1]).toMatchObject({ count: 2, id: 'ra2' });
+    });
+
+    it('should include the inbox agent but exclude other virtual agents', async () => {
+      await serverDB.insert(agents).values([
+        { id: 'inbox-agent', slug: 'inbox', title: 'Inbox', userId, virtual: true },
+        { id: 'virtual-agent', title: 'Virtual', userId, virtual: true },
+        { id: 'normal-agent', title: 'Normal', userId },
+      ]);
+      await serverDB.insert(topics).values([
+        { agentId: 'inbox-agent', id: 'it1', userId },
+        { agentId: 'virtual-agent', id: 'vt1', userId },
+        { agentId: 'normal-agent', id: 'nt1', userId },
+      ]);
+
+      const ids = (await agentModel.rank()).map((r) => r.id);
+
+      expect(ids).toContain('inbox-agent');
+      expect(ids).toContain('normal-agent');
+      expect(ids).not.toContain('virtual-agent');
+    });
+
+    it('should only rank the current user agents', async () => {
+      await serverDB.insert(agents).values([
+        { id: 'mine', title: 'Mine', userId },
+        { id: 'theirs', title: 'Theirs', userId: userId2 },
+      ]);
+      await serverDB.insert(topics).values([
+        { agentId: 'mine', id: 'mt1', userId },
+        { agentId: 'theirs', id: 'tt1', userId: userId2 },
+      ]);
+
+      const result = await agentModel.rank();
+
+      expect(result.map((r) => r.id)).toEqual(['mine']);
+    });
+
+    it('should respect the limit parameter', async () => {
+      await serverDB.insert(agents).values([
+        { id: 'la1', title: 'A1', userId },
+        { id: 'la2', title: 'A2', userId },
+      ]);
+      await serverDB.insert(topics).values([
+        { agentId: 'la1', id: 'lt1', userId },
+        { agentId: 'la2', id: 'lt2', userId },
+      ]);
+
+      const result = await agentModel.rank(1);
+
+      expect(result).toHaveLength(1);
+    });
+  });
+
+  describe('listMessengerBindableAgents', () => {
+    it('should keep the inbox, exclude other virtual agents, pin inbox first, and fallback its meta', async () => {
+      await serverDB.insert(agents).values([
+        // Inbox is the oldest, yet must be pinned to the top.
+        {
+          avatar: null,
+          id: 'mb-inbox',
+          slug: INBOX_SESSION_ID,
+          title: null,
+          updatedAt: new Date('2023-01-01'),
+          userId,
+          virtual: true,
+        },
+        {
+          id: 'mb-normal',
+          title: 'Normal',
+          updatedAt: new Date('2024-01-01'),
+          userId,
+        },
+        { id: 'mb-virtual', title: 'Virtual', userId, virtual: true },
+      ]);
+
+      const result = await agentModel.listMessengerBindableAgents();
+
+      expect(result.map((r) => r.id)).toEqual(['mb-inbox', 'mb-normal']);
+      expect(result[0]).toMatchObject({
+        avatar: DEFAULT_INBOX_AVATAR,
+        id: 'mb-inbox',
+        isInbox: true,
+        title: DEFAULT_INBOX_TITLE,
+      });
+      expect(result[1]).toMatchObject({ id: 'mb-normal', isInbox: false, title: 'Normal' });
+    });
+
+    it('should fall back a blank non-inbox title to options.fallbackTitle (null by default)', async () => {
+      await serverDB.insert(agents).values([
+        { id: 'mb-blank', title: null, userId },
+        { id: 'mb-named', title: 'Named', userId },
+      ]);
+
+      const withoutFallback = await agentModel.listMessengerBindableAgents();
+      expect(withoutFallback.find((r) => r.id === 'mb-blank')?.title).toBeNull();
+
+      const withFallback = await agentModel.listMessengerBindableAgents({
+        fallbackTitle: 'Custom Agent',
+      });
+      expect(withFallback.find((r) => r.id === 'mb-blank')?.title).toBe('Custom Agent');
+      // A real title is never overridden by the fallback.
+      expect(withFallback.find((r) => r.id === 'mb-named')?.title).toBe('Named');
+    });
+
+    it('should only list the current user agents', async () => {
+      await serverDB.insert(agents).values([
+        { id: 'mb-mine', title: 'Mine', userId },
+        { id: 'mb-theirs', title: 'Theirs', userId: userId2 },
+      ]);
+
+      const result = await agentModel.listMessengerBindableAgents();
+
+      expect(result.map((r) => r.id)).toEqual(['mb-mine']);
     });
   });
 });

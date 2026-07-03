@@ -5,6 +5,7 @@
   "config.endImageUrl.label": "Endbild",
   "config.generateAudio.label": "Audio generieren",
   "config.header.title": "Video",
+  "config.imageUpload.maxCountReached": "Sie können bis zu {{count}} Referenzbilder hinzufügen",
   "config.imageUrl.label": "Startbild",
   "config.prompt.placeholder": "Beschreiben Sie das Video, das Sie erstellen möchten",
   "config.prompt.placeholderWithRef": "Beschreiben Sie die Szene, die Sie mit dem Bild erstellen möchten",
@@ -28,6 +29,9 @@
   "topic.createNew": "Neues Thema erstellen",
   "topic.deleteConfirm": "Video-Thema löschen",
   "topic.deleteConfirmDesc": "Sie sind dabei, dieses Video-Thema zu löschen. Diese Aktion kann nicht rückgängig gemacht werden.",
+  "topic.privateTitle": "Privat",
   "topic.title": "Video-Themen",
-  "topic.untitled": "Standardthema"
+  "topic.untitled": "Standardthema",
+  "topic.visibility.existingLocked": "Die Sichtbarkeit ist für das aktuelle Thema festgelegt. Erstellen Sie ein neues Thema, um einen anderen Bereich auszuwählen.",
+  "topic.workspaceTitle": "Arbeitsbereich"
 }

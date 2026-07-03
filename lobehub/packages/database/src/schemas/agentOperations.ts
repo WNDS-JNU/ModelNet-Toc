@@ -1,3 +1,4 @@
+import type { VerifyCheckItem } from '@lobechat/types';
 import { boolean, index, integer, jsonb, pgTable, text } from 'drizzle-orm/pg-core';
 
 import { amountNumeric, timestamps, timestamptz } from './_helpers';
@@ -5,11 +6,13 @@ import { agents } from './agent';
 import { chatGroups } from './chatGroup';
 import { tasks } from './task';
 import { threads, topics } from './topic';
+import { workspaces } from './workspace';
 
 const operationStatuses = [
   'idle',
   'running',
   'waiting_for_human',
+  'waiting_for_async_tool',
   'done',
   'error',
   'interrupted',
@@ -22,6 +25,24 @@ const completionReasons = [
   'max_steps',
   'cost_limit',
   'waiting_for_human',
+  'waiting_for_async_tool',
+] as const;
+
+/**
+ * Denormalized rollup of the operation's verify (delivery checker) state.
+ * Lets the operation list page render badges / filter without joining the
+ * verify_* tables. It is a rollup of plan.status + result aggregation and MUST
+ * be updated through the service layer (on plan confirm / each result / repair)
+ * to avoid drift.
+ */
+const verifyStatuses = [
+  'unverified',
+  'planned',
+  'verifying',
+  'passed',
+  'failed',
+  'repairing',
+  'delivered',
 ] as const;
 
 export interface AgentOperationInterruption {
@@ -57,6 +78,7 @@ export const agentOperations = pgTable(
      * so this column is intentionally not a foreign key.
      */
     userId: text('user_id').notNull(),
+    workspaceId: text('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
 
     agentId: text('agent_id').references(() => agents.id, { onDelete: 'set null' }),
     topicId: text('topic_id').references(() => topics.id, { onDelete: 'set null' }),
@@ -70,6 +92,19 @@ export const agentOperations = pgTable(
     // ---- Lifecycle ----
     status: text('status', { enum: operationStatuses }).notNull(),
     completionReason: text('completion_reason', { enum: completionReasons }),
+
+    // ---- Verify (delivery checker) — DEPRECATED, moved to verify_runs ----
+    // The plan snapshot + rollup status now live on `verify_runs` (the session
+    // entity), which links back here via `verify_runs.operation_id`. These columns
+    // are retained only to avoid an ALTER on this analytics table; they are no
+    // longer read or written by the verify pipeline and are dropped in a later
+    // cleanup migration.
+    /** @deprecated read from verify_runs.status */
+    verifyStatus: text('verify_status', { enum: verifyStatuses }),
+    /** @deprecated read from verify_runs.plan */
+    verifyPlan: jsonb('verify_plan').$type<VerifyCheckItem[]>(),
+    /** @deprecated read from verify_runs.plan_confirmed_at */
+    verifyPlanConfirmedAt: timestamptz('verify_plan_confirmed_at'),
 
     startedAt: timestamptz('started_at'),
     completedAt: timestamptz('completed_at'),
@@ -127,6 +162,7 @@ export const agentOperations = pgTable(
   },
   (t) => [
     index('agent_operations_user_id_idx').on(t.userId),
+    index('agent_operations_workspace_id_idx').on(t.workspaceId),
     index('agent_operations_agent_id_idx').on(t.agentId),
     index('agent_operations_topic_id_idx').on(t.topicId),
     index('agent_operations_thread_id_idx').on(t.threadId),

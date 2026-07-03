@@ -10,7 +10,11 @@ import { z } from 'zod';
 
 import type { InterventionAnswer } from './AskUserBridge';
 import { AskUserBridge } from './AskUserBridge';
-import { ASK_USER_MCP_SERVER_NAME, ASK_USER_TOOL_NAME } from './constants';
+import {
+  ASK_USER_MCP_SERVER_NAME,
+  ASK_USER_TOOL_NAME,
+  DEFAULT_ASK_USER_TIMEOUT_MS,
+} from './constants';
 
 /**
  * Mirrors CC's built-in `AskUserQuestion` schema. CC's schema:
@@ -32,7 +36,7 @@ const askUserQuestionShape = z.object({
   question: z.string(),
 });
 
-const askUserInputShape = {
+const askUserInputShape: z.ZodRawShape = {
   questions: z.array(askUserQuestionShape).min(1).max(4),
 };
 
@@ -40,6 +44,30 @@ const askUserInputShape = {
 const ASK_USER_TOOL_DESCRIPTION =
   'Ask the user one or more clarifying questions with multiple-choice options. ' +
   "Use this whenever the user's intent is ambiguous and you need them to pick.";
+
+interface AskUserToolExtra {
+  _meta?: Record<string, unknown>;
+  sendNotification?: (notification: {
+    method: 'notifications/progress';
+    params: {
+      message: string;
+      progress: number;
+      progressToken: number | string;
+      total: number;
+    };
+  }) => Promise<void>;
+  sessionId?: string;
+}
+
+type AskUserToolRegistrar = (
+  name: string,
+  config: {
+    description: string;
+    inputSchema: typeof askUserInputShape;
+    title: string;
+  },
+  cb: (args: unknown, extra: AskUserToolExtra) => Promise<unknown>,
+) => void;
 
 export interface StartedServer {
   /** Effective listen port (auto-assigned when constructed with port=0). */
@@ -118,7 +146,7 @@ export class AskUserMcpServer {
   private readonly progressIntervalMs: number;
 
   constructor(private readonly options: AskUserMcpServerOptions = {}) {
-    this.pendingTimeoutMs = options.pendingTimeoutMs ?? 5 * 60 * 1000;
+    this.pendingTimeoutMs = options.pendingTimeoutMs ?? DEFAULT_ASK_USER_TIMEOUT_MS;
     this.progressIntervalMs = options.progressIntervalMs ?? 30_000;
   }
 
@@ -331,7 +359,9 @@ export class AskUserMcpServer {
   }
 
   private registerAskUserTool(mcp: McpServer) {
-    mcp.registerTool(
+    const registerTool = mcp.registerTool.bind(mcp) as AskUserToolRegistrar;
+
+    registerTool(
       ASK_USER_TOOL_NAME,
       {
         description: ASK_USER_TOOL_DESCRIPTION,
@@ -339,7 +369,7 @@ export class AskUserMcpServer {
         title: 'Ask User Question',
       },
       async (args, extra) => {
-        const sessionId = (extra as { sessionId?: string } | undefined)?.sessionId;
+        const sessionId = extra.sessionId;
         const operationId = sessionId ? this.sessionIdToOpId.get(sessionId) : undefined;
         if (!operationId) {
           return errorResult(
@@ -353,16 +383,17 @@ export class AskUserMcpServer {
           );
         }
 
-        const ccToolUseId = (extra?._meta as { 'claudecode/toolUseId'?: string } | undefined)?.[
-          'claudecode/toolUseId'
-        ];
-        const progressToken = (extra?._meta as { progressToken?: string | number } | undefined)
-          ?.progressToken;
+        const ccToolUseId = extra._meta?.['claudecode/toolUseId'];
+        const rawProgressToken = extra._meta?.progressToken;
+        const progressToken =
+          typeof rawProgressToken === 'string' || typeof rawProgressToken === 'number'
+            ? rawProgressToken
+            : undefined;
         // Use CC's own tool_use id as the bridge correlation key so the
         // outbound `agent_intervention_request` shares an id with the
         // existing tool message on the renderer side. Without this the
         // renderer can't tie the intervention card to its tool bubble.
-        const toolCallId = ccToolUseId;
+        const toolCallId = typeof ccToolUseId === 'string' ? ccToolUseId : undefined;
 
         // SSE keepalive: every progressIntervalMs send a progress
         // notification so CC's transport doesn't time out on long waits.

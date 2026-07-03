@@ -1,6 +1,6 @@
 ---
 name: typescript
-description: "TypeScript code style and type-safety guide for LobeHub. Read before writing or editing any `.ts` / `.tsx` / `.mts` — covers `interface` vs `type`, `Record<PropertyKey, unknown>` over `any`/`object`, `as const satisfies`, `@ts-expect-error` over `@ts-ignore`, `import type` (`separate-type-imports`), `async`/`await` + `Promise.all`, `for…of` over indexed `for`, and the no-silent-`.catch(() => fallback)` rule. Also use when reviewing type quality, deciding module augmentation (`declare module`) over `namespace`, or designing extensible types (e.g. `PipelineContext.metadata`). Triggers on any TypeScript file edit, 'fix the type', 'why is this `any`', 'should this be interface or type', 'eslint type-import', 'ts-expect-error'."
+description: 'LobeHub TypeScript style and type-safety guide. Use when editing TS/TSX/MTS, fixing types, choosing interface vs type, avoiding any/object, import type, async flow, or ts-expect-error.'
 user-invocable: false
 ---
 
@@ -58,11 +58,12 @@ user-invocable: false
 
 ## Performance
 
-- Reuse existing utils in `packages/utils` or installed npm packages
 - Query only required columns from database
 
-## Time Consistency
+## Reusability
 
+- Reuse existing utils in `packages/utils` or installed npm packages
+- Do not hand-roll reusable record/object-map guards such as `typeof value === 'object' && value !== null`; import helpers like `isRecord`, `isPlainRecord`, `isObjectLike`, `toRecord`, `pickString`, `UnknownRecord`, etc. from `@lobechat/utils/object`.
 - Assign `Date.now()` to a constant once and reuse for consistency
 
 ## Logging

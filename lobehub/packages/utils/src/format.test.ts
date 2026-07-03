@@ -139,7 +139,14 @@ describe('format', () => {
     it('should format numbers 10,000,000 and above correctly', () => {
       expect(formatShortenNumber(10000000)).toBe('10.0M');
       expect(formatShortenNumber(123456789)).toBe('123.5M');
-      expect(formatShortenNumber(9876543210)).toBe('9876.5M');
+    });
+
+    it('should format billions and trillions correctly', () => {
+      expect(formatShortenNumber(1000000000)).toBe('1.0B');
+      expect(formatShortenNumber(9876543210)).toBe('9.9B');
+      expect(formatShortenNumber(15065800000)).toBe('15.1B');
+      expect(formatShortenNumber(1000000000000)).toBe('1.0T');
+      expect(formatShortenNumber(2500000000000)).toBe('2.5T');
     });
   });
 
@@ -277,6 +284,13 @@ describe('format', () => {
     it('formats million-level token counts with M suffix', () => {
       expect(formatUsageValue(1_000_000)).toBe('1M');
       expect(formatUsageValue(1_500_000)).toBe('1.5M');
+      expect(formatUsageValue(999_900_000)).toBe('999.9M');
+    });
+
+    it('rolls over to B suffix once counts reach a billion (1000M)', () => {
+      expect(formatUsageValue(1_000_000_000)).toBe('1B');
+      expect(formatUsageValue(9_092_900_000)).toBe('9.1B');
+      expect(formatUsageValue(10_285_700_000)).toBe('10.3B');
     });
   });
 

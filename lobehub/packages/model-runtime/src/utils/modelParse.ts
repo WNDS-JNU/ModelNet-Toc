@@ -56,6 +56,11 @@ export const MODEL_LIST_CONFIGS = {
     reasoningKeywords: ['ring-'],
     visionKeywords: ['ming-'],
   },
+  internlm: {
+    functionCallKeywords: ['internlm', 'intern-s'],
+    reasoningKeywords: ['intern-s'],
+    visionKeywords: ['internvl', 'intern-s'],
+  },
   llama: {
     functionCallKeywords: ['llama-3.2', 'llama-3.3', 'llama-4'],
     reasoningKeywords: [],
@@ -64,12 +69,12 @@ export const MODEL_LIST_CONFIGS = {
   longcat: {
     functionCallKeywords: ['longcat'],
     reasoningKeywords: ['thinking'],
-    visionKeywords: [],
+    visionKeywords: ['omni'],
   },
   minimax: {
     functionCallKeywords: ['minimax'],
     reasoningKeywords: ['-m'],
-    visionKeywords: ['-vl', 'Text-01'],
+    visionKeywords: ['-vl', 'Text-01', '-m3'],
   },
   mistral: {
     functionCallKeywords: ['mistral', 'ministral', 'pixtral'],
@@ -99,7 +104,7 @@ export const MODEL_LIST_CONFIGS = {
       'qwen3',
     ],
     reasoningKeywords: ['qvq', 'qwq', 'qwen3', '!-instruct-', '!-coder-'],
-    visionKeywords: ['qvq', '-vl', '-omni'],
+    visionKeywords: ['qvq', '-vl', '-omni', 'qwen3.'],
   },
   replicate: {
     imageOutputKeywords: [
@@ -159,6 +164,7 @@ export const MODEL_OWNER_DETECTION_CONFIG = {
   deepseek: ['deepseek'],
   google: ['gemini', 'imagen', 'gemma'],
   inclusionai: ['ling-', 'ming-', 'ring-'],
+  internlm: ['internvl', 'internlm', 'intern-'],
   llama: ['llama', 'llava'],
   longcat: ['longcat'],
   minimax: ['minimax'],
@@ -175,6 +181,13 @@ export const MODEL_OWNER_DETECTION_CONFIG = {
   zeroone: ['yi-'],
   zhipu: ['glm'],
 } as const;
+
+export const isDeepSeekV4FamilyModel = (model: string | undefined): boolean =>
+  typeof model === 'string' && model.toLowerCase().includes('deepseek-v4');
+
+export const isDeepSeekThinkingEligibleModel = (model: string | undefined): boolean =>
+  typeof model === 'string' &&
+  (model.toLowerCase().includes('deepseek-reasoner') || isDeepSeekV4FamilyModel(model));
 
 // Image model keyword configuration
 export const IMAGE_MODEL_KEYWORDS = [
@@ -664,6 +677,10 @@ export const processModelList = async (
 
   return Promise.all(
     modelList.map(async (model) => {
+      if (!model?.id) {
+        return undefined;
+      }
+
       let knownModel: any = null;
 
       // If provider is provided, prioritize using provider-specific configuration

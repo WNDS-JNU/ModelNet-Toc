@@ -9,6 +9,8 @@
 export const TRACING_SCENARIOS = {
   AgentSignal: 'agent_signal',
   AgentWelcome: 'agent_welcome',
+  BuilderSuggestion: 'builder_suggestion',
+  DocumentToSkillMeta: 'document_to_skill_meta',
   FollowUp: 'follow_up',
   HomeBrief: 'home_brief',
   InputCompletion: 'input_completion',
@@ -18,8 +20,13 @@ export const TRACING_SCENARIOS = {
   SignalSkillIntent: 'signal_skill_intent',
   SignalSkillManagement: 'signal_skill_management',
   SignupEmailReview: 'signup_email_review',
+  TaskBrief: 'task_brief',
+  TaskBriefJudge: 'task_brief_judge',
+  TaskHandoff: 'task_handoff',
   TopicTitle: 'topic_title',
   Unknown: 'unknown',
+  VerifyJudge: 'verify_judge',
+  VerifyPlanGen: 'verify_plan_gen',
 } as const;
 
 export type TracingScenario = (typeof TRACING_SCENARIOS)[keyof typeof TRACING_SCENARIOS];

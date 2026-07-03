@@ -7,6 +7,7 @@
   "config.header.title": "絵画",
   "config.height.label": "高さ",
   "config.imageNum.label": "画像数",
+  "config.imageUpload.maxCountReached": "参照画像は最大{{count}}枚まで追加できます",
   "config.imageUrl.label": "参考画像",
   "config.imageUrls.label": "参考画像",
   "config.model.label": "モデル",
@@ -20,6 +21,7 @@
   "config.resolution.options.1K": "1K",
   "config.resolution.options.2K": "2K",
   "config.resolution.options.4K": "4K",
+  "config.resolution.options.512": "512px",
   "config.seed.label": "シード",
   "config.seed.random": "ランダムシード",
   "config.size.label": "サイズ",
@@ -61,6 +63,9 @@
   "topic.deleteConfirm": "生成テーマを削除",
   "topic.deleteConfirmDesc": "この生成テーマを削除すると復元できません。慎重に操作してください。",
   "topic.empty": "生成されたテーマはありません",
+  "topic.privateTitle": "非公開",
   "topic.title": "絵画のテーマ",
-  "topic.untitled": "デフォルトテーマ"
+  "topic.untitled": "デフォルトテーマ",
+  "topic.visibility.existingLocked": "現在のトピックの可視性は固定されています。別のスペースを選択するには、新しいトピックを作成してください。",
+  "topic.workspaceTitle": "ワークスペース"
 }

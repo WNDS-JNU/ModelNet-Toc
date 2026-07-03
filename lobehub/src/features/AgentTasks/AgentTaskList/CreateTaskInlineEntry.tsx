@@ -5,22 +5,36 @@ import { ActionIcon, Block, Flexbox, Icon, Text } from '@lobehub/ui';
 import { Button } from 'antd';
 import { cssVar } from 'antd-style';
 import { $getRoot } from 'lexical';
-import { ChevronUp, UserCircle2 } from 'lucide-react';
+import { ChevronUp, Paperclip, UserCircle2 } from 'lucide-react';
 import { type KeyboardEvent, memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
 import { EditorCanvas } from '@/features/EditorCanvas';
+import {
+  getAttachmentFileIdsFromEditor,
+  pickAndInsertAttachments,
+} from '@/features/EditorCanvas/editorAttachments';
+import { usePermission } from '@/hooks/usePermission';
 import { useGlobalStore } from '@/store/global';
 import { useTaskStore } from '@/store/task';
 
 import AssigneeAgentSelector from '../features/AssigneeAgentSelector';
 import AssigneeAvatar from '../features/AssigneeAvatar';
 import TaskPriorityTag from '../features/TaskPriorityTag';
+import TaskVisibilityChipLabel from '../features/TaskVisibilityChipLabel';
+import TaskVisibilityTag from '../features/TaskVisibilityTag';
 import { useAgentDisplayMeta } from '../shared/useAgentDisplayMeta';
+import { useAgentVisibility } from '../shared/useAgentVisibility';
 
 interface CreateTaskInlineEntryProps {
   agentId?: string;
   autoFocus?: boolean;
+  /**
+   * Locks the assignee to `agentId` and hides the agent picker. Used on the
+   * agent-scoped task list where every task belongs to that agent.
+   */
+  lockAssignee?: boolean;
   onCollapse?: () => void;
   onCreated?: (task: { agentId?: string; identifier: string }) => void;
   parentTaskId?: string;
@@ -36,6 +50,7 @@ const CreateTaskInlineEntry = memo<CreateTaskInlineEntryProps>((props) => {
   const {
     agentId,
     autoFocus,
+    lockAssignee,
     onCollapse,
     onCreated,
     parentTaskId,
@@ -44,22 +59,50 @@ const CreateTaskInlineEntry = memo<CreateTaskInlineEntryProps>((props) => {
   } = props;
   const isHero = variant === 'hero';
   const { t } = useTranslation('chat');
+  const { allowed: canCreateTask, reason } = usePermission('create_content');
 
   const createTask = useTaskStore((s) => s.createTask);
   const isCreating = useTaskStore((s) => s.isCreatingTask);
   const updateSystemStatus = useGlobalStore((s) => s.updateSystemStatus);
 
+  const activeWorkspaceId = useActiveWorkspaceId();
   const [priority, setPriority] = useState(0);
   const [assigneeAgentId, setAssigneeAgentId] = useState<string | undefined>(agentId);
   const [instruction, setInstruction] = useState('');
+  const [hasAttachments, setHasAttachments] = useState(false);
+  // Default to private in workspace mode so the user has to opt in to share.
+  // In personal mode the chip is hidden and the value is never sent.
+  const [visibility, setVisibility] = useState<'private' | 'public'>('private');
+
+  // LOBE-10961: a private agent can only run a private task. Coerce + lock the
+  // visibility chip when the selected agent is private.
+  const assigneeVisibility = useAgentVisibility(assigneeAgentId);
+  const isPrivateAgent = assigneeVisibility === 'private';
+  useEffect(() => {
+    if (isPrivateAgent && visibility === 'public') setVisibility('private');
+  }, [isPrivateAgent, visibility]);
 
   const editor = useEditor();
 
   const assigneeMeta = useAgentDisplayMeta(assigneeAgentId);
 
+  // When the assignee is locked to a scoped agent, keep it in sync with the
+  // `agentId` prop. The route subtree is reused across /agent/A/tasks ->
+  // /agent/B/tasks and /agent/A/tasks -> /tasks, so without this the hidden
+  // assignee would stay on the previous scoped agent.
   useEffect(() => {
+    if (lockAssignee) {
+      setAssigneeAgentId(agentId);
+      return;
+    }
+
+    if (!agentId) setAssigneeAgentId(undefined);
+  }, [agentId, lockAssignee]);
+
+  useEffect(() => {
+    if (!canCreateTask) return;
     if (autoFocus || isHero) editor?.focus?.();
-  }, [autoFocus, editor, isHero]);
+  }, [autoFocus, canCreateTask, editor, isHero]);
 
   const handleCollapse = useCallback(() => {
     if (onCollapse) {
@@ -70,36 +113,55 @@ const CreateTaskInlineEntry = memo<CreateTaskInlineEntryProps>((props) => {
   }, [onCollapse, updateSystemStatus]);
 
   const handleContentChange = useCallback(() => {
+    if (!canCreateTask) return;
     const lexicalEditor = editor?.getLexicalEditor?.();
     if (!lexicalEditor) return;
     lexicalEditor.getEditorState().read(() => {
       setInstruction($getRoot().getTextContent());
     });
+    setHasAttachments(getAttachmentFileIdsFromEditor(editor).length > 0);
+  }, [canCreateTask, editor]);
+
+  const handleAttach = useCallback(() => {
+    pickAndInsertAttachments(editor);
   }, [editor]);
 
   const handleSubmit = useCallback(async () => {
-    const trimmed = instruction.trim();
-    if (!trimmed) return;
+    if (!canCreateTask) return;
+    const markdown = String(editor?.getDocument?.('markdown') ?? '').trim();
+    const trimmedText = instruction.trim();
+    const hasFiles = getAttachmentFileIdsFromEditor(editor).length > 0;
+    if (!trimmedText && !markdown && !hasFiles) return;
 
     const firstLine =
-      trimmed
+      trimmedText
         .split('\n')
         .find((line) => line.trim())
-        ?.trim() ?? trimmed;
-    const name = firstLine.length > 30 ? `${firstLine.slice(0, 30)}…` : firstLine;
+        ?.trim() ?? trimmedText;
+    let name: string | undefined;
+    if (firstLine) {
+      name = firstLine.length > 30 ? `${firstLine.slice(0, 30)}…` : firstLine;
+    }
+
+    const editorJson = editor?.getDocument?.('json') as unknown;
 
     const result = await createTask({
       assigneeAgentId,
-      instruction: trimmed,
+      editorData: editorJson,
+      instruction: markdown || trimmedText || name || '',
       name,
       parentTaskId,
       priority: priority || undefined,
+      // Only send visibility in workspace mode; personal mode lets the server
+      // fall through to the schema default ('public', inert in personal mode).
+      visibility: activeWorkspaceId ? visibility : undefined,
     });
 
     if (result) {
       setPriority(0);
       setAssigneeAgentId(agentId);
       setInstruction('');
+      setVisibility('private');
       editor?.cleanDocument?.();
       onCreated?.({
         agentId: result.assigneeAgentId ?? undefined,
@@ -107,6 +169,7 @@ const CreateTaskInlineEntry = memo<CreateTaskInlineEntryProps>((props) => {
       });
     }
   }, [
+    activeWorkspaceId,
     agentId,
     assigneeAgentId,
     createTask,
@@ -115,6 +178,8 @@ const CreateTaskInlineEntry = memo<CreateTaskInlineEntryProps>((props) => {
     onCreated,
     parentTaskId,
     priority,
+    canCreateTask,
+    visibility,
   ]);
 
   const handleSubmitRef = useRef(handleSubmit);
@@ -152,6 +217,7 @@ const CreateTaskInlineEntry = memo<CreateTaskInlineEntryProps>((props) => {
         }}
       >
         <EditorCanvas
+          disabled={!canCreateTask}
           editor={editor}
           floatingToolbar={false}
           placeholder={placeholder ?? t('createTask.instructionPlaceholder')}
@@ -195,38 +261,72 @@ const CreateTaskInlineEntry = memo<CreateTaskInlineEntryProps>((props) => {
             </Block>
           </TaskPriorityTag>
 
-          <AssigneeAgentSelector currentAgentId={assigneeAgentId} onChange={setAssigneeAgentId}>
-            <Block
-              clickable
-              horizontal
-              align="center"
-              gap={6}
-              paddingBlock={4}
-              paddingInline={8}
-              variant={'borderless'}
+          {(() => {
+            const assigneeChip = (
+              <Block
+                horizontal
+                align="center"
+                clickable={!lockAssignee}
+                gap={6}
+                paddingBlock={4}
+                paddingInline={8}
+                variant={'borderless'}
+              >
+                {assigneeAgentId ? (
+                  <>
+                    <AssigneeAvatar agentId={assigneeAgentId} size={18} />
+                    <Text fontSize={12}>{assigneeMeta?.title}</Text>
+                  </>
+                ) : (
+                  <>
+                    <Icon color={cssVar.colorTextDescription} icon={UserCircle2} size={14} />
+                    <Text color={cssVar.colorTextDescription} fontSize={12}>
+                      {t('createTask.assignee')}
+                    </Text>
+                  </>
+                )}
+              </Block>
+            );
+
+            return lockAssignee ? (
+              assigneeChip
+            ) : (
+              <AssigneeAgentSelector currentAgentId={assigneeAgentId} onChange={setAssigneeAgentId}>
+                {assigneeChip}
+              </AssigneeAgentSelector>
+            );
+          })()}
+
+          {activeWorkspaceId && (
+            <TaskVisibilityTag
+              visibility={visibility}
+              lockedReason={
+                isPrivateAgent
+                  ? t('createTask.visibility.privateAgentLocked', {
+                      defaultValue: 'Private agents can only run private tasks.',
+                    })
+                  : undefined
+              }
+              onChange={setVisibility}
             >
-              {assigneeAgentId ? (
-                <>
-                  <AssigneeAvatar agentId={assigneeAgentId} size={18} />
-                  <Text fontSize={12}>{assigneeMeta?.title}</Text>
-                </>
-              ) : (
-                <>
-                  <Icon color={cssVar.colorTextDescription} icon={UserCircle2} size={14} />
-                  <Text color={cssVar.colorTextDescription} fontSize={12}>
-                    {t('createTask.assignee')}
-                  </Text>
-                </>
-              )}
-            </Block>
-          </AssigneeAgentSelector>
+              <TaskVisibilityChipLabel visibility={visibility} />
+            </TaskVisibilityTag>
+          )}
+
+          <ActionIcon
+            icon={Paperclip}
+            size={'small'}
+            title={t('upload.action.tooltip')}
+            onClick={handleAttach}
+          />
         </Flexbox>
 
         <Button
-          disabled={isCreating || !instruction.trim()}
+          disabled={!canCreateTask || isCreating || (!instruction.trim() && !hasAttachments)}
           loading={isCreating}
           shape={'round'}
           size={'small'}
+          title={canCreateTask ? undefined : reason}
           type={'primary'}
           onClick={handleSubmit}
         >

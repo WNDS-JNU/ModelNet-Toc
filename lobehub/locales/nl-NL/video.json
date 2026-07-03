@@ -5,6 +5,7 @@
   "config.endImageUrl.label": "Eindframe",
   "config.generateAudio.label": "Audio Genereren",
   "config.header.title": "Video",
+  "config.imageUpload.maxCountReached": "Je kunt maximaal {{count}} referentieafbeeldingen toevoegen",
   "config.imageUrl.label": "Startframe",
   "config.prompt.placeholder": "Beschrijf de video die je wilt genereren",
   "config.prompt.placeholderWithRef": "Beschrijf de scène die je wilt genereren met de afbeelding",
@@ -28,6 +29,9 @@
   "topic.createNew": "Nieuw Onderwerp Maken",
   "topic.deleteConfirm": "Videothema Verwijderen",
   "topic.deleteConfirmDesc": "Je staat op het punt dit videothema te verwijderen. Deze actie kan niet ongedaan worden gemaakt.",
+  "topic.privateTitle": "Privé",
   "topic.title": "Videothema's",
-  "topic.untitled": "Standaardonderwerp"
+  "topic.untitled": "Standaardonderwerp",
+  "topic.visibility.existingLocked": "De zichtbaarheid is vastgezet voor het huidige onderwerp. Maak een nieuw onderwerp om een andere ruimte te kiezen.",
+  "topic.workspaceTitle": "Werkruimte"
 }

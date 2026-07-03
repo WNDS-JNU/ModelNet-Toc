@@ -8,8 +8,10 @@ import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Virtuoso } from 'react-virtuoso';
 
+import AsyncError from '@/components/AsyncError';
 import NeuralNetworkLoading from '@/components/NeuralNetworkLoading';
 import { useClientDataSWR } from '@/libs/swr';
+import { resourceKeys } from '@/libs/swr/keys';
 import { useResourceManagerStore } from '@/routes/(main)/resource/features/store';
 import { resourceService } from '@/services/resource';
 import { useGlobalStore } from '@/store/global';
@@ -20,8 +22,6 @@ import type { FileListItem } from '@/types/files';
 import FileListItemComponent from './ListView/ListItem';
 import MasonryItemWrapper from './MasonryView/MasonryItem/MasonryItemWrapper';
 import { useMasonryColumnCount } from './useMasonryColumnCount';
-
-const SWR_RESOURCE_SEARCH = 'SWR_RESOURCE_SEARCH';
 
 const SearchResultsOverlay = memo(() => {
   const { t } = useTranslation('components');
@@ -41,12 +41,18 @@ const SearchResultsOverlay = memo(() => {
 
   const isActive = !!searchQuery && searchQuery.length > 0;
 
-  const { data: rawData, isLoading } = useClientDataSWR(
+  const {
+    data: rawData,
+    isLoading,
+    error,
+    mutate,
+  } = useClientDataSWR(
     isActive
-      ? [
-          SWR_RESOURCE_SEARCH,
-          { category: libraryId ? undefined : category, libraryId, q: searchQuery },
-        ]
+      ? resourceKeys.search({
+          category: libraryId ? undefined : category,
+          libraryId,
+          q: searchQuery,
+        })
       : null,
     async ([, params]: [string, { category?: string; libraryId?: string; q: string }]) => {
       const response = await resourceService.queryResources({
@@ -109,6 +115,14 @@ const SearchResultsOverlay = memo(() => {
       {isLoading ? (
         <Center height="100%">
           <NeuralNetworkLoading size={48} />
+        </Center>
+      ) : error && (!data || data.length === 0) ? (
+        // A failed search fetch used to fall through to the "no results" state, telling
+        // the user their query matched nothing when the request actually errored
+        // (Read §1.1). Branch the failure before the no-match state; the no-match
+        // variant below is untouched and still handles a genuine zero-result search.
+        <Center height="100%">
+          <AsyncError error={error} variant={'block'} onRetry={() => mutate()} />
         </Center>
       ) : !data || data.length === 0 ? (
         <Center height="100%">

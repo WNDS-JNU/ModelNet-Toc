@@ -1,3 +1,8 @@
+import {
+  CUSTOM_DOCUMENT_FILE_TYPE,
+  CUSTOM_FOLDER_FILE_TYPE,
+  MARKDOWN_MIME_TYPES,
+} from '@lobechat/const';
 import { Checkbox, showContextMenu, stopPropagation } from '@lobehub/ui';
 import { createStaticStyles, cssVar, cx } from 'antd-style';
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -8,7 +13,7 @@ import {
   useSetCurrentDrag,
 } from '@/routes/(main)/resource/features/DndContextWrapper';
 import { documentService } from '@/services/document';
-import { useFileStore } from '@/store/file';
+import { getChunkTargetId, useFileStore } from '@/store/file';
 import { type FileListItem } from '@/types/files';
 
 import { useFileItemClick } from '../../hooks/useFileItemClick';
@@ -30,10 +35,10 @@ const IMAGE_TYPES = new Set([
 ]);
 
 // Markdown file types
-const MARKDOWN_TYPES = new Set(['text/markdown', 'text/x-markdown']);
+const MARKDOWN_TYPES = new Set(MARKDOWN_MIME_TYPES);
 
 // Custom note file type
-const CUSTOM_NOTE_TYPE = 'custom/document';
+const CUSTOM_NOTE_TYPE = CUSTOM_DOCUMENT_FILE_TYPE;
 
 // Helper to check if filename ends with .md or is a custom note
 const isMarkdownFile = (name: string, fileType?: string) => {
@@ -190,6 +195,7 @@ const MasonryFileItem = memo<MasonryFileItemProps>(
     url,
     name,
     fileType,
+    fileId,
     id,
     selected,
     chunkingStatus,
@@ -200,7 +206,10 @@ const MasonryFileItem = memo<MasonryFileItemProps>(
     metadata,
     sourceType,
     slug,
+    userId,
+    visibility,
   }) => {
+    const chunkTargetId = getChunkTargetId({ fileId, id });
     const [markdownContent, setMarkdownContent] = useState<string>('');
     const [isLoadingMarkdown, setIsLoadingMarkdown] = useState(false);
 
@@ -212,7 +221,7 @@ const MasonryFileItem = memo<MasonryFileItemProps>(
     // Memoize computed values that don't change
     const computedValues = useMemo(
       () => ({
-        isFolder: fileType === 'custom/folder',
+        isFolder: fileType === CUSTOM_FOLDER_FILE_TYPE,
         isImage: fileType && IMAGE_TYPES.has(fileType),
         isMarkdown: isMarkdownFile(name, fileType),
         isPage: isCustomPage(fileType, name),
@@ -371,6 +380,8 @@ const MasonryFileItem = memo<MasonryFileItemProps>(
       libraryId: knowledgeBaseId,
       sourceType,
       url,
+      userId,
+      visibility,
     });
 
     return (
@@ -432,7 +443,7 @@ const MasonryFileItem = memo<MasonryFileItemProps>(
                     embeddingStatus={embeddingStatus ?? undefined}
                     fileType={fileType}
                     finishEmbedding={finishEmbedding}
-                    id={id}
+                    id={chunkTargetId}
                     isInView={isInView}
                     name={name}
                     size={size}
@@ -450,7 +461,7 @@ const MasonryFileItem = memo<MasonryFileItemProps>(
                     embeddingStatus={embeddingStatus ?? undefined}
                     fileType={fileType}
                     finishEmbedding={finishEmbedding}
-                    id={id}
+                    id={chunkTargetId}
                     isLoadingMarkdown={isLoadingMarkdown}
                     markdownContent={markdownContent}
                     metadata={metadata}
@@ -468,7 +479,7 @@ const MasonryFileItem = memo<MasonryFileItemProps>(
                     embeddingStatus={embeddingStatus ?? undefined}
                     fileType={fileType}
                     finishEmbedding={finishEmbedding}
-                    id={id}
+                    id={chunkTargetId}
                     isLoadingMarkdown={isLoadingMarkdown}
                     markdownContent={markdownContent}
                     name={name}
@@ -486,7 +497,7 @@ const MasonryFileItem = memo<MasonryFileItemProps>(
                     embeddingStatus={embeddingStatus ?? undefined}
                     fileType={fileType}
                     finishEmbedding={finishEmbedding}
-                    id={id}
+                    id={chunkTargetId}
                     name={name}
                     size={size}
                   />

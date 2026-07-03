@@ -1,4 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import type { RemoteHeterogeneousAgentType } from '@lobechat/heterogeneous-agents';
 
@@ -6,7 +9,36 @@ import { getTrpcClient } from '../api/client';
 import { getTask, listTasks, removeTask, saveTask } from '../daemon/taskRegistry';
 import { log } from '../utils/logger';
 
-const DEFAULT_HERMES_PORT = 3456;
+// ─── Hermes session persistence ───
+// Maps topicId → hermes session_id so multi-turn conversations can resume
+// the same session across separate `runHeteroTask` invocations.
+
+const LOBEHUB_DIR_NAME = process.env.LOBEHUB_CLI_HOME || '.lobehub';
+const HERMES_SESSIONS_FILE = path.join(os.homedir(), LOBEHUB_DIR_NAME, 'hermes-sessions.json');
+
+function getHermesSessionId(topicId: string): string | undefined {
+  try {
+    const data = JSON.parse(fs.readFileSync(HERMES_SESSIONS_FILE, 'utf8')) as Record<
+      string,
+      string
+    >;
+    return data[topicId];
+  } catch {
+    return undefined;
+  }
+}
+
+function saveHermesSessionId(topicId: string, sessionId: string): void {
+  let data: Record<string, string> = {};
+  try {
+    data = JSON.parse(fs.readFileSync(HERMES_SESSIONS_FILE, 'utf8')) as Record<string, string>;
+  } catch {
+    // File doesn't exist yet — start fresh.
+  }
+  data[topicId] = sessionId;
+  fs.mkdirSync(path.dirname(HERMES_SESSIONS_FILE), { recursive: true });
+  fs.writeFileSync(HERMES_SESSIONS_FILE, JSON.stringify(data), 'utf8');
+}
 
 /** Resolve the absolute path to the `lh` binary to avoid PATH issues in child processes. */
 function resolveLhPath(): string {
@@ -25,6 +57,13 @@ export interface RunHeteroTaskParams {
   prompt: string;
   taskId: string;
   topicId: string;
+  /**
+   * Workspace id seeded by the server when the dispatched topic lives in a
+   * workspace. Threaded into auto-notify calls (as `X-Workspace-Id`) and into
+   * the spawned child's `LOBEHUB_WORKSPACE_ID` env so its own `lh notify`
+   * shells inherit the same scope.
+   */
+  workspaceId?: string;
 }
 
 export interface CancelHeteroTaskParams {
@@ -32,48 +71,15 @@ export interface CancelHeteroTaskParams {
   taskId: string;
 }
 
-export function getHermesPort(): number {
-  const env = process.env.HERMES_GATEWAY_PORT;
-  if (env) {
-    const parsed = Number.parseInt(env, 10);
-    if (!Number.isNaN(parsed)) return parsed;
-  }
-  return DEFAULT_HERMES_PORT;
-}
-
-async function isHermesGatewayRunning(port: number): Promise<boolean> {
-  try {
-    const res = await fetch(`http://localhost:${port}/health`);
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
-async function startHermesGateway(port: number): Promise<void> {
-  const child = spawn('hermes', ['gateway', 'start'], {
-    detached: true,
-    env: { ...process.env },
-    stdio: 'ignore',
-  });
-  child.unref();
-
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    await new Promise<void>((r) => setTimeout(r, 500));
-    if (await isHermesGatewayRunning(port)) return;
-  }
-  throw new Error(`Hermes gateway did not start within 10s on port ${port}`);
-}
-
 async function sendAutoNotify(
   topicId: string,
   taskId: string,
   text: string,
   agentId?: string,
+  workspaceId?: string,
 ): Promise<void> {
   try {
-    const client = await getTrpcClient();
+    const client = await getTrpcClient(workspaceId);
     await client.agentNotify.notify.mutate({
       agentId,
       content: text,
@@ -86,24 +92,32 @@ async function sendAutoNotify(
 }
 
 /**
- * Signal remote hetero task completion to the server so it can publish
- * `agent_runtime_end` to the gateway WS and close the frontend subscription.
- * Called on clean process exit (code=0, no signal) — error exits go through
- * `sendAutoNotify` which writes an error message AND triggers completion via
- * the `done` flag.
+ * Signal remote hetero task termination to the server so it can publish
+ * `agent_runtime_end`, close the frontend subscription, and fire the run's
+ * lifecycle hooks (task lifecycle + IM bot callback).
+ *
+ * Pass `error` to finalize the run as FAILED (non-zero process exit) — the
+ * server marks the owning task failed and renders the error. Omit it for a
+ * clean completion (the agent already sent its final message via `lh notify`).
  */
-async function sendDoneSignal(topicId: string, agentId?: string): Promise<void> {
+async function sendTerminalSignal(
+  topicId: string,
+  agentId?: string,
+  workspaceId?: string,
+  error?: { message: string; type?: string },
+): Promise<void> {
   try {
-    const client = await getTrpcClient();
+    const client = await getTrpcClient(workspaceId);
     await client.agentNotify.notify.mutate({
       agentId,
       content: '',
       done: true,
+      ...(error ? { error } : {}),
       role: 'assistant',
       topicId,
     });
   } catch (err) {
-    log.error('Failed to send done signal:', err instanceof Error ? err.message : String(err));
+    log.error('Failed to send terminal signal:', err instanceof Error ? err.message : String(err));
   }
 }
 
@@ -140,9 +154,15 @@ function buildNotifyProtocol(lhPath: string, topicId: string): string {
 }
 
 export async function runHeteroTask(params: RunHeteroTaskParams): Promise<string> {
-  const { agentId, agentType, cwd, operationId, prompt, taskId, topicId } = params;
+  const { agentId, agentType, cwd, operationId, prompt, taskId, topicId, workspaceId } = params;
   const workDir = cwd || process.cwd();
   const lhPath = resolveLhPath();
+  // Propagate workspace scope into the spawned child so its own `lh notify`
+  // invocations (and any grandchildren it shells out) inherit the same scope
+  // via getTrpcClient → resolveWorkspaceId.
+  const childEnv: NodeJS.ProcessEnv = workspaceId
+    ? { ...process.env, LOBEHUB_WORKSPACE_ID: workspaceId }
+    : { ...process.env };
 
   if (agentType === 'openclaw') {
     // openclaw agent --local is one-shot: each invocation processes one message and exits.
@@ -184,7 +204,7 @@ export async function runHeteroTask(params: RunHeteroTaskParams): Promise<string
       {
         cwd: workDir,
         detached: true,
-        env: { ...process.env },
+        env: childEnv,
         stdio: 'ignore',
       },
     );
@@ -203,27 +223,37 @@ export async function runHeteroTask(params: RunHeteroTaskParams): Promise<string
       startedAt: new Date().toISOString(),
       taskId,
       topicId,
+      workspaceId,
     });
     log.info(`OpenClaw task started: taskId=${taskId} pid=${pid} agent=${openclawAgent}`);
 
     // On exit: notify the server so it can close the frontend gateway WS subscription.
-    // - Abnormal exit (signal or non-zero code): write an error message bubble.
+    // - Failed exit (non-zero code, no signal): write an error bubble AND finalize
+    //   the run as failed so the owning task is marked failed.
+    // - Cancelled (killed by signal, e.g. interruptTask): write a notice + a plain
+    //   terminal signal — cancellation is not a failure.
     // - Clean exit (code=0, no signal): openclaw already sent its final message via
-    //   `lh notify`; just send a done signal to publish `agent_runtime_end`.
+    //   `lh notify`; just send a terminal signal to publish `agent_runtime_end`.
     child.on('close', (code, signal) => {
       removeTask(taskId);
       if (code !== 0 || signal !== null) {
-        const text = signal
+        const cancelled = signal !== null;
+        const text = cancelled
           ? `Task cancelled (signal: ${signal})`
           : `Task failed (exit code: ${code})`;
-        // Send error message first, THEN signal done (sequential).
-        // Fire-and-forget both, but ensure done is always sent even if notify fails.
-        void sendAutoNotify(topicId, taskId, text, agentId).finally(() =>
-          sendDoneSignal(topicId, agentId),
+        // Write the notice bubble first, THEN signal terminal (sequential).
+        // Fire-and-forget both, but ensure the terminal signal is always sent.
+        void sendAutoNotify(topicId, taskId, text, agentId, workspaceId).finally(() =>
+          sendTerminalSignal(
+            topicId,
+            agentId,
+            workspaceId,
+            cancelled ? undefined : { message: text, type: 'HeteroProcessError' },
+          ),
         );
       } else {
         // Clean exit — openclaw already sent its final message; just signal done.
-        void sendDoneSignal(topicId, agentId);
+        void sendTerminalSignal(topicId, agentId, workspaceId);
       }
     });
 
@@ -231,37 +261,91 @@ export async function runHeteroTask(params: RunHeteroTaskParams): Promise<string
   }
 
   if (agentType === 'hermes') {
-    const port = getHermesPort();
-
-    if (!(await isHermesGatewayRunning(port))) {
-      log.info(`Hermes gateway not running on port ${port}, starting...`);
-      await startHermesGateway(port);
+    // Kill any existing hermes process for this topicId before spawning a new one.
+    for (const existing of listTasks()) {
+      if (existing.topicId === topicId && existing.agentType === 'hermes') {
+        try {
+          process.kill(existing.pid, 'SIGTERM');
+        } catch {
+          // Already exited — nothing to do.
+        }
+        removeTask(existing.taskId);
+      }
     }
 
-    const res = await fetch(`http://localhost:${port}/message`, {
-      body: JSON.stringify({ content: prompt, operationId }),
-      headers: { 'Content-Type': 'application/json' },
-      method: 'POST',
+    // Resume the previous session for this topic if one exists.
+    const existingSessionId = getHermesSessionId(topicId);
+    const hermesArgs: string[] = ['chat', '--query', prompt, '--quiet', '--accept-hooks'];
+    if (existingSessionId) {
+      hermesArgs.push('--resume', existingSessionId);
+    }
+
+    // Hermes prints "session_id: <id>\n<response>" to stdout in --quiet mode.
+    // We capture stdout, parse both fields on exit, and relay the response via notify.
+    const child = spawn('hermes', hermesArgs, {
+      cwd: workDir,
+      detached: true,
+      env: childEnv,
+      stdio: ['ignore', 'pipe', 'ignore'],
     });
 
-    if (!res.ok) {
-      throw new Error(`Hermes gateway returned ${res.status}: ${await res.text()}`);
-    }
+    const pid = child.pid;
+    if (pid === undefined) throw new Error('Failed to get PID for hermes process');
+    child.unref();
 
-    // pid is 0 for Hermes — the gateway is long-lived and cancellation uses
-    // the HTTP /stop API rather than direct signal delivery.
     saveTask({
       agentId,
       agentType,
       operationId,
-      pid: 0,
+      pid,
       startedAt: new Date().toISOString(),
       taskId,
       topicId,
+      workspaceId,
     });
-    log.info(`Hermes task dispatched: taskId=${taskId} operationId=${operationId}`);
+    log.info(`Hermes task started: taskId=${taskId} pid=${pid}`);
 
-    return JSON.stringify({ operationId, taskId });
+    let stdout = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+
+    child.on('close', (code, signal) => {
+      removeTask(taskId);
+
+      if (code !== 0 || signal !== null) {
+        const cancelled = signal !== null;
+        const text = cancelled
+          ? `Task cancelled (signal: ${signal})`
+          : `Task failed (exit code: ${code})`;
+        void sendAutoNotify(topicId, taskId, text, agentId, workspaceId).finally(() =>
+          sendTerminalSignal(
+            topicId,
+            agentId,
+            workspaceId,
+            cancelled ? undefined : { message: text, type: 'HeteroProcessError' },
+          ),
+        );
+        return;
+      }
+
+      // Parse "session_id: <id>" from the first line, response from the rest.
+      const sessionIdMatch = stdout.match(/^session_id:\s*(\S+)/m);
+      const sessionId = sessionIdMatch?.[1];
+      const response = stdout.replace(/^session_id:[^\n]*\n?/, '').trim();
+
+      if (sessionId) saveHermesSessionId(topicId, sessionId);
+
+      if (response) {
+        void sendAutoNotify(topicId, taskId, response, agentId, workspaceId).finally(() =>
+          sendTerminalSignal(topicId, agentId, workspaceId),
+        );
+      } else {
+        void sendTerminalSignal(topicId, agentId, workspaceId);
+      }
+    });
+
+    return JSON.stringify({ pid, taskId });
   }
 
   throw new Error(`Unsupported agentType: ${agentType as string}`);
@@ -275,25 +359,7 @@ export async function cancelHeteroTask(params: CancelHeteroTaskParams): Promise<
     return JSON.stringify({ message: `No task found with taskId: ${taskId}`, success: false });
   }
 
-  if (entry.agentType === 'hermes') {
-    const port = getHermesPort();
-    try {
-      await fetch(`http://localhost:${port}/stop`, {
-        body: JSON.stringify({ operationId: entry.operationId }),
-        headers: { 'Content-Type': 'application/json' },
-        method: 'POST',
-      });
-    } catch (err) {
-      log.warn(
-        `Failed to send /stop to Hermes gateway: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-    removeTask(taskId);
-    await sendAutoNotify(entry.topicId, taskId, 'Task cancelled', entry.agentId);
-    return JSON.stringify({ taskId });
-  }
-
-  // OpenClaw: kill by PID and let the child's close handler send the notify.
+  // Both openclaw and hermes: kill by PID and let the child's close handler send the notify.
   try {
     process.kill(entry.pid, signal);
   } catch (err) {
@@ -307,6 +373,7 @@ export async function cancelHeteroTask(params: CancelHeteroTaskParams): Promise<
       taskId,
       'Task already completed or cancelled',
       entry.agentId,
+      entry.workspaceId,
     );
   }
 

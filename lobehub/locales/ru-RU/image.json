@@ -7,6 +7,7 @@
   "config.header.title": "Картина",
   "config.height.label": "Высота",
   "config.imageNum.label": "Количество изображений",
+  "config.imageUpload.maxCountReached": "Вы можете добавить до {{count}} эталонных изображений",
   "config.imageUrl.label": "Референсное изображение",
   "config.imageUrls.label": "Референсные изображения",
   "config.model.label": "Модель",
@@ -20,6 +21,7 @@
   "config.resolution.options.1K": "1K",
   "config.resolution.options.2K": "2K",
   "config.resolution.options.4K": "4K",
+  "config.resolution.options.512": "512px",
   "config.seed.label": "Сид",
   "config.seed.random": "Случайный сид",
   "config.size.label": "Размер",
@@ -61,6 +63,9 @@
   "topic.deleteConfirm": "Удалить тему генерации",
   "topic.deleteConfirmDesc": "Вы собираетесь удалить эту тему генерации. Это действие необратимо, пожалуйста, будьте осторожны.",
   "topic.empty": "Нет тем генерации",
+  "topic.privateTitle": "Приватный",
   "topic.title": "Тема картины",
-  "topic.untitled": "Тема по умолчанию"
+  "topic.untitled": "Тема по умолчанию",
+  "topic.visibility.existingLocked": "Видимость зафиксирована для текущей темы. Создайте новую тему, чтобы выбрать другое пространство.",
+  "topic.workspaceTitle": "Рабочая область"
 }

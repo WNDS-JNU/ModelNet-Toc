@@ -6,6 +6,7 @@ import isEqual from 'fast-deep-equal';
 import { type ReactNode } from 'react';
 import { memo, useMemo } from 'react';
 
+import { useFetchAvailableAgents } from '@/hooks/useFetchAvailableAgents';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
 
 import AssistantTurnSettledWatcher from './AssistantTurnSettledWatcher';
@@ -19,6 +20,18 @@ import {
 } from './types';
 
 const log = debug('lobe-render:features:Conversation');
+
+interface ConversationContextPrefetcherProps {
+  context: ConversationContext;
+}
+
+const ConversationContextPrefetcher = memo<ConversationContextPrefetcherProps>(({ context }) => {
+  useFetchAvailableAgents(!context.topicShareId && !!context.agentId);
+
+  return null;
+});
+
+ConversationContextPrefetcher.displayName = 'ConversationContextPrefetcher';
 
 export interface ConversationProviderProps {
   /**
@@ -93,7 +106,10 @@ export const ConversationProvider = memo<ConversationProviderProps>(
     );
 
     return (
-      <Provider createStore={() => createStore({ context, hooks, skipFetch })} key={contextKey}>
+      <Provider
+        createStore={() => createStore({ context, hooks, initialMessages: messages, skipFetch })}
+        key={contextKey}
+      >
         <StoreUpdater
           actionsBar={actionsBar}
           context={context}
@@ -105,6 +121,7 @@ export const ConversationProvider = memo<ConversationProviderProps>(
           onMessagesChange={onMessagesChange}
         />
         <AssistantTurnSettledWatcher />
+        <ConversationContextPrefetcher context={context} />
         {children}
       </Provider>
     );
