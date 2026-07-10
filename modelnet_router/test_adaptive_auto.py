@@ -5,6 +5,7 @@ import hashlib
 import json
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -282,6 +283,32 @@ class BackendAdapterPrepareChatBodyTests(unittest.TestCase):
         )
 
         self.assertNotIn("chat_template_kwargs", prepared)
+
+    def test_strips_optional_tools_from_candidates_without_tool_capability(self) -> None:
+        prepared = backend_adapters.prepare_chat_body(
+            candidate("ministral", backend_type="vllm_chat"),
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tool_choice": "auto",
+                "tools": [{"type": "function", "function": {"name": "search"}}],
+            },
+        )
+
+        self.assertNotIn("tool_choice", prepared)
+        self.assertNotIn("tools", prepared)
+
+    def test_keeps_tools_for_candidates_with_tool_capability(self) -> None:
+        prepared = backend_adapters.prepare_chat_body(
+            candidate("custom", backend_type="openai_compatible", metadata={"capabilities": ["chat", "tools"]}),
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tool_choice": "auto",
+                "tools": [{"type": "function", "function": {"name": "search"}}],
+            },
+        )
+
+        self.assertEqual(prepared["tool_choice"], "auto")
+        self.assertEqual(prepared["tools"], [{"type": "function", "function": {"name": "search"}}])
 
 
 class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
@@ -670,6 +697,30 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ir.collaboration_plan["runner"], "auto.network")
         self.assertEqual(ensemble.runner, "auto")
 
+    def test_openai_chat_to_ir_treats_auto_tool_choice_as_optional(self) -> None:
+        ir = router.openai_chat_to_ir(
+            {
+                "model": router.PUBLIC_AUTO_MODEL_NAME,
+                "messages": [{"role": "user", "content": "hi"}],
+                "tool_choice": "auto",
+                "tools": [{"type": "function", "function": {"name": "search"}}],
+            }
+        )
+
+        self.assertNotIn("tools", ir.required_capabilities)
+
+    def test_openai_chat_to_ir_requires_tools_when_tool_choice_forces_a_tool(self) -> None:
+        ir = router.openai_chat_to_ir(
+            {
+                "model": router.PUBLIC_AUTO_MODEL_NAME,
+                "messages": [{"role": "user", "content": "hi"}],
+                "tool_choice": "required",
+                "tools": [{"type": "function", "function": {"name": "search"}}],
+            }
+        )
+
+        self.assertIn("tools", ir.required_capabilities)
+
     def test_openai_response_payload_contains_responses_api_output_text(self) -> None:
         payload = router.openai_response_payload(
             request_id="test-request",
@@ -988,6 +1039,48 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan["call_budget"]["max_sources"], 2)
         self.assertEqual(planned.runner_config["auto_strategy"], "role_graph")
         self.assertEqual(len(plan["selected_roles"]["experts"]), 2)
+
+    async def test_role_graph_expert_timeout_returns_source_error_without_waiting_for_slow_peer(self) -> None:
+        async def fake_generate(_tenant, source, **_kwargs):
+            if source.source_id == "slow":
+                await asyncio.sleep(0.1)
+            return {
+                "source_id": source.source_id,
+                "backend": {"id": source.source_id},
+                "text": f"answer from {source.source_id}",
+                "metadata": {},
+                "weight": source.weight,
+                "error": None,
+                "latency_ms": 1,
+                "call_ledger": [],
+            }
+
+        router.generate_response_source = fake_generate
+        req = router.EnsembleRequest(
+            request_id="role-graph-timeout",
+            runner="role_graph",
+            aggregator="synthesize",
+            runner_config={
+                "role_graph": {"expert_timeout_seconds": 0.01},
+                "auto_plan": {"confidence_score": 0.5},
+            },
+            sources=[
+                router.EnsembleSource(source_id="fast", model_alias="qwen-7b", prompt="Question?"),
+                router.EnsembleSource(source_id="slow", model_alias="llama-8b", prompt="Question?"),
+            ],
+        )
+
+        started = time.perf_counter()
+        events = await collect_events(router.run_role_graph_ensemble(req, self.tenant))
+        elapsed = time.perf_counter() - started
+
+        self.assertLess(elapsed, 0.08)
+        error_payloads = [data for event, data in events if event == "error"]
+        self.assertTrue(error_payloads)
+        self.assertEqual(
+            error_payloads[0]["source_errors"].get("slow"),
+            "role_graph expert timed out after 0.01s",
+        )
 
     async def test_route_once_outputs_call_ledger(self) -> None:
         async def fake_pick(_tenant, _source, required_capabilities=None):
@@ -3035,6 +3128,11 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text, "final")
         self.assertTrue(removed)
 
+        text, removed = router.strip_response_hidden_reasoning("<think>\nimplicit secret without close")
+
+        self.assertEqual(text, "")
+        self.assertTrue(removed)
+
     def test_response_hidden_reasoning_filter_removes_visible_thinking_preamble(self) -> None:
         text, removed = router.strip_response_hidden_reasoning(
             "Thinking Process:\ninternal notes\n\nFinal Answer:\nvisible"
@@ -3047,6 +3145,101 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(text, "")
         self.assertTrue(removed)
+
+    def test_response_hidden_reasoning_filter_removes_chinese_visible_planning_preamble(self) -> None:
+        text, removed = router.strip_response_hidden_reasoning(
+            "好的，我需要帮用户设计一个系统。\n首先，我会分析需求。\n\n最终答案：\n可见答案"
+        )
+
+        self.assertEqual(text, "可见答案")
+        self.assertTrue(removed)
+
+        text, removed = router.strip_response_hidden_reasoning(
+            "好的，我需要帮用户设计一个系统。\n首先，我会分析需求。"
+        )
+
+        self.assertEqual(text, "")
+        self.assertTrue(removed)
+
+    async def test_route_once_recovers_when_visible_answer_is_only_reasoning_preamble(self) -> None:
+        calls: list[router.EnsembleSource] = []
+
+        async def fake_pick(_tenant, source, required_capabilities=None):
+            self.assertEqual(source.prompt, "Question?")
+            self.assertIsNone(required_capabilities)
+            return candidate("qwen-7b"), 10.0, "ready"
+
+        async def fake_generate_text(_candidate, source, prompt_override=None, **_kwargs):
+            self.assertIsNone(prompt_override)
+            calls.append(source)
+            if len(calls) == 1:
+                return {
+                    "text": "好的，我需要帮用户设计一个系统。\n首先，我会分析需求。",
+                    "metadata": {},
+                }
+            self.assertIn("Original user request", source.prompt)
+            self.assertIn("Question?", source.prompt)
+            return {"text": "可见答案", "metadata": {"usage": {"total_tokens": 5}}}
+
+        router.pick_source_candidate = fake_pick
+        router.generate_text = fake_generate_text
+        events = await collect_events(
+            router.run_route_ensemble(
+                router.EnsembleRequest(
+                    request_id="route-recovery",
+                    runner="route",
+                    aggregator="load_aware",
+                    sources=[router.EnsembleSource(source_id="source-1", model_alias="qwen-7b", prompt="Question?")],
+                ),
+                self.tenant,
+            )
+        )
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([data for event, data in events if event == "token"][0]["delta"], "可见答案")
+        done = done_payload(events)
+        self.assertEqual(done["text"], "可见答案")
+        self.assertTrue(done["metadata"].get("source_hidden_reasoning_removed"))
+        self.assertEqual(done["metadata"].get("route_visible_answer_recovery", {}).get("reason"), "hidden_reasoning_only")
+
+    async def test_route_once_recovers_when_answer_is_unclosed_think_block(self) -> None:
+        calls: list[router.EnsembleSource] = []
+
+        async def fake_pick(_tenant, source, required_capabilities=None):
+            self.assertEqual(source.prompt, "Question?")
+            self.assertIsNone(required_capabilities)
+            return candidate("qwen-7b"), 10.0, "ready"
+
+        async def fake_generate_text(_candidate, source, prompt_override=None, **_kwargs):
+            self.assertIsNone(prompt_override)
+            calls.append(source)
+            if len(calls) == 1:
+                return {
+                    "text": "<think>\n好的，我需要先分析用户的问题。",
+                    "metadata": {},
+                }
+            return {"text": "可以正常输出。", "metadata": {"usage": {"total_tokens": 5}}}
+
+        router.pick_source_candidate = fake_pick
+        router.generate_text = fake_generate_text
+        events = await collect_events(
+            router.run_route_ensemble(
+                router.EnsembleRequest(
+                    request_id="route-unclosed-think-recovery",
+                    runner="route",
+                    aggregator="load_aware",
+                    sources=[router.EnsembleSource(source_id="source-1", model_alias="qwen-7b", prompt="Question?")],
+                ),
+                self.tenant,
+            )
+        )
+
+        self.assertEqual(len(calls), 2)
+        done = done_payload(events)
+        self.assertEqual(done["text"], "可以正常输出。")
+        self.assertEqual([data for event, data in events if event == "token"][0]["delta"], "可以正常输出。")
+        self.assertTrue(done["metadata"].get("source_hidden_reasoning_removed"))
+        self.assertEqual(done["metadata"].get("route_visible_answer_recovery", {}).get("reason"), "hidden_reasoning_only")
 
     async def test_response_source_filters_hidden_reasoning_without_prompt_controls(self) -> None:
         async def fake_pick(_tenant, source, required_capabilities=None):
@@ -3285,6 +3478,114 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("compressed_contributions", auto_plan)
         self.assertIn("call_ledger_summary", auto_plan)
         self.assertIn("internal_total_tokens", auto_plan)
+
+    async def test_role_graph_runtime_fallback_emits_route_once_trace(self) -> None:
+        original_plan_auto_ensemble = router.plan_auto_ensemble
+        original_run_role_graph_ensemble = router.run_role_graph_ensemble
+        original_run_route_ensemble = router.run_route_ensemble
+
+        original_plan = {
+            "planner": "query-conditioned-template-v3",
+            "plan_version": "role_graph_v1",
+            "entry_runner": "auto.network",
+            "strategy": "role_graph",
+            "runner": "auto.role_graph",
+            "aggregator": "synthesize",
+            "source_count": 2,
+            "stages": ["experts.parallel", "synthesizer.final"],
+            "confidence_score": 0.57,
+            "escalation_reason": "explicit_role_graph",
+            "selected_sources": [
+                {
+                    "source_id": "expert-1",
+                    "role": "primary_solver",
+                    "backend": {"id": "model-a", "score": 0.9, "reason": "ready"},
+                },
+                {
+                    "source_id": "expert-2",
+                    "role": "specialist",
+                    "backend": {"id": "model-b", "score": 0.8, "reason": "ready"},
+                },
+            ],
+            "selected_roles": {"experts": [{"source_id": "expert-1"}]},
+        }
+        planned_request = router.EnsembleRequest(
+            request_id="fallback-test",
+            runner="role_graph",
+            aggregator="synthesize",
+            runner_config={"native_runner": "auto.role_graph", "auto_plan": original_plan},
+            sources=[
+                router.EnsembleSource(
+                    source_id="expert-1",
+                    model_alias="model-a",
+                    prompt="Expert wrapped question?",
+                    sampling_params={"auto_role": "primary_solver", "max_tokens": 512},
+                ),
+                router.EnsembleSource(source_id="expert-2", model_alias="model-b", prompt="Question?"),
+            ],
+        )
+
+        async def fake_plan_auto_ensemble(_request, _tenant):
+            return planned_request, original_plan
+
+        async def fake_role_graph_ensemble(_request, _tenant):
+            yield router.sse("error", {"error": "role_graph needs at least two successful expert responses"})
+
+        async def fake_route_ensemble(request, _tenant):
+            self.assertEqual(request.runner, "route")
+            self.assertEqual([source.source_id for source in request.sources], ["input"])
+            self.assertEqual(request.sources[0].prompt, "Original question?")
+            self.assertEqual(request.sources[0].model_alias, "model-a")
+            self.assertNotIn("auto_role", request.sources[0].sampling_params)
+            yield router.sse(
+                "done",
+                {
+                    "text": "fallback answer",
+                    "metadata": {
+                        "source_count": 1,
+                        "internal_call_count": 1,
+                        "internal_total_tokens": 7,
+                    },
+                },
+            )
+
+        tenant = FakeTenant()
+        tenant.trace_allowed = True
+        request = router.EnsembleRequest(
+            request_id="fallback-test",
+            runner="auto",
+            aggregator="auto",
+            diagnostics={"enable_trace_stream": True},
+            sources=[router.EnsembleSource(source_id="input", prompt="Original question?")],
+        )
+
+        router.plan_auto_ensemble = fake_plan_auto_ensemble
+        router.run_role_graph_ensemble = fake_role_graph_ensemble
+        router.run_route_ensemble = fake_route_ensemble
+        try:
+            events = await collect_events(router.run_auto_ensemble(request, tenant))
+        finally:
+            router.plan_auto_ensemble = original_plan_auto_ensemble
+            router.run_role_graph_ensemble = original_run_role_graph_ensemble
+            router.run_route_ensemble = original_run_route_ensemble
+
+        auto_plans = [data for event, data in events if event == "auto_plan"]
+        self.assertEqual(len(auto_plans), 2)
+        fallback_trace_plan = auto_plans[-1]
+        self.assertEqual(fallback_trace_plan["strategy"], "fallback_repair")
+        self.assertEqual(fallback_trace_plan["runner"], "route.once")
+        self.assertEqual(fallback_trace_plan["aggregator"], "load_aware")
+        self.assertEqual(fallback_trace_plan["source_count"], 1)
+        self.assertEqual(fallback_trace_plan["stages"], ["route.once"])
+        self.assertEqual(fallback_trace_plan["escalation_reason"], "runner_error_fallback")
+        self.assertEqual(fallback_trace_plan["fallback_from"], "role_graph")
+        self.assertNotIn("selected_roles", fallback_trace_plan)
+        self.assertNotIn("role", fallback_trace_plan["selected_sources"][0])
+
+        done_plan = done_payload(events)["metadata"]["auto_plan"]
+        self.assertEqual(done_plan["stages"], ["route.once"])
+        self.assertEqual(done_plan["escalation_reason"], "runner_error_fallback")
+        self.assertNotIn("selected_roles", done_plan)
 
 
 class BackendAdapterTests(unittest.TestCase):

@@ -120,9 +120,9 @@ services:
     ports:
       - "${MODELNET_GATEWAY_HOST:-127.0.0.1}:${MODELNET_GATEWAY_PORT:-3092}:8000"
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=20).read()\""]
       interval: 10s
-      timeout: 6s
+      timeout: 22s
       retries: 12
       start_period: 15s
     networks:

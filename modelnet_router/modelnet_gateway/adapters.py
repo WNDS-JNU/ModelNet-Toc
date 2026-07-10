@@ -42,6 +42,14 @@ def redact_openai_metadata_value(key: str, value: Any) -> Any:
     return value
 
 
+def tool_choice_requires_tool_capability(tool_choice: Any) -> bool:
+    if tool_choice is None:
+        return False
+    if isinstance(tool_choice, str):
+        return tool_choice.strip().lower() not in {"", "auto", "none"}
+    return isinstance(tool_choice, dict) and bool(tool_choice)
+
+
 def openai_chat_to_ir(body: dict[str, Any]) -> ModelNetRunRequest:
     modelnet_options = body.get("modelnet") if isinstance(body.get("modelnet"), dict) else {}
     sampling_params = {
@@ -50,7 +58,7 @@ def openai_chat_to_ir(body: dict[str, Any]) -> ModelNetRunRequest:
         if key in body and body[key] is not None
     }
     required_capabilities = list(modelnet_options.get("required_capabilities") or [])
-    if body.get("tools"):
+    if body.get("tools") and tool_choice_requires_tool_capability(body.get("tool_choice")):
         required_capabilities.append("tools")
     if body.get("response_format"):
         required_capabilities.append("structured_output")

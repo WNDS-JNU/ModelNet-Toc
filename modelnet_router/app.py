@@ -114,6 +114,9 @@ AUTO_NETWORK_HIGH_COMPLEXITY_THRESHOLD = int(
     os.environ.get("MODELNET_AUTO_NETWORK_HIGH_COMPLEXITY_THRESHOLD", "4")
 )
 AUTO_ROLE_GRAPH_EXPERT_MAX_TOKENS = int(os.environ.get("MODELNET_AUTO_ROLE_GRAPH_EXPERT_MAX_TOKENS", "160"))
+AUTO_ROLE_GRAPH_EXPERT_TIMEOUT_SECONDS = float(
+    os.environ.get("MODELNET_AUTO_ROLE_GRAPH_EXPERT_TIMEOUT_SECONDS", "45")
+)
 AUTO_ROLE_GRAPH_CRITIC_MAX_TOKENS = int(os.environ.get("MODELNET_AUTO_ROLE_GRAPH_CRITIC_MAX_TOKENS", "384"))
 AUTO_ROLE_GRAPH_SYNTHESIS_MAX_TOKENS = int(os.environ.get("MODELNET_AUTO_ROLE_GRAPH_SYNTHESIS_MAX_TOKENS", "1536"))
 AUTO_NETWORK_HIGH_QUALITY_MAX_SOURCES = int(
@@ -2841,6 +2844,59 @@ async def plan_auto_ensemble(
     return planned_request, plan
 
 
+def role_graph_expert_timeout(role_graph: dict[str, Any]) -> float:
+    raw_timeout = role_graph.get("expert_timeout_seconds")
+    if raw_timeout is None:
+        raw_timeout = AUTO_ROLE_GRAPH_EXPERT_TIMEOUT_SECONDS
+    try:
+        timeout = float(raw_timeout)
+    except (TypeError, ValueError):
+        timeout = AUTO_ROLE_GRAPH_EXPERT_TIMEOUT_SECONDS
+    return max(0.0, timeout)
+
+
+async def generate_role_graph_expert_response(
+    tenant: GatewayTenant,
+    source: EnsembleSource,
+    *,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    prompt_text = source.prompt or text_from_messages(message_list(source))
+    try:
+        if timeout_seconds > 0:
+            return await asyncio.wait_for(
+                generate_response_source(tenant, source),
+                timeout=timeout_seconds,
+            )
+        return await generate_response_source(tenant, source)
+    except asyncio.TimeoutError:
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        error = f"role_graph expert timed out after {timeout_seconds:g}s"
+        return {
+            "source_id": source.source_id,
+            "backend": None,
+            "text": "",
+            "metadata": {"timeout_seconds": timeout_seconds},
+            "weight": source.weight,
+            "error": error,
+            "latency_ms": latency_ms,
+            "call_ledger": [
+                build_call_ledger_entry(
+                    stage="expert.answer",
+                    source_id=source.source_id,
+                    backend=None,
+                    metadata={"timeout_seconds": timeout_seconds},
+                    prompt_text=prompt_text,
+                    completion_text="",
+                    status="timeout",
+                    latency_ms=latency_ms,
+                    error=error,
+                )
+            ],
+        }
+
+
 async def run_role_graph_ensemble(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
     if len(request.sources) > ENSEMBLE_MAX_SOURCES:
         yield sse("error", {"error": f"too many sources; max={ENSEMBLE_MAX_SOURCES}"})
@@ -2853,8 +2909,16 @@ async def run_role_graph_ensemble(request: EnsembleRequest, tenant: GatewayTenan
     role_graph = dict(request.runner_config.get("role_graph") or {})
     original_prompt = request.sources[0].prompt or text_from_messages(message_list(request.sources[0]))
     try:
+        expert_timeout_seconds = role_graph_expert_timeout(role_graph)
         expert_results = await asyncio.gather(
-            *(generate_response_source(tenant, source) for source in request.sources),
+            *(
+                generate_role_graph_expert_response(
+                    tenant,
+                    source,
+                    timeout_seconds=expert_timeout_seconds,
+                )
+                for source in request.sources
+            ),
             return_exceptions=False,
         )
         call_ledger: list[dict[str, Any]] = []
@@ -4073,6 +4137,72 @@ def merge_auto_plan_execution(plan: dict[str, Any], metadata: dict[str, Any]) ->
     return merged
 
 
+def sanitize_fallback_selected_sources(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    selected_sources = plan.get("selected_sources")
+    if not isinstance(selected_sources, list) or not selected_sources:
+        return []
+    first = selected_sources[0]
+    if not isinstance(first, dict):
+        return []
+    sanitized: dict[str, Any] = {}
+    source_id = str(first.get("source_id") or "").strip()
+    if source_id:
+        sanitized["source_id"] = source_id
+    backend = first.get("backend")
+    if isinstance(backend, dict):
+        sanitized["backend"] = dict(backend)
+    for key in ("model", "model_alias", "family", "model_size_b", "adjusted_score"):
+        if key in first:
+            sanitized[key] = first[key]
+    return [sanitized] if sanitized else []
+
+
+def runtime_fallback_route_sources(
+    original_request: EnsembleRequest,
+    planned_request: EnsembleRequest,
+) -> list[EnsembleSource]:
+    if planned_request.runner != "role_graph" or not original_request.sources:
+        return planned_request.sources[:1]
+    source = original_request.sources[0]
+    planned_source = planned_request.sources[0] if planned_request.sources else None
+    selected_alias = (
+        planned_source.model_alias if planned_source and planned_source.model_alias else source.model_alias
+    )
+    if selected_alias == source.model_alias:
+        return [source]
+    return [source.model_copy(update={"model_alias": selected_alias})]
+
+
+def build_runtime_fallback_plan(plan: dict[str, Any], fallback_error: dict[str, Any]) -> dict[str, Any]:
+    preserved_keys = (
+        "planner",
+        "entry_runner",
+        "optimization_target",
+        "features",
+        "alias_pool",
+        "call_budget",
+        "load_state",
+        "confidence_score",
+        "confidence_reasons",
+    )
+    fallback_plan = {key: plan[key] for key in preserved_keys if key in plan}
+    fallback_plan.update(
+        {
+            "plan_version": "fallback_route_once_v1",
+            "strategy": "fallback_repair",
+            "runner": "route.once",
+            "aggregator": "load_aware",
+            "source_count": 1,
+            "stages": ["route.once"],
+            "escalation_reason": "runner_error_fallback",
+            "fallback_from": plan.get("strategy"),
+            "fallback_error": fallback_error,
+            "selected_sources": sanitize_fallback_selected_sources(plan),
+        }
+    )
+    return fallback_plan
+
+
 def append_router_trace(request: EnsembleRequest, plan: dict[str, Any], metadata: dict[str, Any]) -> None:
     try:
         AUTO_ROUTER_TRACE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -4144,23 +4274,14 @@ async def run_auto_ensemble(request: EnsembleRequest, tenant: GatewayTenant) -> 
     async for chunk in stream:
         event, data = parse_sse_chunk(chunk)
         if event == "error" and planned_request.runner in {"response_aggregate", "role_graph", "claim_graph", "rank_fuse", "cascade_verify"}:
-            fallback_plan = {
-                **plan,
-                "strategy": "fallback_repair",
-                "runner": "route.once",
-                "aggregator": "load_aware",
-                "fallback_from": plan.get("strategy"),
-                "fallback_error": data,
-                "source_count": 1,
-                "selected_sources": plan.get("selected_sources", [])[:1],
-            }
+            fallback_plan = build_runtime_fallback_plan(plan, data)
             fallback_config = dict(planned_request.runner_config)
             fallback_config["native_runner"] = "route.once"
             fallback_config["auto_strategy"] = "fallback_repair"
             fallback_config["auto_plan"] = fallback_plan
             fallback_request = planned_request.model_copy(
                 update={
-                    "sources": planned_request.sources[:1],
+                    "sources": runtime_fallback_route_sources(request, planned_request),
                     "runner": "route",
                     "runner_config": fallback_config,
                     "aggregator": "load_aware",
@@ -6503,7 +6624,7 @@ def strip_visible_reasoning_preamble(text: str) -> tuple[str, bool]:
     if not stripped:
         return "", False
     lowered = stripped.lower()
-    reasoning_prefixes = (
+    english_prefixes = (
         "thinking process",
         "reasoning process",
         "here's a thinking process",
@@ -6511,7 +6632,19 @@ def strip_visible_reasoning_preamble(text: str) -> tuple[str, bool]:
         "here's a reasoning process",
         "here is a reasoning process",
     )
-    if not any(lowered.startswith(prefix) for prefix in reasoning_prefixes):
+    chinese_prefixes = (
+        "好的，我需要",
+        "好的，现在我需要",
+        "嗯，我需要",
+        "首先，我需要",
+        "我需要帮用户",
+    )
+    chinese_context_markers = ("用户", "请求", "需求", "任务", "问题", "分析")
+    looks_like_reasoning = any(lowered.startswith(prefix) for prefix in english_prefixes)
+    if not looks_like_reasoning and stripped.startswith(chinese_prefixes):
+        window = stripped[:300]
+        looks_like_reasoning = any(marker in window for marker in chinese_context_markers)
+    if not looks_like_reasoning:
         return stripped, False
     markers = (
         "final answer:",
@@ -6520,6 +6653,12 @@ def strip_visible_reasoning_preamble(text: str) -> tuple[str, bool]:
         "final conclusion:",
         "最终答案：",
         "最终答案:",
+        "最终回答：",
+        "最终回答:",
+        "答案：",
+        "答案:",
+        "回答：",
+        "回答:",
         "结论：",
         "结论:",
     )
@@ -6543,6 +6682,9 @@ def strip_response_hidden_reasoning(text: str) -> tuple[str, bool]:
         without_closed_think = without_closed_think[stray_close_matches[-1].end() :]
     stripped = without_closed_think.strip()
     removed = stripped != raw.strip()
+    open_think_match = re.search(r"<think\b[^>]*>", stripped, flags=re.IGNORECASE)
+    if open_think_match is not None:
+        return stripped[: open_think_match.start()].strip(), True
     stripped, removed_preamble = strip_visible_reasoning_preamble(stripped)
     removed = removed or removed_preamble
     if stripped:
@@ -7246,6 +7388,10 @@ async def generate_response_source(
                 )
             ],
         }
+    except asyncio.CancelledError:
+        if candidate is not None:
+            await release_candidate(candidate, "cancelled")
+        raise
     except Exception as exc:  # noqa: BLE001 - a failed source should not abort every peer
         error = str(exc)
         if candidate is not None:
@@ -8489,6 +8635,49 @@ async def run_token_step_ensemble(request: EnsembleRequest, tenant: GatewayTenan
             await release_candidate(candidate)
 
 
+def route_visible_answer_recovery_source(
+    source: EnsembleSource,
+    request: EnsembleRequest,
+    *,
+    reasoning_text: str,
+) -> EnsembleSource:
+    original_prompt = source.prompt or text_from_messages(message_list(source))
+    prompt = "\n".join(
+        [
+            "The previous route.once attempt produced only hidden reasoning or planning text.",
+            "Original user request:",
+            original_prompt,
+            "",
+            "Internal notes from the previous attempt, for your private use only:",
+            truncate_text_for_fallback_summary(reasoning_text, RESPONSE_SYNTHESIS_SUMMARY_MAX_CHARS),
+            "",
+            ENSEMBLE_THINK_FINAL_ANSWER_INSTRUCTION,
+        ]
+    ).strip()
+    sampling_params = dict(source.sampling_params)
+    default_recovery_tokens = max(generation_max_tokens(source), 512)
+    sampling_params["max_tokens"] = positive_int(
+        request.runner_config.get("route_recovery_max_tokens"),
+        default_recovery_tokens,
+    )
+    extra = {**source.extra, **internal_thinking_extra(request)}
+    chat_template_kwargs = dict(extra.get("chat_template_kwargs") or {})
+    chat_template_kwargs["enable_thinking"] = False
+    extra["chat_template_kwargs"] = chat_template_kwargs
+    return source.model_copy(
+        update={
+            "source_id": f"{source.source_id}__visible_recovery",
+            "prompt": prompt,
+            "messages": [
+                {"role": "system", "content": "Provide only the final user-facing answer."},
+                {"role": "user", "content": prompt},
+            ],
+            "sampling_params": sampling_params,
+            "extra": extra,
+        }
+    )
+
+
 async def run_route_ensemble(request: EnsembleRequest, tenant: GatewayTenant) -> AsyncIterator[bytes]:
     source = request.sources[0]
     candidate: Candidate | None = None
@@ -8498,27 +8687,75 @@ async def run_route_ensemble(request: EnsembleRequest, tenant: GatewayTenant) ->
         candidate, score, reason = await pick_source_candidate(tenant, source)
         backend = candidate_backend_info(candidate, score=score, reason=reason)
         result = await generate_text(candidate, source)
-        text = result["text"]
+        first_latency_ms = int((time.perf_counter() - started) * 1000)
+        raw_text = str(result.get("text") or "")
         metadata = dict(result.get("metadata") or {})
-        latency_ms = int((time.perf_counter() - started) * 1000)
-        metadata.update(
-            call_ledger_metadata(
-                [
-                    build_call_ledger_entry(
-                        stage="route.once",
-                        source_id=source.source_id,
-                        backend=backend,
-                        metadata=metadata,
-                        prompt_text=prompt_text,
-                        completion_text=str(text or ""),
-                        status="ok",
-                        latency_ms=latency_ms,
-                    )
-                ]
+        text, removed_hidden_reasoning = strip_response_hidden_reasoning(raw_text)
+        if removed_hidden_reasoning:
+            metadata["source_hidden_reasoning_removed"] = True
+
+        call_ledger = [
+            build_call_ledger_entry(
+                stage="route.once",
+                source_id=source.source_id,
+                backend=backend,
+                metadata=dict(result.get("metadata") or {}),
+                prompt_text=prompt_text,
+                completion_text=text or raw_text,
+                status="hidden_reasoning" if removed_hidden_reasoning and not text.strip() else "ok",
+                latency_ms=first_latency_ms,
             )
-        )
+        ]
+
+        if not text.strip() and removed_hidden_reasoning and raw_text.strip():
+            recovery_source = route_visible_answer_recovery_source(
+                source,
+                request,
+                reasoning_text=raw_text,
+            )
+            recovery_started = time.perf_counter()
+            recovery_error: str | None = None
+            recovery_metadata: dict[str, Any] = {}
+            recovery_text = ""
+            try:
+                recovery_result = await generate_text(candidate, recovery_source)
+                recovery_metadata = dict(recovery_result.get("metadata") or {})
+                recovery_raw_text = str(recovery_result.get("text") or "")
+                recovery_text, recovery_removed = strip_response_hidden_reasoning(recovery_raw_text)
+                if recovery_removed:
+                    metadata["source_hidden_reasoning_removed"] = True
+                if recovery_text.strip():
+                    text = recovery_text
+            except Exception as exc:  # noqa: BLE001
+                recovery_error = str(exc)
+
+            recovery_latency_ms = int((time.perf_counter() - recovery_started) * 1000)
+            metadata["route_visible_answer_recovery"] = {
+                "method": "visible_answer_recovery",
+                "reason": "hidden_reasoning_only",
+                "source_id": recovery_source.source_id,
+                "recovered": bool(recovery_text.strip()),
+            }
+            call_ledger.append(
+                build_call_ledger_entry(
+                    stage="route.recovery",
+                    source_id=recovery_source.source_id,
+                    backend=backend,
+                    metadata=recovery_metadata,
+                    prompt_text=recovery_source.prompt,
+                    completion_text=recovery_text,
+                    status="ok" if recovery_error is None and recovery_text.strip() else "error",
+                    latency_ms=recovery_latency_ms,
+                    error=recovery_error,
+                )
+            )
+            if recovery_error:
+                metadata["route_visible_answer_recovery"]["error"] = recovery_error[:300]
+
+        metadata.update(call_ledger_metadata(call_ledger))
         yield sse("source_selected", {"source_id": source.source_id, "backend": backend})
-        yield sse("token", {"delta": text, "text": text})
+        if text:
+            yield sse("token", {"delta": text, "text": text})
         yield sse("done", {"text": text, "metadata": {"runner": request.runner, "aggregator": request.aggregator, **metadata}})
     except Exception as exc:  # noqa: BLE001
         if candidate is not None:

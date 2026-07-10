@@ -102,6 +102,39 @@ def candidate_supports_chat_template_kwargs(candidate: Any) -> bool:
     return str(metadata.get("type") or "").strip().lower() == "think"
 
 
+def metadata_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def metadata_capabilities(metadata: dict[str, Any]) -> set[str]:
+    raw = metadata.get("capabilities") or metadata.get("supported_capabilities")
+    if raw is None:
+        return set()
+    if isinstance(raw, str):
+        values = raw.split(",")
+    elif isinstance(raw, list):
+        values = raw
+    else:
+        return set()
+    return {str(item).strip().lower() for item in values if str(item).strip()}
+
+
+def candidate_supports_tools(candidate: Any) -> bool:
+    metadata = getattr(candidate, "metadata", {}) or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    explicit = metadata_capabilities(metadata)
+    if explicit:
+        return bool(explicit & {"tools", "tool_calling", "function_calling"})
+    if metadata_bool(metadata.get("supports_tools")):
+        return True
+    return bool(BACKEND_ADAPTERS.get(getattr(candidate, "backend_type", ""), {}).get("tools"))
+
+
 def chat_content_text(content: Any) -> str:
     if content is None:
         return ""
@@ -180,6 +213,9 @@ def prepare_chat_body(candidate: Any, body: dict[str, Any]) -> dict[str, Any]:
     prepared["model"] = candidate.backend_model
     if "chat_template_kwargs" in prepared and not candidate_supports_chat_template_kwargs(candidate):
         prepared.pop("chat_template_kwargs", None)
+    if not candidate_supports_tools(candidate):
+        prepared.pop("tools", None)
+        prepared.pop("tool_choice", None)
     if candidate_requires_user_assistant_only_messages(candidate):
         prepared["messages"] = normalize_user_assistant_messages(list(prepared.get("messages") or []))
     if candidate.backend_type == "llama_cpp":
