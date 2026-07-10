@@ -288,6 +288,10 @@ export default defineConfig({
     },
     define: {
       'process.env.DESKTOP_EXTERNAL_NAVIGATION_HOSTS': JSON.stringify(externalNavigationHosts),
+      'process.env.MODELNET_DESKTOP': JSON.stringify(process.env.MODELNET_DESKTOP),
+      'process.env.MODELNET_DESKTOP_SERVER_URL': JSON.stringify(
+        process.env.MODELNET_DESKTOP_SERVER_URL,
+      ),
       'process.env.UPDATE_CHANNEL': JSON.stringify(process.env.UPDATE_CHANNEL),
       'process.env.UPDATE_SERVER_URL': JSON.stringify(process.env.UPDATE_SERVER_URL),
     },
