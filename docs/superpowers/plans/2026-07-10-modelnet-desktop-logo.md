@@ -145,7 +145,7 @@ Run:
 hdiutil verify "release/ModelNet Desktop-0.0.0-arm64.dmg"
 hdiutil attach -nobrowse -readonly "release/ModelNet Desktop-0.0.0-arm64.dmg"
 file "/Volumes/ModelNet Desktop 0.0.0-arm64/ModelNet Desktop.app/Contents/MacOS/ModelNet Desktop"
-test -f "/Volumes/ModelNet Desktop 0.0.0-arm64/ModelNet Desktop.app/Contents/Resources/modelnet-icon.icns"
+test -f "/Volumes/ModelNet Desktop 0.0.0-arm64/ModelNet Desktop.app/Contents/Resources/icon.icns"
 ```
 
 Expected: DMG verification succeeds, executable reports arm64, and the dedicated icon exists in the app bundle.
