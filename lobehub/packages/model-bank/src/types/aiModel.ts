@@ -25,6 +25,12 @@ export const AiModelTypeSchema = z.enum([
 
 export type AiModelType = z.infer<typeof AiModelTypeSchema>;
 
+/**
+ * Normalize legacy speech-to-text model type values at read/write boundaries.
+ */
+export const normalizeAiModelType = <T extends string | null | undefined>(type: T): T =>
+  (type === 'stt' ? 'asr' : type) as T;
+
 export interface ModelAbilities {
   /**
    * whether model supports file upload
