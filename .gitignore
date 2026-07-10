@@ -7,6 +7,8 @@ data/
 !lobehub/src/features/Conversation/store/slices/data/*.ts
 !lobehub/src/features/Conversation/store/slices/data/**/*.ts
 lobehub/src/features/Conversation/store/slices/data/*~lobehub_canary
+!lobehub/packages/builtin-tool-web-onboarding/src/agentMarketplace/data/
+!lobehub/packages/builtin-tool-web-onboarding/src/agentMarketplace/data/*.ts
 *.bak*
 *.log
 __pycache__/
