@@ -55,6 +55,30 @@ python3 scripts/modelnet_registry_source.py \
   --triggered-by registry-source-producer
 ```
 
+## Temporary Model Blocklist
+
+The source producer applies a built-in temporary blocklist for chat models that
+were removed after Chinese TOC-like quality probes. Blocked model IDs are
+filtered before `capability-registry.yaml` is written, so they do not reappear
+in Router candidates, LiteLLM generated config, or LobeHub generated model
+lists after discovery is rerun.
+
+Additional IDs can be withheld with either form:
+
+```bash
+MODELNET_DISABLED_MODEL_IDS="model-a,model-b" python3 scripts/modelnet_registry_source.py ...
+python3 scripts/modelnet_registry_source.py --disabled-models model-a,model-b ...
+```
+
+For an intentional full discovery, bypass the built-in temporary list:
+
+```bash
+python3 scripts/modelnet_registry_source.py --no-default-disabled-models ...
+```
+
+The status output includes `disabled_model_count` and `disabled_models` so a
+dry run can show exactly which discovered models were withheld.
+
 ## Publish Bundle
 
 After the source changes, publish a versioned bundle:

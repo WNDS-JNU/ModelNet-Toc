@@ -59,6 +59,7 @@ class DiscoveryResult(TypedDict):
     models: list[dict[str, Any]]
     candidates: list[RouteCandidate]
     skipped: list[SkippedRoute]
+    disabled_models: list[dict[str, str]]
 
 
 @dataclass(frozen=True)
@@ -115,6 +116,19 @@ def default_external_models() -> list[dict[str, Any]]:
 
 DEFAULT_EXTERNAL_MODEL_IDS = {str(model["id"]) for model in DEFAULT_EXTERNAL_MODELS}
 
+# Temporarily withheld from generated registries after Chinese TOC-like quality probes.
+DEFAULT_DISABLED_MODEL_IDS = frozenset(
+    {
+        "inference-cyankiwi-granite-4-0-h-micro-awq-4bit",
+        "inference-cyankiwi-granite-4-1-3b-awq-int4",
+        "inference-cyankiwi-ministral-3-14b-instruct-2512-awq-4bit",
+        "inference-gaunernst-gemma-3-4b-it-int4-awq",
+        "inference-tencent-hunyuan-7b-instruct-awq-int4",
+        "llama-cpp-deploy-jetson-16g-5-meta-llama-31-8b-instruct-q80",
+        "llama-cpp-deploy-jetson-16g-6-hunyuan-7b-instruct-q5km",
+    }
+)
+
 
 class RegistrySourceError(RuntimeError):
     pass
@@ -136,6 +150,21 @@ def parse_namespaces(raw: str | list[str] | tuple[str, ...] | None) -> tuple[str
             continue
         seen.add(namespace)
         out.append(namespace)
+    return tuple(out)
+
+
+def parse_model_ids(raw: str | list[str] | tuple[str, ...] | set[str] | None) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    values = re.split(r"[,\s]+", raw) if isinstance(raw, str) else list(raw)
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        model_id = str(value).strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        out.append(model_id)
     return tuple(out)
 
 
@@ -530,11 +559,35 @@ def build_model_entry(route: RouteCandidate, model_name: str, settings: K8sDisco
     return entry
 
 
+def disabled_model_record(model: dict[str, Any]) -> dict[str, str]:
+    return {
+        "id": str(model.get("id") or "").strip(),
+        "model_name": str(model.get("model_name") or "").strip(),
+        "reason": "disabled_model_id",
+    }
+
+
+def filter_disabled_models(
+    models: list[dict[str, Any]],
+    disabled_model_ids: set[str] | frozenset[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    filtered: list[dict[str, Any]] = []
+    disabled: list[dict[str, str]] = []
+    for model in models:
+        model_id = str(model.get("id") or "").strip()
+        if model_id in disabled_model_ids:
+            disabled.append(disabled_model_record(model))
+            continue
+        filtered.append(model)
+    return filtered, disabled
+
+
 def discover_model_registry(
     settings: K8sDiscoverySettings,
     *,
     client: Any | None = None,
     probe_func: Any | None = None,
+    disabled_model_ids: set[str] | frozenset[str] | None = None,
 ) -> DiscoveryResult:
     generated_at = utc_now()
     candidates: list[RouteCandidate] = []
@@ -542,13 +595,16 @@ def discover_model_registry(
     models: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     seen_ids: set[str] = set()
+    disabled_ids = DEFAULT_DISABLED_MODEL_IDS if disabled_model_ids is None else frozenset(disabled_model_ids)
 
     if not settings.namespaces:
+        models, disabled_models = filter_disabled_models(default_external_models(), disabled_ids)
         return DiscoveryResult(
             generated_at=generated_at,
-            models=default_external_models(),
+            models=models,
             candidates=[],
             skipped=[],
+            disabled_models=disabled_models,
         )
 
     k8s = client or KubernetesDiscoveryClient(settings)
@@ -636,7 +692,14 @@ def discover_model_registry(
         models.append(entry)
 
     models.sort(key=itemgetter("id"))
-    return DiscoveryResult(generated_at=generated_at, models=models, candidates=candidates, skipped=skipped)
+    models, disabled_models = filter_disabled_models(models, disabled_ids)
+    return DiscoveryResult(
+        generated_at=generated_at,
+        models=models,
+        candidates=candidates,
+        skipped=skipped,
+        disabled_models=disabled_models,
+    )
 
 
 def render_registry_yaml(models: list[dict[str, Any]], generated_at: str) -> str:
@@ -754,8 +817,14 @@ def refresh_registry_source(
     preserve_partial: bool = True,
     client: Any | None = None,
     probe_func: Any | None = None,
+    disabled_model_ids: set[str] | frozenset[str] | None = None,
 ) -> dict[str, Any]:
-    discovery = discover_model_registry(settings, client=client, probe_func=probe_func)
+    discovery = discover_model_registry(
+        settings,
+        client=client,
+        probe_func=probe_func,
+        disabled_model_ids=disabled_model_ids,
+    )
     models = discovery["models"]
     preserve_existing, existing_model_ids, missing_existing_aliases = should_preserve_existing_registry(
         output=output,
@@ -796,6 +865,7 @@ def refresh_registry_source(
         "model_count": len(models),
         "candidate_count": len(discovery["candidates"]),
         "skipped_count": len(discovery["skipped"]),
+        "disabled_model_count": len(discovery["disabled_models"]),
         "preserved_existing_registry": preserve_existing,
         "existing_model_count": len(existing_model_ids),
         "missing_existing_aliases": sorted(missing_existing_aliases)[:50],
@@ -809,6 +879,7 @@ def refresh_registry_source(
         ],
         "candidates": discovery["candidates"],
         "skipped": discovery["skipped"],
+        "disabled_models": discovery["disabled_models"],
     }
     write_status_file(status_output, status)
     return status
@@ -875,6 +946,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=int(env_value("MODELNET_K8S_REQUEST_TIMEOUT_MS", "MODEL_NET_K8S_REQUEST_TIMEOUT_MS", default="180000")),
     )
+    parser.add_argument(
+        "--disabled-models",
+        default=env_value("MODELNET_DISABLED_MODEL_IDS", "MODELNET_REGISTRY_DISABLED_MODEL_IDS"),
+        help="Comma or whitespace separated model IDs to withhold in addition to the default blocklist.",
+    )
+    parser.add_argument(
+        "--no-default-disabled-models",
+        action="store_true",
+        help="Do not apply the built-in temporary Chinese-quality blocklist.",
+    )
     parser.add_argument("--triggered-by", default="manual")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-preserve-partial", action="store_true")
@@ -901,6 +982,14 @@ def settings_from_args(args: argparse.Namespace) -> K8sDiscoverySettings:
     )
 
 
+def disabled_model_ids_from_args(args: argparse.Namespace) -> frozenset[str]:
+    disabled_ids: set[str] = set()
+    if not bool(args.no_default_disabled_models):
+        disabled_ids.update(DEFAULT_DISABLED_MODEL_IDS)
+    disabled_ids.update(parse_model_ids(args.disabled_models))
+    return frozenset(disabled_ids)
+
+
 def run_once(args: argparse.Namespace) -> dict[str, Any]:
     status = refresh_registry_source(
         settings=settings_from_args(args),
@@ -909,6 +998,7 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
         triggered_by=args.triggered_by,
         dry_run=bool(args.dry_run),
         preserve_partial=not bool(args.no_preserve_partial),
+        disabled_model_ids=disabled_model_ids_from_args(args),
     )
     print(json.dumps(status, ensure_ascii=False, sort_keys=True))
     return status

@@ -16,7 +16,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ENV = REPO_ROOT / ".env"
 DEFAULT_OUTPUT = REPO_ROOT / ".env.modelnet"
 CHAT_BACKENDS = {"vllm_chat", "llama_cpp", "openai_compatible"}
-AGGREGATE_MODEL_NAME = "modelnet"
 AUTO_MODEL_NAME = "modelnet-auto"
 MODEL_FILE_SUFFIXES = (".gguf", ".safetensors", ".bin")
 
@@ -107,7 +106,6 @@ def model_display_name(model: dict[str, Any]) -> str:
 
 def build_model_list(models: list[dict[str, Any]]) -> list[str]:
     entries = [
-        f"+{AGGREGATE_MODEL_NAME}=ModelNet",
         f"+{AUTO_MODEL_NAME}=Auto Network",
     ]
     for model in models:
@@ -156,7 +154,7 @@ def main() -> int:
 
     content = render_env_content(api_key, entries)
     args.output.write_text(content, encoding="utf-8")
-    print(f"Wrote {args.output} with aggregate/auto models plus {len(entries) - 2} backend models")
+    print(f"Wrote {args.output} with auto model plus {len(entries) - 1} backend models")
     for entry in entries[:6]:
         print("- " + entry.split("=", 1)[1])
     if len(entries) > 6:

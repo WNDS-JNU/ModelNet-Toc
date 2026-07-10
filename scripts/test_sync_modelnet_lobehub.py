@@ -65,11 +65,25 @@ class ModelDisplayNameTest(unittest.TestCase):
 
         self.assertIn("+siliconflow-thudm-glm-z1-9b-0414=GLM-Z1-9B-0414", entries)
 
+    def test_retired_modelnet_entry_is_not_exposed_to_lobehub(self) -> None:
+        entries = sync_modelnet_lobehub.build_model_list(
+            [
+                {
+                    "backend": "vllm_chat",
+                    "id": "inference-qwen3",
+                    "model_name": "Qwen/Qwen3",
+                }
+            ]
+        )
+
+        self.assertNotIn("+modelnet=ModelNet", entries)
+        self.assertIn("+modelnet-auto=Auto Network", entries)
+        self.assertIn("+inference-qwen3=Qwen3", entries)
+
     def test_renders_modelnet_provider_env_keys(self) -> None:
         content = sync_modelnet_lobehub.render_env_content(
             "sk-modelnet",
             [
-                "+modelnet=ModelNet",
                 "+modelnet-auto=Auto Network",
                 "+inference-qwen3=Qwen3",
             ],
@@ -78,9 +92,10 @@ class ModelDisplayNameTest(unittest.TestCase):
         self.assertIn("MODELNET_API_KEY=sk-modelnet\n", content)
         self.assertIn("MODELNET_PROXY_URL=http://modelnet-litellm:8000/v1\n", content)
         self.assertIn(
-            "MODELNET_MODEL_LIST=-all,+modelnet=ModelNet,+modelnet-auto=Auto Network,+inference-qwen3=Qwen3\n",
+            "MODELNET_MODEL_LIST=-all,+modelnet-auto=Auto Network,+inference-qwen3=Qwen3\n",
             content,
         )
+        self.assertNotIn("+modelnet=ModelNet", content)
         self.assertNotIn("OPENAI_API_KEY", content)
         self.assertNotIn("OPENAI_PROXY_URL", content)
         self.assertNotIn("OPENAI_MODEL_LIST", content)
