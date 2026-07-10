@@ -55,9 +55,16 @@ export const SESSION_CHAT_TOPIC_PAGE_URL = (agentId: string, topicId: string, mo
   return urlJoin('/agent', agentId, topicId, 'page');
 };
 
+export const AGENT_CHAT_URL = SESSION_CHAT_URL;
+export const AGENT_CHAT_TOPIC_URL = SESSION_CHAT_TOPIC_URL;
+export const AGENT_CHAT_TOPIC_PAGE_URL = SESSION_CHAT_TOPIC_PAGE_URL;
+
 export const AGENT_PROFILE_URL = (agentId: string) => `/agent/${agentId}/profile`;
 
 export const GROUP_CHAT_URL = (groupId: string) => `/group/${groupId}`;
+
+export const GROUP_CHAT_TOPIC_URL = (groupId: string, topicId: string) =>
+  urlJoin('/group', groupId, topicId);
 
 export const LIBRARY_URL = (id: string) => urlJoin('/resource/library', id);
 
