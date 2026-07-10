@@ -623,14 +623,39 @@ export const generationSlice: StateCreator<
     });
 
     try {
-      // Calculate next branch index by counting children of this user message
-      // We need to count how many assistant messages have this user message as parent
-      const { dbMessages } = get();
-      const childrenCount = dbMessages.filter((m) => m.parentId === messageId).length;
-      // New branch index = current children count (since index is 0-based)
-      const nextBranchIndex = childrenCount;
+      const getChildBranchCount = () =>
+        get().dbMessages.filter((m) => m.parentId === messageId && m.role !== 'tool').length;
+      const getStoredActiveBranchIndex = () => {
+        const sourceMessage = get().dbMessages.find((m) => m.id === messageId) ?? item;
+        const activeBranchIndex = (sourceMessage.metadata as any)?.activeBranchIndex;
+        return typeof activeBranchIndex === 'number' && activeBranchIndex >= 0
+          ? activeBranchIndex
+          : undefined;
+      };
 
-      // Switch to the new branch so the UI shows the incoming response immediately
+      // Calculate next branch index by counting children of this user message.
+      // New branch index = current children count (since index is 0-based).
+      const childrenCount = getChildBranchCount();
+      const nextBranchIndex = childrenCount;
+      const previousBranchIndex = getStoredActiveBranchIndex();
+      const restoreBranchIndex =
+        childrenCount <= 0
+          ? undefined
+          : previousBranchIndex !== undefined && previousBranchIndex < childrenCount
+            ? previousBranchIndex
+            : childrenCount - 1;
+      const restoreStaleOptimisticBranch = async () => {
+        if (restoreBranchIndex === undefined) return;
+
+        const currentChildrenCount = getChildBranchCount();
+        if (currentChildrenCount > nextBranchIndex) return;
+
+        await chatStore.switchMessageBranch(messageId, restoreBranchIndex, {
+          operationId,
+        });
+      };
+
+      // Switch to the new branch so the UI shows the incoming response immediately.
       await chatStore.switchMessageBranch(messageId, nextBranchIndex, {
         operationId,
       });
@@ -696,8 +721,10 @@ export const generationSlice: StateCreator<
         parentOperationId: operationId,
       });
 
+      await restoreStaleOptimisticBranch();
       settleGenerationEntry(chatStore, operationId, () => hooks.onRegenerateComplete?.(messageId));
     } catch (error) {
+      await restoreStaleOptimisticBranch();
       chatStore.failOperation(operationId, {
         message: error instanceof Error ? error.message : String(error),
         type: 'RegenerateError',

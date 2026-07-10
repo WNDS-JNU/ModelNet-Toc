@@ -722,6 +722,68 @@ describe('Generation Actions', () => {
       });
     });
 
+    it('should restore to the last valid branch when regeneration creates no new child branch', async () => {
+      const { useChatStore } = await import('@/store/chat');
+      vi.mocked(useChatStore.getState).mockReturnValue({
+        messagesMap: {},
+        operations: {},
+        operationsByMessage: {},
+
+        cancelOperations: mockCancelOperations,
+        cancelOperation: mockCancelOperation,
+        deleteMessage: mockDeleteMessage,
+        switchMessageBranch: mockSwitchMessageBranch,
+        startOperation: mockStartOperation,
+        completeOperation: mockCompleteOperation,
+        failOperation: mockFailOperation,
+        executeClientAgent: mockExecuteClientAgent,
+        isGatewayModeEnabled: mockIsGatewayModeEnabled,
+      } as any);
+
+      const context: ConversationContext = {
+        agentId: 'session-1',
+        topicId: 'topic-1',
+        threadId: null,
+      };
+
+      const store = createStore({ context });
+
+      act(() => {
+        store.setState({
+          displayMessages: [
+            {
+              id: 'msg-1',
+              role: 'user',
+              content: 'Hello',
+              metadata: { activeBranchIndex: 3 },
+            },
+          ],
+          dbMessages: [
+            {
+              id: 'msg-1',
+              role: 'user',
+              content: 'Hello',
+              metadata: { activeBranchIndex: 3 },
+            },
+            { id: 'child-1', role: 'assistant', content: 'Response 1', parentId: 'msg-1' },
+            { id: 'child-2', role: 'assistant', content: 'Response 2', parentId: 'msg-1' },
+            { id: 'child-3', role: 'assistant', content: '', parentId: 'msg-1' },
+          ],
+        } as any);
+      });
+
+      await act(async () => {
+        await store.getState().regenerateUserMessage('msg-1');
+      });
+
+      expect(mockSwitchMessageBranch).toHaveBeenNthCalledWith(1, 'msg-1', 3, {
+        operationId: 'test-op-id',
+      });
+      expect(mockSwitchMessageBranch).toHaveBeenNthCalledWith(2, 'msg-1', 2, {
+        operationId: 'test-op-id',
+      });
+    });
+
     it('should pass context to executeClientAgent', async () => {
       // Re-setup mock with all required properties
       const { useChatStore } = await import('@/store/chat');
