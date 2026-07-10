@@ -4,7 +4,11 @@ import { URL } from 'node:url';
 import type { DataSyncConfig } from '@lobechat/electron-client-ipc';
 import { safeStorage, session as electronSession } from 'electron';
 
-import { OFFICIAL_CLOUD_SERVER } from '@/const/env';
+import {
+  IS_MODELNET_DESKTOP,
+  MODELNET_DESKTOP_SERVER_URL,
+  OFFICIAL_CLOUD_SERVER,
+} from '@/const/env';
 import GatewayConnectionService from '@/services/gatewayConnectionSrv';
 import { appendVercelCookie } from '@/utils/http-headers';
 import { createLogger } from '@/utils/logger';
@@ -54,6 +58,43 @@ export default class RemoteServerConfigCtr extends ControllerModule {
    * Local mode has been removed; fall back to cloud.
    */
   private normalizeConfig = (config: DataSyncConfig): DataSyncConfig => {
+    // ModelNet Desktop is bound to its deployed server. electron-store survives
+    // app updates, so an older LobeHub cloud preference must not redirect its
+    // authorization flow back to the upstream cloud service.
+    if (IS_MODELNET_DESKTOP) {
+      const normalizeServerUrl = (url: string | undefined) => {
+        if (!url) return url;
+        let normalized = url;
+        while (normalized.endsWith('/')) normalized = normalized.slice(0, -1);
+        return normalized;
+      };
+      const isModelNetConfig =
+        config.storageMode === 'selfHost' &&
+        normalizeServerUrl(config.remoteServerUrl) ===
+          normalizeServerUrl(MODELNET_DESKTOP_SERVER_URL);
+      const nextConfig: DataSyncConfig = {
+        ...config,
+        active: isModelNetConfig ? config.active : false,
+        remoteServerUrl: MODELNET_DESKTOP_SERVER_URL,
+        storageMode: 'selfHost',
+      };
+
+      const requiresConfigUpdate =
+        config.storageMode !== nextConfig.storageMode ||
+        config.remoteServerUrl !== nextConfig.remoteServerUrl ||
+        config.active !== nextConfig.active;
+      if (requiresConfigUpdate) {
+        this.app.storeManager.set('dataSyncConfig', nextConfig);
+      }
+      if (!isModelNetConfig) {
+        void this.clearTokens().catch((error) => {
+          logger.error('Failed to clear tokens while migrating to ModelNet Desktop:', error);
+        });
+      }
+
+      return nextConfig;
+    }
+
     // Use type assertion to handle legacy 'local' value from stored data
     if ((config.storageMode as string) !== 'local') return config;
 
@@ -146,7 +187,16 @@ export default class RemoteServerConfigCtr extends ControllerModule {
     const { storeManager } = this.app;
 
     // Clear instance configuration
-    storeManager.set('dataSyncConfig', { active: false, storageMode: 'cloud' });
+    storeManager.set(
+      'dataSyncConfig',
+      IS_MODELNET_DESKTOP
+        ? {
+            active: false,
+            remoteServerUrl: MODELNET_DESKTOP_SERVER_URL,
+            storageMode: 'selfHost',
+          }
+        : { active: false, storageMode: 'cloud' },
+    );
 
     // Clear tokens (if any)
     await this.clearTokens();

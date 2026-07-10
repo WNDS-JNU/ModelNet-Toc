@@ -5,7 +5,11 @@ import type { App } from '@/core/App';
 
 import RemoteServerConfigCtr from '../RemoteServerConfigCtr';
 
-const { ipcMainHandleMock, mockFetch } = vi.hoisted(() => ({
+const { desktopPreset, ipcMainHandleMock, mockFetch } = vi.hoisted(() => ({
+  desktopPreset: {
+    isModelNetDesktop: false,
+    modelNetServerUrl: 'http://123.56.135.150',
+  },
   ipcMainHandleMock: vi.fn(),
   mockFetch: vi.fn(),
 }));
@@ -41,6 +45,12 @@ vi.mock('electron', () => ({
 
 // Mock @/const/env
 vi.mock('@/const/env', () => ({
+  get IS_MODELNET_DESKTOP() {
+    return desktopPreset.isModelNetDesktop;
+  },
+  get MODELNET_DESKTOP_SERVER_URL() {
+    return desktopPreset.modelNetServerUrl;
+  },
   OFFICIAL_CLOUD_SERVER: 'https://cloud.lobehub.com',
 }));
 
@@ -71,6 +81,7 @@ describe('RemoteServerConfigCtr', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    desktopPreset.isModelNetDesktop = false;
     ipcMainHandleMock.mockClear();
     mockStoreManager.get.mockReturnValue({
       active: false,
@@ -92,6 +103,51 @@ describe('RemoteServerConfigCtr', () => {
 
       expect(result).toEqual(config);
       expect(mockStoreManager.get).toHaveBeenCalledWith('dataSyncConfig');
+    });
+
+    it('migrates a persisted LobeHub cloud configuration to the ModelNet deployment', async () => {
+      desktopPreset.isModelNetDesktop = true;
+      let encryptedTokens: Record<string, string> | undefined = {
+        accessToken: 'legacy-lobehub-access-token',
+        refreshToken: 'legacy-lobehub-refresh-token',
+      };
+      mockStoreManager.delete.mockImplementationOnce((key: string) => {
+        if (key === 'encryptedTokens') encryptedTokens = undefined;
+      });
+      mockStoreManager.get.mockImplementation((key: string) => {
+        if (key === 'encryptedTokens') return encryptedTokens;
+        return { active: true, storageMode: 'cloud' };
+      });
+
+      const result = await controller.getRemoteServerConfig();
+
+      expect(result).toEqual({
+        active: false,
+        remoteServerUrl: 'http://123.56.135.150',
+        storageMode: 'selfHost',
+      });
+      expect(mockStoreManager.set).toHaveBeenCalledWith('dataSyncConfig', result);
+      expect(mockStoreManager.delete).toHaveBeenCalledWith('encryptedTokens');
+      expect(await controller.getAccessToken()).toBeNull();
+    });
+
+    it('retains an active ModelNet session when the saved URL only has a trailing slash', async () => {
+      desktopPreset.isModelNetDesktop = true;
+      mockStoreManager.get.mockReturnValue({
+        active: true,
+        remoteServerUrl: 'http://123.56.135.150/',
+        storageMode: 'selfHost',
+      });
+
+      const result = await controller.getRemoteServerConfig();
+
+      expect(result).toEqual({
+        active: true,
+        remoteServerUrl: 'http://123.56.135.150',
+        storageMode: 'selfHost',
+      });
+      expect(mockStoreManager.set).toHaveBeenCalledWith('dataSyncConfig', result);
+      expect(mockStoreManager.delete).not.toHaveBeenCalledWith('encryptedTokens');
     });
   });
 
@@ -129,6 +185,18 @@ describe('RemoteServerConfigCtr', () => {
         storageMode: 'cloud',
       });
       expect(mockStoreManager.delete).toHaveBeenCalledWith('encryptedTokens');
+    });
+
+    it('keeps the ModelNet deployment selected after sign-out', async () => {
+      desktopPreset.isModelNetDesktop = true;
+
+      await controller.clearRemoteServerConfig();
+
+      expect(mockStoreManager.set).toHaveBeenCalledWith('dataSyncConfig', {
+        active: false,
+        remoteServerUrl: 'http://123.56.135.150',
+        storageMode: 'selfHost',
+      });
     });
   });
 
@@ -760,6 +828,18 @@ describe('RemoteServerConfigCtr', () => {
       const result = await controller.getRemoteServerUrl(customConfig);
 
       expect(result).toBe('https://custom-server.com');
+    });
+
+    it('uses the ModelNet deployment URL when a previous LobeHub cloud setting is persisted', async () => {
+      desktopPreset.isModelNetDesktop = true;
+      mockStoreManager.get.mockReturnValue({
+        active: false,
+        storageMode: 'cloud',
+      });
+
+      const result = await controller.getRemoteServerUrl();
+
+      expect(result).toBe('http://123.56.135.150');
     });
   });
 
