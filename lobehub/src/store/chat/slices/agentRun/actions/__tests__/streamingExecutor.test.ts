@@ -142,7 +142,10 @@ beforeEach(() => {
     useAgentStore.setState({ availableAgents: [] });
     // executeClientAgent waits for the aiProvider runtime-state before building
     // tools; mark it ready so that guard is a no-op in these tests.
-    useAiInfraStore.setState({ isInitAiProviderRuntimeState: true });
+    useAiInfraStore.setState({
+      ensureAiProviderRuntimeStateReady: vi.fn().mockResolvedValue(undefined),
+      isInitAiProviderRuntimeState: true,
+    });
     useChatStore.setState({
       refreshMessages: vi.fn(),
       executeClientAgent: vi.fn(),

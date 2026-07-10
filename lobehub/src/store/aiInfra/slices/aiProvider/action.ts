@@ -300,6 +300,17 @@ export class AiProviderActionImpl {
     await this.#get().refreshAiProviderRuntimeState();
   };
 
+  ensureAiProviderRuntimeStateReady = async (timeoutMs = 3000): Promise<void> => {
+    if (this.#get().isInitAiProviderRuntimeState) return;
+
+    const refreshPromise = this.#get().refreshAiProviderRuntimeState().catch(() => undefined);
+    const timeoutPromise = new Promise<void>((resolve) => {
+      setTimeout(resolve, timeoutMs);
+    });
+
+    await Promise.race([refreshPromise, timeoutPromise]);
+  };
+
   refreshAiProviderRuntimeState = async (): Promise<void> => {
     await Promise.all([
       mutate([AiProviderSwrKey.fetchAiProviderRuntimeState, true]),

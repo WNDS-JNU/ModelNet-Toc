@@ -341,6 +341,9 @@ export const createAgentExecutors = (context: {
 
       const llmPayload = (instruction as AgentInstructionCallLlm)
         .payload as GeneralAgentCallLLMInstructionPayload;
+      const { agentConfig: agentConfigData } = context.agentConfig;
+      const resolvedModel = llmPayload.model ?? agentConfigData.model;
+      const resolvedProvider = llmPayload.provider ?? agentConfigData.provider;
 
       log(
         `${stagePrefix} Starting session. Input: state.messages=%d, llmPayload.messages=%d, messageKey=%s`,
@@ -391,9 +394,9 @@ export const createAgentExecutors = (context: {
             content: LOADING_FLAT,
             groupId: opContext.groupId,
             metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
-            model: llmPayload.model,
+            model: resolvedModel,
             parentId: llmPayload.parentMessageId,
-            provider: llmPayload.provider,
+            provider: resolvedProvider,
             role: 'assistant',
             agentId: effectiveAgentId!,
             threadId: opContext.threadId,
@@ -415,7 +418,7 @@ export const createAgentExecutors = (context: {
 
       log(
         `${stagePrefix} calling model-runtime chat (model: %s, messages: %d, tools: %d)`,
-        llmPayload.model,
+        resolvedModel,
         llmPayload.messages.length,
         llmPayload.tools?.length ?? 0,
       );
@@ -441,8 +444,6 @@ export const createAgentExecutors = (context: {
       const traceId = operation.metadata?.traceId;
 
       const fetchContext = { ...operation.context, agentId };
-
-      const { agentConfig: agentConfigData } = context.agentConfig;
 
       let finalUsage: ModelUsage | undefined;
       let finalToolCalls: MessageToolCall[] | undefined;
@@ -600,8 +601,8 @@ export const createAgentExecutors = (context: {
           agentId: agentId || undefined,
           groupId,
           messages,
-          model: llmPayload.model,
-          provider: llmPayload.provider,
+          model: resolvedModel,
+          provider: resolvedProvider,
           resolvedAgentConfig,
           topicId: topicId ?? undefined,
           ...agentConfigData.params,
@@ -759,9 +760,9 @@ export const createAgentExecutors = (context: {
         // Use UsageCounter to accumulate LLM usage and cost
         const { usage, cost } = UsageCounter.accumulateLLM({
           cost: state.cost,
-          model: llmPayload.model,
+          model: resolvedModel,
           modelUsage: currentStepUsage,
-          provider: llmPayload.provider,
+          provider: resolvedProvider,
           usage: state.usage,
         });
 

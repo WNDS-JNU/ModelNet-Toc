@@ -170,6 +170,71 @@ describe('call_llm executor', () => {
       );
     });
 
+    it('should fall back to resolved agent routing when the LLM payload omits model and provider', async () => {
+      const mockStore = createMockStore();
+      const context = createTestContext({ agentId: 'agt_modelnet', topicId: 'test-topic' });
+      const userMsg = createUserMessage({ content: 'Hello' });
+      const instruction = createCallLLMInstruction({
+        messages: [userMsg],
+        model: undefined as any,
+        provider: undefined as any,
+      });
+      const state = createInitialState({ operationId: 'agt_modelnet' });
+
+      mockStreamResponse({ content: 'AI response' });
+      mockStore.dbMessagesMap[context.messageKey] = [];
+      mockStore.operations[context.operationId] = {
+        abortController: new AbortController(),
+        childOperationIds: [],
+        context: {
+          agentId: context.agentId,
+          messageId: context.parentId,
+          topicId: context.topicId,
+        },
+        id: context.operationId,
+        metadata: { startTime: Date.now() },
+        status: 'running',
+        type: 'execAgentRuntime',
+      } as any;
+
+      const executors = createAgentExecutors({
+        agentConfig: {
+          agentConfig: {
+            chatConfig: {},
+            model: 'modelnet-auto',
+            params: {},
+            provider: 'modelnet',
+            systemRole: '',
+          },
+          chatConfig: {},
+          isBuiltinAgent: false,
+          plugins: [],
+        } as any,
+        get: () => mockStore,
+        messageKey: context.messageKey,
+        operationId: context.operationId,
+        parentId: context.parentId,
+      });
+
+      await executors.call_llm!(instruction, state);
+
+      expect(mockStore.optimisticCreateMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'modelnet-auto',
+          provider: 'modelnet',
+        }),
+        expect.anything(),
+      );
+      expect(chatService.createAssistantMessageStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          params: expect.objectContaining({
+            model: 'modelnet-auto',
+            provider: 'modelnet',
+          }),
+        }),
+      );
+    });
+
     it('should forward request metadata to chatService', async () => {
       const mockStore = createMockStore();
       const context = createTestContext();

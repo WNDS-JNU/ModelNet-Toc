@@ -1,6 +1,8 @@
 import { isDesktop } from '@lobechat/const';
+import { useMemo } from 'react';
 
 import { useAgentId } from '@/features/ChatInput/hooks/useAgentId';
+import { withModelNetParallelModel } from '@/features/ModelNetParallel';
 import { resolveExecutionTarget } from '@/helpers/executionTarget';
 import { useEnabledChatModels } from '@/hooks/useEnabledChatModels';
 import { useAgentStore } from '@/store/agent';
@@ -66,10 +68,15 @@ export const useChatInputNotice = (): ChatInputNotice | undefined => {
   ]);
 
   const enabledChatModelList = useEnabledChatModels();
+  const aiProviderRuntimeConfig = useAiInfraStore((s) => s.aiProviderRuntimeConfig);
   const isModelConfigReady = useAiInfraStore((s) =>
     aiProviderSelectors.isInitAiProviderRuntimeState(s),
   );
-  const currentChatModel = findEnabledChatModel(enabledChatModelList, model, provider);
+  const chatSelectorModelList = useMemo(
+    () => withModelNetParallelModel(enabledChatModelList, aiProviderRuntimeConfig),
+    [aiProviderRuntimeConfig, enabledChatModelList],
+  );
+  const currentChatModel = findEnabledChatModel(chatSelectorModelList, model, provider);
 
   // The sandbox suggestion only makes sense on desktop, where `local` is the
   // recommended alternative. `clientExecutionAvailable: isDesktop` matches how

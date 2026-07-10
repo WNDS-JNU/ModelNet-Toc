@@ -1,4 +1,4 @@
-import { DEFAULT_PROVIDER } from '@lobechat/business-const';
+import { DEFAULT_MINI_PROVIDER, DEFAULT_PROVIDER } from '@lobechat/business-const';
 import { DEFAULT_SETTINGS } from '@lobechat/config';
 import { DEFAULT_MINI_MODEL, DEFAULT_MODEL } from '@lobechat/const';
 import { LOBE_DEFAULT_MODEL_LIST } from 'model-bank';
@@ -65,6 +65,13 @@ describe('AiModelService', () => {
 });
 
 describe('Default model configuration', () => {
+  it('uses the ModelNet Qwen3.5-35B model for primary and mini defaults', () => {
+    expect(DEFAULT_PROVIDER).toBe('modelnet');
+    expect(DEFAULT_MODEL).toBe('inference-qwen-qwen3-5-35b-a3b-gptq-int4');
+    expect(DEFAULT_MINI_PROVIDER).toBe('modelnet');
+    expect(DEFAULT_MINI_MODEL).toBe('inference-qwen-qwen3-5-35b-a3b-gptq-int4');
+  });
+
   it('DEFAULT_PROVIDER should be enabled in DEFAULT_MODEL_PROVIDER_LIST', () => {
     const match = DEFAULT_MODEL_PROVIDER_LIST.find((provider) => provider.id === DEFAULT_PROVIDER);
     expect(
@@ -98,11 +105,16 @@ describe('Default model configuration', () => {
   });
 
   it('DEFAULT_MINI_MODEL should be enabled in LOBE_DEFAULT_MODEL_LIST', () => {
-    const match = LOBE_DEFAULT_MODEL_LIST.find((m) => m.id === DEFAULT_MINI_MODEL);
+    const match = LOBE_DEFAULT_MODEL_LIST.find(
+      (m) => m.id === DEFAULT_MINI_MODEL && m.providerId === DEFAULT_MINI_PROVIDER,
+    );
     expect(
       match,
-      `DEFAULT_MINI_MODEL "${DEFAULT_MINI_MODEL}" not found in LOBE_DEFAULT_MODEL_LIST`,
+      `DEFAULT_MINI_MODEL "${DEFAULT_MINI_PROVIDER}/${DEFAULT_MINI_MODEL}" not found in LOBE_DEFAULT_MODEL_LIST`,
     ).toBeDefined();
-    expect(match!.enabled, `DEFAULT_MINI_MODEL "${DEFAULT_MINI_MODEL}" is not enabled`).toBe(true);
+    expect(
+      match!.enabled,
+      `DEFAULT_MINI_MODEL "${DEFAULT_MINI_PROVIDER}/${DEFAULT_MINI_MODEL}" is not enabled`,
+    ).toBe(true);
   });
 });

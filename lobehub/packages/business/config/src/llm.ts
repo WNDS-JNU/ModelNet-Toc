@@ -32,6 +32,9 @@ export const DEFAULT_LLM_CONFIG = genUserLLMConfig({
   google: {
     enabled: true,
   },
+  modelnet: {
+    enabled: true,
+  },
   lmstudio: {
     fetchOnClient: true,
   },

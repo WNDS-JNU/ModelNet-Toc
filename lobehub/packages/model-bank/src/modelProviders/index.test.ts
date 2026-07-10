@@ -19,7 +19,11 @@ describe('DEFAULT_MODEL_PROVIDER_LIST', () => {
       sdkType: 'openai',
       showModelFetcher: true,
     });
-    expect(modelnet?.chatModels.map((model) => model.id)).toEqual(['modelnet', 'modelnet-auto']);
+    expect(modelnet?.chatModels.map((model) => model.id)).toEqual([
+      'modelnet',
+      'modelnet-auto',
+      'inference-qwen-qwen3-5-35b-a3b-gptq-int4',
+    ]);
   });
 });
 

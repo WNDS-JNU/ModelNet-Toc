@@ -51,57 +51,57 @@ exports[`settingsSelectors > currentSettings > should merge DEFAULT_SETTINGS and
 exports[`settingsSelectors > currentSystemAgent > should merge DEFAULT_SYSTEM_AGENT_CONFIG and s.settings.systemAgent correctly 1`] = `
 {
   "agentMeta": {
-    "model": "deepseek-v4-pro",
-    "provider": "deepseek",
+    "model": "inference-qwen-qwen3-5-35b-a3b-gptq-int4",
+    "provider": "modelnet",
   },
   "enableAutoReply": true,
   "followUpAction": {
     "enabled": false,
-    "model": "gpt-5.4-mini",
-    "provider": "openai",
+    "model": "inference-qwen-qwen3-5-35b-a3b-gptq-int4",
+    "provider": "modelnet",
   },
   "generationTopic": {
-    "model": "gpt-5.4-mini",
-    "provider": "openai",
+    "model": "inference-qwen-qwen3-5-35b-a3b-gptq-int4",
+    "provider": "modelnet",
   },
   "historyCompress": {
-    "model": "deepseek-v4-pro",
-    "provider": "deepseek",
+    "model": "inference-qwen-qwen3-5-35b-a3b-gptq-int4",
+    "provider": "modelnet",
   },
   "inputCompletion": {
     "enabled": false,
-    "model": "gpt-5.4-mini",
-    "provider": "openai",
+    "model": "inference-qwen-qwen3-5-35b-a3b-gptq-int4",
+    "provider": "modelnet",
   },
   "memoryAnalysisAgentConfig": {
-    "model": "gpt-5.4-mini",
-    "provider": "openai",
+    "model": "inference-qwen-qwen3-5-35b-a3b-gptq-int4",
+    "provider": "modelnet",
   },
   "promptRewrite": {
     "enabled": true,
-    "model": "gpt-5.4-mini",
-    "provider": "openai",
+    "model": "inference-qwen-qwen3-5-35b-a3b-gptq-int4",
+    "provider": "modelnet",
   },
   "replyMessage": "Custom auto reply",
   "thread": {
-    "model": "deepseek-v4-pro",
-    "provider": "deepseek",
+    "model": "inference-qwen-qwen3-5-35b-a3b-gptq-int4",
+    "provider": "modelnet",
   },
   "topic": {
-    "model": "gpt-5.4-mini",
-    "provider": "openai",
+    "model": "inference-qwen-qwen3-5-35b-a3b-gptq-int4",
+    "provider": "modelnet",
   },
   "translation": {
-    "model": "gpt-5.4-mini",
-    "provider": "openai",
+    "model": "inference-qwen-qwen3-5-35b-a3b-gptq-int4",
+    "provider": "modelnet",
   },
   "userMemoryEmbedding": {
     "model": "text-embedding-3-small",
     "provider": "openai",
   },
   "userMemoryPersonaWriter": {
-    "model": "gpt-5.4-mini",
-    "provider": "openai",
+    "model": "inference-qwen-qwen3-5-35b-a3b-gptq-int4",
+    "provider": "modelnet",
   },
 }
 `;
@@ -130,8 +130,8 @@ exports[`settingsSelectors > defaultAgent > should merge DEFAULT_AGENT and s.set
       "historyCount": 20,
       "reasoningBudgetToken": 1024,
       "searchFCModel": {
-        "model": "deepseek-v4-pro",
-        "provider": "deepseek",
+        "model": "inference-qwen-qwen3-5-35b-a3b-gptq-int4",
+        "provider": "modelnet",
       },
       "searchMode": "auto",
       "selfIteration": {
@@ -147,7 +147,7 @@ exports[`settingsSelectors > defaultAgent > should merge DEFAULT_AGENT and s.set
       "top_p": 1,
     },
     "plugins": [],
-    "provider": "deepseek",
+    "provider": "modelnet",
     "systemRole": "user",
     "tts": {
       "showAllLocaleVoice": false,
@@ -177,8 +177,8 @@ exports[`settingsSelectors > defaultAgentConfig > should merge DEFAULT_AGENT_CON
     "historyCount": 20,
     "reasoningBudgetToken": 1024,
     "searchFCModel": {
-      "model": "deepseek-v4-pro",
-      "provider": "deepseek",
+      "model": "inference-qwen-qwen3-5-35b-a3b-gptq-int4",
+      "provider": "modelnet",
     },
     "searchMode": "auto",
     "selfIteration": {
@@ -194,7 +194,7 @@ exports[`settingsSelectors > defaultAgentConfig > should merge DEFAULT_AGENT_CON
     "top_p": 1,
   },
   "plugins": [],
-  "provider": "deepseek",
+  "provider": "modelnet",
   "systemRole": "custom role",
   "tts": {
     "showAllLocaleVoice": false,

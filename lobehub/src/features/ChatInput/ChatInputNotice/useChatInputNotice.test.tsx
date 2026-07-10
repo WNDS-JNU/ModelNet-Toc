@@ -1,6 +1,11 @@
 import { renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  MODELNET_PARALLEL_MODEL_ID,
+  MODELNET_SERIAL_MODEL_ID,
+} from '@/features/ModelNetParallel';
+
 import { useChatInputNotice } from './useChatInputNotice';
 
 interface TestModel {
@@ -124,6 +129,29 @@ describe('useChatInputNotice', () => {
 
     expect(result.current).toBeUndefined();
   });
+
+  it.each([MODELNET_PARALLEL_MODEL_ID, MODELNET_SERIAL_MODEL_ID])(
+    'does not mark the ModelNet pseudo model %s as unavailable',
+    (modelId) => {
+      testState.agent.model = modelId;
+      testState.agent.provider = 'modelnet';
+      testState.aiInfra.isInitAiProviderRuntimeState = true;
+      testState.aiInfra.enabledChatModelList = [
+        {
+          children: [
+            { id: 'modelnet-auto' },
+            { id: 'inference-qwen3' },
+            { id: 'inference-deepseek' },
+          ],
+          id: 'modelnet',
+        },
+      ];
+
+      const { result } = renderHook(() => useChatInputNotice());
+
+      expect(result.current).toBeUndefined();
+    },
+  );
 
   it('does not return a model notice for heterogeneous agents', () => {
     testState.agent.agencyConfig = { heterogeneousProvider: { type: 'codex' } };

@@ -19,6 +19,15 @@ const modelNetChatModels: AIChatModelCard[] = [
     id: 'modelnet-auto',
     type: 'chat',
   },
+  {
+    abilities: {
+      functionCall: true,
+    },
+    displayName: 'Qwen3.5-35B-A3B-GPTQ-Int4',
+    enabled: true,
+    id: 'inference-qwen-qwen3-5-35b-a3b-gptq-int4',
+    type: 'chat',
+  },
 ];
 
 export const allModels = [...modelNetChatModels];

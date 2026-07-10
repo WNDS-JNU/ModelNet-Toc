@@ -12,7 +12,6 @@ import type { EnabledProviderWithModels } from '@/types/aiProvider';
 
 import { DEFAULT_WIDTH, ENABLE_RESIZING, MAX_WIDTH, MIN_WIDTH } from '../const';
 import { usePanelSize } from '../hooks/usePanelSize';
-import { usePanelState } from '../hooks/usePanelState';
 import type { ModelChangeParams } from '../types';
 import { List } from './List';
 import type { PricingMode } from './ModelDetailPanel';
@@ -45,22 +44,20 @@ export const PanelContent: FC<PanelContentProps> = ({
   );
   const [searchKeyword, setSearchKeyword] = useState('');
   const isDevMode = useUserStore((s) => userGeneralSettingsSelectors.config(s).isDevMode);
-  const { groupMode, handleGroupModeChange } = usePanelState();
   const { panelHeight, panelWidth, handlePanelWidthChange } = usePanelSize(enabledList.length);
 
   const content = (
     <>
       <Toolbar
-        groupMode={groupMode}
+        groupMode={'byProvider'}
         searchKeyword={searchKeyword}
-        showGroupModeSwitch={isDevMode}
-        onGroupModeChange={handleGroupModeChange}
+        showGroupModeSwitch={false}
         onSearchKeywordChange={setSearchKeyword}
       />
       <List
         ModelItemComponent={ModelItemComponent}
         enabledList={enabledList}
-        groupMode={isDevMode ? groupMode : 'byModel'}
+        groupMode={'byProvider'}
         model={modelProp}
         pricingMode={pricingMode}
         provider={providerProp}
