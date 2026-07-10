@@ -3,6 +3,10 @@
 !.env.example
 !.env.modelnet.example
 data/
+!lobehub/src/features/Conversation/store/slices/data/
+!lobehub/src/features/Conversation/store/slices/data/*.ts
+!lobehub/src/features/Conversation/store/slices/data/**/*.ts
+lobehub/src/features/Conversation/store/slices/data/*~lobehub_canary
 *.bak*
 *.log
 __pycache__/
