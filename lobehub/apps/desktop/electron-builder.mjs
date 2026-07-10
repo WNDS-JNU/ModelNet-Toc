@@ -101,6 +101,7 @@ const protocolScheme = getProtocolScheme();
 
 // Determine icon file based on version type
 const getIconFileName = () => {
+  if (isModelNetDesktop) return 'ModelNet';
   if (isStable || isCanary) return 'Icon';
   // nightly uses pre-release icon
   return 'Icon-nightly';
@@ -289,6 +290,7 @@ const config = {
     target: ['AppImage', 'snap', 'deb', 'rpm', 'tar.gz'],
   },
   mac: {
+    ...(isModelNetDesktop ? { icon: 'build/modelnet-icon.icns' } : {}),
     compression: 'maximum',
     entitlementsInherit: 'build/entitlements.mac.plist',
     extendInfo: {
