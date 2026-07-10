@@ -1,8 +1,7 @@
 'use client';
 
 import { type FormItemProps, type FormModalProps } from '@lobehub/ui';
-import { FormModal, Skeleton } from '@lobehub/ui';
-import { Tabs } from '@lobehub/ui/base-ui';
+import { FormModal, Skeleton, Tabs } from '@lobehub/ui';
 import { createStaticStyles } from 'antd-style';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';

@@ -1,5 +1,5 @@
-import { Flexbox, Tag, Text } from '@lobehub/ui';
-import { Tabs, type TabsItem } from '@lobehub/ui/base-ui';
+import { Flexbox, Tag, Text, Tabs } from '@lobehub/ui';
+import { type TabsItem } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 

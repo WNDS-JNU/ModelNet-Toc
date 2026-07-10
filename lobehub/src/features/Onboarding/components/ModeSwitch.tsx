@@ -2,8 +2,7 @@
 
 import { AGENT_ONBOARDING_ENABLED } from '@lobechat/business-const';
 import { isDesktop } from '@lobechat/const';
-import { ActionIcon, Flexbox, Text } from '@lobehub/ui';
-import { Tabs } from '@lobehub/ui/base-ui';
+import { ActionIcon, Flexbox, Text, Tabs } from '@lobehub/ui';
 import { createStaticStyles, cx } from 'antd-style';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { CSSProperties, ReactNode } from 'react';

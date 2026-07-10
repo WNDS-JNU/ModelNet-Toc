@@ -8,8 +8,9 @@ import {
   Icon,
   Text,
   Tooltip,
+  Tabs,
 } from '@lobehub/ui';
-import { confirmModal, Tabs } from '@lobehub/ui/base-ui';
+import { confirmModal } from '@lobehub/ui/base-ui';
 import { App } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
 import {

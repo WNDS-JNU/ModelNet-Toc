@@ -1,6 +1,5 @@
 import { type FormItemProps } from '@lobehub/ui';
-import { Button, Flexbox, Form } from '@lobehub/ui';
-import { Tabs } from '@lobehub/ui/base-ui';
+import { Button, Flexbox, Form, Tabs } from '@lobehub/ui';
 import { Switch } from 'antd';
 import { CopyIcon } from 'lucide-react';
 import { memo, useState } from 'react';

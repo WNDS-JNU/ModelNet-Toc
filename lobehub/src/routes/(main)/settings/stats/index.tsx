@@ -1,7 +1,6 @@
 'use client';
 
-import { FormGroup, Grid, Icon } from '@lobehub/ui';
-import { Tabs } from '@lobehub/ui/base-ui';
+import { FormGroup, Grid, Icon, Tabs } from '@lobehub/ui';
 import { ProviderIcon } from '@lobehub/ui/icons';
 import { type DatePickerProps } from 'antd';
 import { DatePicker, Divider } from 'antd';

@@ -8,8 +8,9 @@ import {
   mermaidThemes,
   Skeleton,
   SliderWithInput,
+  Tabs,
 } from '@lobehub/ui';
-import { Select, Switch, Tabs } from '@lobehub/ui/base-ui';
+import { Select, Switch } from '@lobehub/ui/base-ui';
 import isEqual from 'fast-deep-equal';
 import { Loader2Icon } from 'lucide-react';
 import { memo, useState } from 'react';

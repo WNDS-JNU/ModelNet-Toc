@@ -1,9 +1,9 @@
 'use client';
 
 import { ProviderIcon } from '@lobehub/icons';
-import { Button, DropdownMenu } from '@lobehub/ui';
-import { SplitButton } from '@lobehub/ui/base-ui';
+import { Button, DropdownMenu, Flexbox, Icon } from '@lobehub/ui';
 import { createStaticStyles } from 'antd-style';
+import { ChevronDown } from 'lucide-react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import urlJoin from 'url-join';
@@ -44,12 +44,19 @@ const ChatWithModel = memo(() => {
 
   if (includeLobeHub)
     return (
-      <SplitButton size={'large'} style={{ flex: 1, width: 'unset' }} type={'primary'}>
-        <SplitButton.Main style={{ flex: 1 }} onClick={handleLobeHubChat}>
+      <Flexbox horizontal style={{ flex: 1, width: 'unset' }}>
+        <Button size={'large'} style={{ flex: 1 }} type={'primary'} onClick={handleLobeHubChat}>
           {t('models.chat')}
-        </SplitButton.Main>
-        <SplitButton.Menu items={items} popupProps={{ style: { minWidth: 267 } }} />
-      </SplitButton>
+        </Button>
+        <DropdownMenu items={items} popupProps={{ style: { minWidth: 267 } }}>
+          <Button
+            aria-label={t('models.guide')}
+            icon={<Icon icon={ChevronDown} />}
+            size={'large'}
+            type={'primary'}
+          />
+        </DropdownMenu>
+      </Flexbox>
     );
 
   if (items.length === 1)

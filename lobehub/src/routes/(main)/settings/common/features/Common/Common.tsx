@@ -1,8 +1,8 @@
 'use client';
 
 import { type FormGroupItemType } from '@lobehub/ui';
-import { Flexbox, Form, Icon, ImageSelect, Skeleton } from '@lobehub/ui';
-import { Select, Tabs } from '@lobehub/ui/base-ui';
+import { Flexbox, Form, Icon, ImageSelect, Skeleton, Tabs } from '@lobehub/ui';
+import { Select } from '@lobehub/ui/base-ui';
 import isEqual from 'fast-deep-equal';
 import { Ban, Gauge, Loader2Icon, Monitor, Moon, Mouse, Sun, Waves } from 'lucide-react';
 import { useTheme as useNextThemesTheme } from 'next-themes';

@@ -1,6 +1,16 @@
 import type { TaskAutomationMode } from '@lobechat/types';
-import { ActionIcon, Avatar, Button, Flexbox, Icon, InputNumber, Popover, Text } from '@lobehub/ui';
-import { Select, Tabs } from '@lobehub/ui/base-ui';
+import {
+  ActionIcon,
+  Avatar,
+  Button,
+  Flexbox,
+  Icon,
+  InputNumber,
+  Popover,
+  Text,
+  Tabs,
+} from '@lobehub/ui';
+import { Select } from '@lobehub/ui/base-ui';
 import { Switch } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
 import dayjs from 'dayjs';

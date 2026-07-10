@@ -1,7 +1,6 @@
 'use client';
 
-import { Flexbox } from '@lobehub/ui';
-import { Tabs } from '@lobehub/ui/base-ui';
+import { Flexbox, Tabs } from '@lobehub/ui';
 import { useState } from 'react';
 
 import AiProviderRuntimeConfig from './AiProviderRuntimeConfig';

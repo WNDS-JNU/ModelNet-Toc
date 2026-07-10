@@ -1,8 +1,8 @@
 'use client';
 
 import type { BuiltinInterventionProps } from '@lobechat/types';
-import { Flexbox, Icon, Text, TextArea } from '@lobehub/ui';
-import { Button, Tabs } from '@lobehub/ui/base-ui';
+import { Flexbox, Icon, Tabs, Text, TextArea } from '@lobehub/ui';
+import { Button } from '@lobehub/ui/base-ui';
 import { Check, PenLine, Send, X } from 'lucide-react';
 import { memo } from 'react';
 import { createPortal } from 'react-dom';

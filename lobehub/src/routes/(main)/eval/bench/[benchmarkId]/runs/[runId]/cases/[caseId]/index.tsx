@@ -1,8 +1,7 @@
 'use client';
 
 import type { EvalThreadResult } from '@lobechat/types';
-import { Flexbox } from '@lobehub/ui';
-import { Tabs } from '@lobehub/ui/base-ui';
+import { Flexbox, Tabs } from '@lobehub/ui';
 import { cssVar } from 'antd-style';
 import { memo, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';

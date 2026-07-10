@@ -1,7 +1,6 @@
 import { TITLE_BAR_HEIGHT } from '@lobechat/desktop-bridge';
 import { exportFile } from '@lobechat/utils/client';
-import { Block, Button, Flexbox, Highlighter, HtmlPreview } from '@lobehub/ui';
-import { Tabs } from '@lobehub/ui/base-ui';
+import { Block, Button, Flexbox, Highlighter, HtmlPreview, Tabs } from '@lobehub/ui';
 import { Drawer } from 'antd';
 import { createStaticStyles } from 'antd-style';
 import { Code2, Download, Eye } from 'lucide-react';

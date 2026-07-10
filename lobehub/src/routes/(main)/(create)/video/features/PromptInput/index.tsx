@@ -1,8 +1,7 @@
 'use client';
 
 import { ModelIcon } from '@lobehub/icons';
-import { ActionIcon, Flexbox, InputNumber, SliderWithInput, Text } from '@lobehub/ui';
-import { Tabs } from '@lobehub/ui/base-ui';
+import { ActionIcon, Flexbox, InputNumber, SliderWithInput, Text, Tabs } from '@lobehub/ui';
 import { Divider, Switch } from 'antd';
 import { Clock3, Dices } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef } from 'react';

@@ -1,9 +1,8 @@
 'use client';
 
 import { isDesktop } from '@lobechat/const';
-import { Button, Icon } from '@lobehub/ui';
-import { SplitButton } from '@lobehub/ui/base-ui';
-import { SquareArrowOutUpRight } from 'lucide-react';
+import { Button, DropdownMenu, Flexbox, Icon } from '@lobehub/ui';
+import { ChevronDown, SquareArrowOutUpRight } from 'lucide-react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -58,12 +57,19 @@ const ProviderConfig = memo(() => {
     );
 
   return (
-    <SplitButton size={'large'} style={{ flex: 1, width: 'unset' }} type={'primary'}>
-      <SplitButton.Main style={{ flex: 1 }} onClick={openSettings}>
+    <Flexbox horizontal style={{ flex: 1, width: 'unset' }}>
+      <Button size={'large'} style={{ flex: 1 }} type={'primary'} onClick={openSettings}>
         {t('providers.config')}
-      </SplitButton.Main>
-      <SplitButton.Menu items={items} popupProps={{ style: { minWidth: 267 } }} />
-    </SplitButton>
+      </Button>
+      <DropdownMenu items={items} popupProps={{ style: { minWidth: 267 } }}>
+        <Button
+          aria-label={t('providers.config')}
+          icon={<Icon icon={ChevronDown} />}
+          size={'large'}
+          type={'primary'}
+        />
+      </DropdownMenu>
+    </Flexbox>
   );
 });
 

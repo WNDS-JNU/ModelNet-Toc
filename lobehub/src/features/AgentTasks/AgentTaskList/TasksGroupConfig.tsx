@@ -1,6 +1,5 @@
 import { type FormItemProps } from '@lobehub/ui';
-import { ActionIcon, Flexbox, Form, Icon, Popover, Select } from '@lobehub/ui';
-import { Tabs } from '@lobehub/ui/base-ui';
+import { ActionIcon, Flexbox, Form, Icon, Popover, Select, Tabs } from '@lobehub/ui';
 import { Switch } from 'antd';
 import { createStaticStyles } from 'antd-style';
 import {

@@ -1,6 +1,6 @@
 import type { SpeedMultiplier } from '@lobechat/agent-mock';
-import { ActionIcon, type DropdownItem, DropdownMenu, Flexbox, toast } from '@lobehub/ui';
-import { Tabs, type TabsItem } from '@lobehub/ui/base-ui';
+import { ActionIcon, type DropdownItem, DropdownMenu, Flexbox, toast, Tabs } from '@lobehub/ui';
+import { type TabsItem } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { Pause, Play, Repeat, RotateCcw, SkipForward } from 'lucide-react';
 import { memo, useCallback, useMemo, useRef } from 'react';

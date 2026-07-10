@@ -10,7 +10,7 @@ import { Drawer } from 'antd';
 import { History } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 
 import Loading from '@/components/Loading/BrandTextLoading';
 import { ONBOARDING_PRODUCTION_DEFAULT_MODEL } from '@/const/onboarding';

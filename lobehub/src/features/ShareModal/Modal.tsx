@@ -1,8 +1,8 @@
 'use client';
 
 import { type ConversationContext } from '@lobechat/types';
-import { Flexbox, Skeleton } from '@lobehub/ui';
-import { createModal, type ModalInstance, Tabs } from '@lobehub/ui/base-ui';
+import { Flexbox, Skeleton, Tabs } from '@lobehub/ui';
+import { createModal, type ModalInstance } from '@lobehub/ui/base-ui';
 import { t } from 'i18next';
 import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
