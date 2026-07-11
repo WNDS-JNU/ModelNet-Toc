@@ -29,6 +29,8 @@ services:
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgresql:5432/${MODELNET_DB_NAME:-${LOBE_DB_NAME}}
       INTERNAL_APP_URL: http://localhost:3210
       MODELNET_LEADERBOARD_DATA_DIR: /app/leaderboard/data
+      MODELNET_PROXY_URL: http://modelnet-router:8000/v1
+      MODELNET_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
       OPENAI_PROXY_URL: http://modelnet-router:8000/v1
       OPENAI_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
       S3_ENDPOINT: ${S3_ENDPOINT}
@@ -132,33 +134,6 @@ services:
       dify-default:
         aliases:
           - modelnet-gateway
-
-  litellm:
-    container_name: modelnet-litellm
-    image: ${LITELLM_IMAGE:-modelnet-toc-litellm-modelnet}
-    build:
-      context: ./litellm
-      args:
-        LITELLM_BASE_IMAGE: ${LITELLM_BASE_IMAGE:-ghcr.io/berriai/litellm:main-latest}
-    restart: always
-    depends_on:
-      modelnet-router:
-        condition: service_healthy
-    environment:
-      MODELNET_LITELLM_API_KEY: ${MODELNET_LITELLM_API_KEY}
-      MODELNET_BACKEND_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
-    volumes:
-      - type: bind
-        source: ./litellm/modelnet-config.yaml
-        target: /app/config.yaml
-        read_only: true
-    ports:
-      - "127.0.0.1:3090:8000"
-    expose:
-      - "8000"
-    command: ["--config", "/app/config.yaml", "--port", "8000", "--num_workers", "4"]
-    networks:
-      - modelnet-network
 
   postgresql:
     image: paradedb/paradedb:latest-pg17

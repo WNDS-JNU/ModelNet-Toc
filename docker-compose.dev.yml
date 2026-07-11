@@ -34,6 +34,8 @@ services:
       MODELNET_LEADERBOARD_DATA_DIR: /app/leaderboard/data
       MODELNET_PROXY_URL: http://modelnet-router:8000/v1
       MODELNET_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
+      OPENAI_PROXY_URL: http://modelnet-router:8000/v1
+      OPENAI_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
       S3_ENDPOINT: http://rustfs:9000
       S3_BUCKET: ${MODELNET_STORAGE_BUCKET:-${RUSTFS_LOBE_BUCKET}}
       S3_ENABLE_PATH_STYLE: "1"

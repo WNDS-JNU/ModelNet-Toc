@@ -90,7 +90,8 @@ class ModelDisplayNameTest(unittest.TestCase):
         )
 
         self.assertIn("MODELNET_API_KEY=sk-modelnet\n", content)
-        self.assertIn("MODELNET_PROXY_URL=http://modelnet-litellm:8000/v1\n", content)
+        self.assertIn("MODELNET_PROXY_URL=http://modelnet-router:8000/v1\n", content)
+        self.assertNotIn("modelnet-litellm", content)
         self.assertIn(
             "MODELNET_MODEL_LIST=-all,+modelnet-auto=Auto Network,+inference-qwen3=Qwen3\n",
             content,

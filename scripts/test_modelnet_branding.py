@@ -137,13 +137,21 @@ def line_is_allowed(line: str) -> bool:
 
 
 class ModelNetBrandingTest(unittest.TestCase):
-    def test_reload_script_uses_modelnet_app_service(self) -> None:
+    def test_production_compose_routes_modelnet_directly_without_litellm(self) -> None:
+        compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+        self.assertIn("MODELNET_PROXY_URL: http://modelnet-router:8000/v1", compose)
+        self.assertIn("MODELNET_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}", compose)
+        self.assertIn("OPENAI_PROXY_URL: http://modelnet-router:8000/v1", compose)
+        self.assertIn("OPENAI_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}", compose)
+        self.assertNotIn("\n  litellm:\n", compose)
+
+    def test_reload_script_uses_router_direct_services(self) -> None:
         script = (REPO_ROOT / "scripts/reload_modelnet.sh").read_text(encoding="utf-8")
 
-        self.assertIn(
-            "docker compose ps modelnet-router litellm modelnet-app toc-lb",
-            script,
-        )
+        self.assertIn("docker compose ps modelnet-router modelnet-app toc-lb", script)
+        self.assertNotIn("sync_modelnet_litellm.py", script)
+        self.assertNotRegex(script, r"docker compose[^\n]*\blitellm\b")
         self.assertNotRegex(script, r"docker compose ps[^\n]*\blobe\b")
 
     def test_active_product_surfaces_do_not_use_lobe_brand_names(self) -> None:
