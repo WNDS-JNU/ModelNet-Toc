@@ -137,6 +137,15 @@ def line_is_allowed(line: str) -> bool:
 
 
 class ModelNetBrandingTest(unittest.TestCase):
+    def test_reload_script_uses_modelnet_app_service(self) -> None:
+        script = (REPO_ROOT / "scripts/reload_modelnet.sh").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "docker compose ps modelnet-router litellm modelnet-app toc-lb",
+            script,
+        )
+        self.assertNotRegex(script, r"docker compose ps[^\n]*\blobe\b")
+
     def test_active_product_surfaces_do_not_use_lobe_brand_names(self) -> None:
         offenders: list[str] = []
         for path in iter_branding_files():
