@@ -19,7 +19,7 @@ ModelNet Gateway 是模型服务入口层。它把上层应用的 OpenAI-compati
 线上链路可以简化为：
 
 ```text
-LobeHub / SDK / 客户端
+ModelNet / SDK / 客户端
   -> LiteLLM
      -> modelnet-router -> 后端（仅 `modelnet` / `modelnet-auto` 聚合和自动路由入口）
      -> 具体 vLLM / llama.cpp / OpenAI-compatible / Ollama 后端（具体模型 ID）
@@ -42,7 +42,7 @@ LiteLLM 是外层 OpenAI-compatible proxy：`modelnet` / `modelnet-auto` 指向 
 
 ### OpenAI-compatible 路径
 
-入口是 `POST /v1/chat/completions`。这是给 LobeHub、LiteLLM、OpenAI SDK 风格客户端使用的兼容入口。
+入口是 `POST /v1/chat/completions`。这是给 ModelNet、LiteLLM、OpenAI SDK 风格客户端使用的兼容入口。
 
 主要步骤：
 
@@ -241,7 +241,7 @@ curl -s -o /tmp/router-health.json -w "%{http_code}\n" http://127.0.0.1:3092/hea
 
 ## 18. 接手检查清单
 
-- 能说清 LobeHub、LiteLLM、modelnet-router 和后端模型的关系。
+- 能说清 ModelNet、LiteLLM、modelnet-router 和后端模型的关系。
 - 能用 `/v1/models` 和 `/v1/capabilities` 判断模型是否暴露正确。
 - 能解释 OpenAI-compatible 请求和 Native 请求的区别。
 - 能说出 `route.once`、`token.parallel`、`response.parallel` 的适用场景。

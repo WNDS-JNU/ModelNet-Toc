@@ -20,8 +20,8 @@ ModelNet Desktop
   -> Aliyun nginx
   -> Tailscale
   -> 4A100:3081
-  -> lobehub-toc-lb
-  -> lobehub-toc-lobe
+  -> modelnet-toc-lb
+  -> modelnet-toc-app
   -> modelnet-litellm / modelnet-router
 ```
 
@@ -32,7 +32,7 @@ auth, model routing, leaderboard data, LiteLLM, and router state remain server-s
 
 Included:
 
-- Electron desktop package built from `lobehub/apps/desktop`.
+- Electron desktop package built from `modelnet-app/apps/desktop`.
 - Product name and installer artifact name set to `ModelNet Desktop` when built with
   `MODELNET_DESKTOP=1`.
 - Linux unpacked executable is `modelnet-desktop`.
@@ -45,7 +45,7 @@ Deferred:
 
 - Bundling Docker/PostgreSQL/Redis/LiteLLM/modelnet-router inside the desktop app.
 - Code signing, notarization, and auto-update publishing.
-- Final icon replacement and full removal of upstream LobeHub wording.
+- Final icon replacement and full removal of upstream ModelNet wording.
 - Windows/macOS release builds from their native platforms.
 
 ## Server prerequisites
@@ -109,13 +109,13 @@ npm run desktop:package:modelnet:linux-appimage
 The local unpacked app, AppImage, and portable archive are written under:
 
 ```text
-/home/duxianghe/ModelNet-toc/lobehub/apps/desktop/release
+/home/duxianghe/ModelNet-toc/modelnet-app/apps/desktop/release
 ```
 
 A portable archive can be produced with:
 
 ```bash
-cd /home/duxianghe/ModelNet-toc/lobehub/apps/desktop/release
+cd /home/duxianghe/ModelNet-toc/modelnet-app/apps/desktop/release
 tar -czf ModelNet-Desktop-v0.1-linux-x64-unpacked.tgz linux-unpacked
 sha256sum ModelNet-Desktop-v0.1-linux-x64-unpacked.tgz
 ```
@@ -125,11 +125,11 @@ sha256sum ModelNet-Desktop-v0.1-linux-x64-unpacked.tgz
 Built on 4A100 on 2026-06-17:
 
 ```text
-/home/duxianghe/ModelNet-toc/lobehub/apps/desktop/release/ModelNet Desktop-0.0.0.AppImage
+/home/duxianghe/ModelNet-toc/modelnet-app/apps/desktop/release/ModelNet Desktop-0.0.0.AppImage
 size: 161M
 sha256: e07ace5724016aac9dfd1cea26e64ca4eda604dff5ab77c791c552cb8b9050f4
 
-/home/duxianghe/ModelNet-toc/lobehub/apps/desktop/release/ModelNet-Desktop-v0.1-linux-x64-unpacked.tgz
+/home/duxianghe/ModelNet-toc/modelnet-app/apps/desktop/release/ModelNet-Desktop-v0.1-linux-x64-unpacked.tgz
 size: 179M
 sha256: 0edab447d73e49e37c0afd6ba8dac19151b292f436ac26409d6dec13196168dc
 entry executable: linux-unpacked/modelnet-desktop
@@ -142,7 +142,7 @@ with Electron's `--no-sandbox` flag.
 Windows artifacts produced on 2026-06-17:
 
 ```text
-/home/duxianghe/ModelNet-toc/lobehub/apps/desktop/release/ModelNet-Desktop-v0.1-win-x64-setup.exe
+/home/duxianghe/ModelNet-toc/modelnet-app/apps/desktop/release/ModelNet-Desktop-v0.1-win-x64-setup.exe
 size: 210M
 sha256: 7c49efd4b9e5beab7e8001ece562035d9a57bee0767375e6d4b3f59f9304b628
 type: unsigned current-user installer
@@ -150,12 +150,12 @@ notes: installs to %LOCALAPPDATA%\ModelNetDesktop, excludes Windows build .deps 
        bundles Windows x64 native optional dependencies for node-screenshots and @napi-rs/canvas,
        and removes non-Windows native binaries from the Windows payload
 
-/home/duxianghe/ModelNet-toc/lobehub/apps/desktop/release/ModelNet Desktop 0.0.0.exe
+/home/duxianghe/ModelNet-toc/modelnet-app/apps/desktop/release/ModelNet Desktop 0.0.0.exe
 size: 115M
 sha256: 502be106cab83dbbe093edf344472d5b2e63aac35a893696c5f37313b5cd97c1
 type: unsigned portable executable
 
-/home/duxianghe/ModelNet-toc/lobehub/apps/desktop/release/ModelNet-Desktop-v0.1-win-x64-unpacked.tgz
+/home/duxianghe/ModelNet-toc/modelnet-app/apps/desktop/release/ModelNet-Desktop-v0.1-win-x64-unpacked.tgz
 size: 204M
 sha256: 47b018773fc1e21b547a1e407427a9857102ea64546a93338ada858bab2a5f63
 ```
@@ -163,7 +163,7 @@ sha256: 47b018773fc1e21b547a1e407427a9857102ea64546a93338ada858bab2a5f63
 For a platform installer on the current build machine:
 
 ```bash
-cd /home/duxianghe/ModelNet-toc/lobehub
+cd /home/duxianghe/ModelNet-toc/modelnet-app
 npm run desktop:package:modelnet:app
 ```
 

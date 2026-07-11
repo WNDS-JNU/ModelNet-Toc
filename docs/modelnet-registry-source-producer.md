@@ -60,7 +60,7 @@ python3 scripts/modelnet_registry_source.py \
 The source producer applies a built-in temporary blocklist for chat models that
 were removed after Chinese TOC-like quality probes. Blocked model IDs are
 filtered before `capability-registry.yaml` is written, so they do not reappear
-in Router candidates, LiteLLM generated config, or LobeHub generated model
+in Router candidates, LiteLLM generated config, or ModelNet generated model
 lists after discovery is rerun.
 
 Additional IDs can be withheld with either form:

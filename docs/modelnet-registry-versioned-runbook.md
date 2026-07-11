@@ -35,7 +35,7 @@ services.
   `/etc/modelnet/registry/current/capability-registry.yaml`.
 - Dev LiteLLM uses `/etc/modelnet/registry/current/litellm/modelnet-config.yaml`,
   generated from the same capability registry.
-- Dev Lobe/TOC should use the `.env.modelnet` generated from the same capability
+- Dev ModelNet app/TOC should use the `.env.modelnet` generated from the same capability
   registry; router-direct dev overlay points `OPENAI_PROXY_URL` at Router.
 
 ## Production/Dify Hold

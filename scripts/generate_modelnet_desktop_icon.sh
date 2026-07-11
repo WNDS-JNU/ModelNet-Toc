@@ -3,8 +3,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source_icon="$repo_root/lobehub/public/icons/icon-512x512.png"
-output_icon="$repo_root/lobehub/apps/desktop/build/modelnet-icon.icns"
+source_icon="$repo_root/modelnet-app/public/icons/icon-512x512.png"
+output_icon="$repo_root/modelnet-app/apps/desktop/build/modelnet-icon.icns"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/modelnet-icon.XXXXXX")"
 iconset_dir="$tmp_dir/modelnet-icon.iconset"
 
