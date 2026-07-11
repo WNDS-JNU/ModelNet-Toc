@@ -20,13 +20,12 @@ ModelNet Gateway 是模型服务入口层。它把上层应用的 OpenAI-compati
 
 ```text
 ModelNet / SDK / 客户端
-  -> LiteLLM
-     -> modelnet-router -> 后端（仅 `modelnet` / `modelnet-auto` 聚合和自动路由入口）
-     -> 具体 vLLM / llama.cpp / OpenAI-compatible / Ollama 后端（具体模型 ID）
+  -> modelnet-router
+     -> 注册表中的 vLLM / llama.cpp / OpenAI-compatible / Ollama 后端
 ```
 
-LiteLLM 是外层 OpenAI-compatible proxy：`modelnet` / `modelnet-auto` 指向 `http://modelnet-router:8000/v1`，具体后端模型 ID 则使用 `scripts/sync_modelnet_litellm.py` 生成的 registry `model_url` 直连后端 `/v1`。
-`modelnet-router` 是这份文档的重点。它在 Docker Compose 里暴露内部 8000 端口，默认宿主机端口为 `127.0.0.1:3092`，并对聚合、自动组网和 ModelNet Native 请求提供路由与协作能力。LiteLLM 对外提供 `127.0.0.1:3090`。
+ModelNet App 通过 `MODELNET_PROXY_URL=http://modelnet-router:8000/v1` 直连 Router。
+`modelnet-router` 在 Docker Compose 里暴露内部 8000 端口，默认宿主机端口为 `127.0.0.1:3092`，并对普通模型、聚合、自动组网和 ModelNet Native 请求提供路由与协作能力。
 
 ## 3. 新人应该先记住的五个概念
 
@@ -42,7 +41,7 @@ LiteLLM 是外层 OpenAI-compatible proxy：`modelnet` / `modelnet-auto` 指向 
 
 ### OpenAI-compatible 路径
 
-入口是 `POST /v1/chat/completions`。这是给 ModelNet、LiteLLM、OpenAI SDK 风格客户端使用的兼容入口。
+入口是 `POST /v1/chat/completions`。这是给 ModelNet 和 OpenAI SDK 风格客户端使用的兼容入口。
 
 主要步骤：
 
@@ -170,10 +169,9 @@ Claim Graph 的思想是：不要直接相信一整段回答，而是先生成�
 
 常用入口：
 
-- `docker-compose.yml`：定义 `modelnet-router` 和 `modelnet-litellm`。
+- `docker-compose.yml`：定义生产 `modelnet-router` 和 ModelNet App 直连配置。
 - `modelnet_router/model_net.yaml`：开发环境模型注册表样例。
 - `/home/duxianghe/dify/api/configs/model_net.yaml`：Compose 挂载的实际注册表来源。
-- `litellm/modelnet-config.yaml`：LiteLLM 代理配置；聚合/自动路由入口指向 `modelnet-router`，具体模型指向 registry 后端 `/v1`。
 - `.env` 和 `.env.modelnet`：运行时 secret 和模型网关环境变量。
 - `scripts/reload_modelnet.sh`：Dify 刷新模型后，重新生成配置并重启相关服务。
 
@@ -181,7 +179,6 @@ Claim Graph 的思想是：不要直接相信一整段回答，而是先生成�
 
 ```bash
 docker compose ps
-curl -s -o /tmp/modelnet-models.json -w "%{http_code}\n" http://127.0.0.1:3090/v1/models
 curl -s -o /tmp/router-health.json -w "%{http_code}\n" http://127.0.0.1:3092/healthz
 ```
 
@@ -192,7 +189,7 @@ curl -s -o /tmp/router-health.json -w "%{http_code}\n" http://127.0.0.1:3092/hea
 1. 确认 Dify 的 `model_net.yaml` 已经有新模型。
 2. 确认模型的 backend type、URL、alias、capabilities 和 context length。
 3. 运行 `scripts/reload_modelnet.sh`。
-4. 检查 `modelnet-router` 和 `modelnet-litellm` 是否健康。
+4. 检查 `modelnet-router` 是否健康。
 5. 请求 `/v1/models` 确认模型可见。
 6. 请求 `/v1/capabilities` 确认能力是否符合预期。
 7. 用一条最小 chat 请求验证实际后端可调用。
