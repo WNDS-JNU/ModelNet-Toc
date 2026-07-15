@@ -2,6 +2,11 @@ import path from 'node:path';
 
 import type { MenuItemConstructorOptions } from 'electron';
 import { app, clipboard, dialog, Menu, shell } from 'electron';
+import {
+  MODELNET_DESKTOP_WEBSITE,
+  MODELNET_GITHUB_ISSUES,
+  MODELNET_GITHUB_REPOSITORY,
+} from '@/const/branding';
 
 import { isDev } from '@/const/env';
 import { HETERO_AGENT_DIR } from '@/const/heteroAgent';
@@ -114,9 +119,11 @@ export class LinuxMenu extends BaseMenuPlatform implements IMenuPlatform {
             label: t('file.preferences'),
           },
           {
-            click: () => {
-              this.app.updaterManager.checkForUpdates({ manual: true });
-            },
+            ...(this.app.updaterManager.isUpdateEnabled()
+              ? {
+                  click: () => this.app.updaterManager.checkForUpdates({ manual: true }),
+                }
+              : { enabled: false }),
             label: t('common.checkUpdates'),
           },
           { type: 'separator' },
@@ -197,15 +204,21 @@ export class LinuxMenu extends BaseMenuPlatform implements IMenuPlatform {
         submenu: [
           {
             click: async () => {
-              await shell.openExternal('https://lobehub.com');
+              await shell.openExternal(MODELNET_DESKTOP_WEBSITE);
             },
             label: t('help.visitWebsite'),
           },
           {
             click: async () => {
-              await shell.openExternal('https://github.com/lobehub/lobe-chat');
+              await shell.openExternal(MODELNET_GITHUB_REPOSITORY);
             },
             label: t('help.githubRepo'),
+          },
+          {
+            click: async () => {
+              await shell.openExternal(MODELNET_GITHUB_ISSUES);
+            },
+            label: t('help.reportIssue'),
           },
           { type: 'separator' },
           {

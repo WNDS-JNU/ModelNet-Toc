@@ -728,7 +728,7 @@ async function downloadWithRedirects(url: string, dest: string, maxRedirects = 5
 
   await new Promise<void>((resolve, reject) => {
     https
-      .get(url, { headers: { 'User-Agent': 'lobehub-desktop-binary-manager' } }, (res) => {
+      .get(url, { headers: { 'User-Agent': 'modelnet-desktop-binary-manager' } }, (res) => {
         if (
           res.statusCode &&
           res.statusCode >= 300 &&
@@ -782,7 +782,7 @@ async function fetchGithubLatestTag(repo: string): Promise<string> {
         {
           headers: {
             'Accept': 'application/vnd.github+json',
-            'User-Agent': 'lobehub-desktop-binary-manager',
+            'User-Agent': 'modelnet-desktop-binary-manager',
           },
         },
         (res) => {

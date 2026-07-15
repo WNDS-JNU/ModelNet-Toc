@@ -3,12 +3,12 @@
   "version": "0.0.0",
   "private": true,
   "description": "ModelNet Desktop Application",
-  "homepage": "https://lobehub.com",
+  "homepage": "http://123.56.135.150",
   "repository": {
     "type": "git",
-    "url": "https://github.com/lobehub/lobehub.git"
+    "url": "https://github.com/WNDS-JNU/ModelNet-Toc.git"
   },
-  "author": "LobeHub",
+  "author": "ModelNet",
   "main": "./dist/main/index.js",
   "scripts": {
     "build:cli": "cross-env MINIFY=1 npm run build --prefix=../cli",

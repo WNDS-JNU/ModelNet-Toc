@@ -113,7 +113,7 @@ describe('TrayManager', () => {
 
       expect(Tray).toHaveBeenCalledWith(
         expect.objectContaining({
-          iconPath: 'trayTemplate.png',
+          iconPath: 'modelnet-trayTemplate.png',
           identifier: 'main',
           isTemplateImage: true,
           tooltip: 'test-app',

@@ -2,6 +2,7 @@ import { exec } from 'node:child_process';
 import { platform } from 'node:os';
 import { promisify } from 'node:util';
 
+import { MODELNET_CLI_COMMAND, MODELNET_CLI_COMPATIBILITY_ALIASES } from '@/const/branding';
 import type { BinarySpec, BinaryStatus } from '@/core/infrastructure/BinaryManager';
 import { defineCommandBinary } from '@/core/infrastructure/BinaryManager';
 
@@ -97,12 +98,12 @@ export const uvBinary: BinarySpec = defineCommandBinary('uv', {
 
 /**
  * ModelNet CLI
- * Tries lobehub, lobe, lh in order; validates via --help output containing "ModelNet"
+ * Tries modelnet first, then compatibility aliases; validates --help output.
  */
-export const lobehubBinary: BinarySpec = {
+export const modelnetCliBinary: BinarySpec = {
   description: 'ModelNet CLI - manage and connect to ModelNet services',
   async detect(): Promise<BinaryStatus> {
-    const commands = ['lobehub', 'lobe', 'lh'];
+    const commands = [MODELNET_CLI_COMMAND, ...MODELNET_CLI_COMPATIBILITY_ALIASES];
     const whichCmd = platform() === 'win32' ? 'where' : 'which';
 
     for (const cmd of commands) {
@@ -125,7 +126,7 @@ export const lobehubBinary: BinarySpec = {
 
     return { available: false };
   },
-  name: 'lobehub',
+  name: MODELNET_CLI_COMMAND,
   priority: 0,
 };
 
@@ -133,7 +134,7 @@ export const lobehubBinary: BinarySpec = {
  * All runtime environment binaries
  */
 export const runtimeEnvironmentBinaries: BinarySpec[] = [
-  lobehubBinary,
+  modelnetCliBinary,
   nodeBinary,
   npmBinary,
   pythonBinary,

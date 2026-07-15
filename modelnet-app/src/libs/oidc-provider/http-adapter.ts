@@ -131,6 +131,10 @@ export const createNodeResponse = (resolvePromise: () => void): ResponseCollecto
 
     headersSent: false,
 
+    get statusCode() {
+      return state.responseStatus;
+    },
+
     removeHeader: (name: string) => {
       const lowerName = name.toLowerCase();
       log('Removing header: %s', lowerName);
@@ -143,6 +147,10 @@ export const createNodeResponse = (resolvePromise: () => void): ResponseCollecto
       state.responseHeaders[lowerName] = value;
     },
 
+    set statusCode(status: number) {
+      log('Setting response status code: %d', status);
+      state.responseStatus = status;
+    },
     write: (chunk: string | Buffer) => {
       log('NodeResponse.write called with chunk');
       // @ts-ignore

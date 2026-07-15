@@ -1,6 +1,6 @@
 # 🤯 ModelNet Desktop Application
 
-ModelNet Desktop is a cross-platform desktop application for [ModelNet](https://github.com/lobehub/lobehub), built with Electron, providing a more native desktop experience and functionality.
+ModelNet Desktop is a cross-platform desktop application for [ModelNet](https://github.com/WNDS-JNU/ModelNet-Toc), built with Electron, providing a more native desktop experience and functionality.
 
 ## ✨ Features
 
@@ -347,7 +347,7 @@ Desktop application development involves complex cross-platform considerations a
 
 ### Contribution Process
 
-1. Fork the [ModelNet repository](https://github.com/lobehub/lobehub)
+1. Fork the [ModelNet repository](https://github.com/WNDS-JNU/ModelNet-Toc)
 2. Set up the desktop development environment following our setup guide
 3. Make your changes to the desktop application
 4. Submit a Pull Request describing:
@@ -372,4 +372,4 @@ Desktop application development involves complex cross-platform considerations a
 - **Development Guide**: [`Development.md`](./Development.md) - Comprehensive development documentation
 - **Architecture Docs**: [`/docs`](../../docs/) - Detailed technical specifications
 - **Contributing**: [`CONTRIBUTING.md`](../../CONTRIBUTING.md) - Contribution guidelines
-- **Issues & Support**: [GitHub Issues](https://github.com/lobehub/lobehub/issues)
+- **Issues & Support**: [GitHub Issues](https://github.com/WNDS-JNU/ModelNet-Toc/issues)

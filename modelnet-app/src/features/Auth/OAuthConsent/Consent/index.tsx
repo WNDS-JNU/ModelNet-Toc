@@ -27,7 +27,7 @@ function getScopeDescription(scope: string, t: any): string {
 
 const BUILTIN_CLIENTS = new Set(['lobehub-desktop', 'lobehub-mobile', 'lobehub-market']);
 
-const ConsentClient = memo<ClientProps>(({ uid, clientId, scopes, clientMetadata }) => {
+export const ConsentClient = memo<ClientProps>(({ uid, clientId, scopes, clientMetadata }) => {
   const { t } = useTranslation('oauth');
 
   const [isLoading, setIsLoading] = useState(false);
@@ -35,7 +35,7 @@ const ConsentClient = memo<ClientProps>(({ uid, clientId, scopes, clientMetadata
   const clientDisplayName = clientMetadata?.clientName || clientId;
 
   if (BUILTIN_CLIENTS.has(clientId)) {
-    return <BuiltinConsent uid={clientId} />;
+    return <BuiltinConsent uid={uid} />;
   }
 
   return (

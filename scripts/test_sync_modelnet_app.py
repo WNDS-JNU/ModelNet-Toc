@@ -79,6 +79,7 @@ class ModelDisplayNameTest(unittest.TestCase):
         self.assertNotIn("+modelnet=ModelNet", entries)
         self.assertIn("+modelnet-auto=Auto Network", entries)
         self.assertIn("+inference-qwen3=Qwen3", entries)
+        self.assertFalse(any(":fc" in entry for entry in entries))
 
     def test_renders_modelnet_provider_env_keys(self) -> None:
         content = sync_modelnet_app.render_env_content(

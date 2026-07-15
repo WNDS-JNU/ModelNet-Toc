@@ -571,7 +571,7 @@ describe('RemoteServerConfigCtr', () => {
         expect.objectContaining({
           body: expect.stringContaining('grant_type=refresh_token'),
           headers: expect.objectContaining({
-            'User-Agent': 'LobeHub Desktop/1.2.3',
+            'User-Agent': 'ModelNet Desktop/1.2.3',
           }),
           method: 'POST',
         }),
@@ -640,7 +640,7 @@ describe('RemoteServerConfigCtr', () => {
       const result = await controller.refreshAccessToken();
 
       expect(result.success).toBe(false);
-      expect(result.error).toContain('Missing tokens');
+      expect(result.error).toContain('missing access_token and refresh_token');
     });
 
     it('should handle concurrent refresh requests by returning same result', async () => {

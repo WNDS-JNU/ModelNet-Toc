@@ -3,6 +3,11 @@ import path from 'node:path';
 import type { MenuItemConstructorOptions } from 'electron';
 import { app, clipboard, Menu, shell } from 'electron';
 
+import {
+  MODELNET_DESKTOP_WEBSITE,
+  MODELNET_GITHUB_ISSUES,
+  MODELNET_GITHUB_REPOSITORY,
+} from '@/const/branding';
 import { isDev } from '@/const/env';
 import { HETERO_AGENT_DIR } from '@/const/heteroAgent';
 import NotificationCtr from '@/controllers/NotificationCtr';
@@ -247,19 +252,19 @@ export class MacOSMenu extends BaseMenuPlatform implements IMenuPlatform {
         submenu: [
           {
             click: async () => {
-              await shell.openExternal('https://lobehub.com');
+              await shell.openExternal(MODELNET_DESKTOP_WEBSITE);
             },
             label: t('help.visitWebsite'),
           },
           {
             click: async () => {
-              await shell.openExternal('https://github.com/lobehub/lobe-chat');
+              await shell.openExternal(MODELNET_GITHUB_REPOSITORY);
             },
             label: t('help.githubRepo'),
           },
           {
             click: async () => {
-              await shell.openExternal('https://github.com/lobehub/lobe-chat/issues/new/choose');
+              await shell.openExternal(MODELNET_GITHUB_ISSUES);
             },
             label: t('help.reportIssue'),
           },
@@ -427,6 +432,10 @@ export class MacOSMenu extends BaseMenuPlatform implements IMenuPlatform {
   }
 
   private getUpdateMenuItem(t: (key: string, opts?: any) => string): MenuItemConstructorOptions {
+    if (!this.app.updaterManager.isUpdateEnabled()) {
+      return { enabled: false, label: t('common.checkUpdates') };
+    }
+
     const { stage } = this.app.updaterManager.getUpdaterState();
 
     switch (stage) {

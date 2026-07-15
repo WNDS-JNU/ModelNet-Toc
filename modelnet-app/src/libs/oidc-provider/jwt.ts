@@ -7,17 +7,81 @@ const log = debug('oidc-jwt');
 
 /**
  * Get JWKS key string from environment
- * Uses JWKS_KEY which already has fallback to OIDC_JWKS_KEY in authEnv
+ * Uses the canonical JWKS_KEY value from authEnv.
  */
 const getJwksKeyString = () => {
   return authEnv.JWKS_KEY;
 };
 
+type JWK = Record<string, unknown>;
+
+export interface JWKS {
+  keys: JWK[];
+}
+
+const REQUIRED_RSA_PRIVATE_FIELDS = ['d', 'dp', 'dq', 'e', 'n', 'p', 'q', 'qi'] as const;
+
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value.length > 0;
+
+const isJwk = (value: unknown): value is JWK => typeof value === 'object' && value !== null;
+
+const getModulusLength = (modulus: string) => {
+  const bytes = Buffer.from(modulus, 'base64url');
+  if (bytes.length === 0) {
+    throw new Error('RSA RS256 signing key modulus must be valid base64url');
+  }
+
+  let leadingByte = bytes[0];
+  let leadingBits = 0;
+  while (leadingByte > 0) {
+    leadingBits += 1;
+    leadingByte >>= 1;
+  }
+
+  return (bytes.length - 1) * 8 + leadingBits;
+};
+const validateRS256SigningKey = (key: JWK) => {
+  if (key.use !== 'sig') {
+    throw new Error('RSA RS256 signing key must set use to "sig"');
+  }
+
+  for (const field of REQUIRED_RSA_PRIVATE_FIELDS) {
+    if (!isNonEmptyString(key[field])) {
+      throw new Error(`RSA RS256 signing key is missing private field: ${field}`);
+    }
+  }
+
+  const modulusLength = getModulusLength(key.n as string);
+  if (!modulusLength || modulusLength < 2048) {
+    throw new Error('RSA RS256 signing key modulusLength must be at least 2048 bits');
+  }
+};
+
+export const validateJWKS = (jwks: unknown): JWKS => {
+  if (!isJwk(jwks) || !Array.isArray(jwks.keys) || jwks.keys.length === 0) {
+    throw new Error('Invalid JWKS format: missing or empty keys array');
+  }
+
+  const keys = jwks.keys.filter(isJwk);
+  if (keys.length !== jwks.keys.length) {
+    throw new Error('Invalid JWKS format: keys must be objects');
+  }
+
+  const signingKeys = keys.filter((key) => key.alg === 'RS256' && key.kty === 'RSA');
+  if (signingKeys.length === 0) {
+    throw new Error('No RSA key with RS256 algorithm found in JWKS');
+  }
+
+  signingKeys.forEach(validateRS256SigningKey);
+
+  return { keys };
+};
 /**
  * Get JWKS from environment variables
  * This JWKS is a JSON object containing RS256 private keys
  */
-export const getJWKS = (): object => {
+export const getJWKS = (): JWKS => {
   try {
     const jwksString = getJwksKeyString();
 
@@ -27,21 +91,7 @@ export const getJWKS = (): object => {
       );
     }
 
-    // Attempt to parse JWKS JSON string
-    const jwks = JSON.parse(jwksString);
-
-    // Check if JWKS format is valid
-    if (!jwks.keys || !Array.isArray(jwks.keys) || jwks.keys.length === 0) {
-      throw new Error('Invalid JWKS format: missing or empty keys array');
-    }
-
-    // Check if there is an RS256 algorithm key
-    const hasRS256Key = jwks.keys.some((key: any) => key.alg === 'RS256' && key.kty === 'RSA');
-    if (!hasRS256Key) {
-      throw new Error('No RSA key with RS256 algorithm found in JWKS');
-    }
-
-    return jwks;
+    return validateJWKS(JSON.parse(jwksString));
   } catch (error) {
     console.error('Failed to parse JWKS:', error);
     throw new Error(`JWKS_KEY parse error: ${(error as Error).message}`, { cause: error });
@@ -50,19 +100,8 @@ export const getJWKS = (): object => {
 
 const getVerificationKey = async () => {
   try {
-    const jwksString = getJwksKeyString();
-
-    if (!jwksString) {
-      throw new Error('JWKS_KEY environment variable is not set');
-    }
-
-    const jwks = JSON.parse(jwksString);
-
-    if (!jwks.keys || !Array.isArray(jwks.keys) || jwks.keys.length === 0) {
-      throw new Error('Invalid JWKS format: missing or empty keys array');
-    }
-
-    const privateRsaKey = jwks.keys.find((key: any) => key.alg === 'RS256' && key.kty === 'RSA');
+    const jwks = getJWKS();
+    const privateRsaKey = jwks.keys.find((key) => key.alg === 'RS256' && key.kty === 'RSA');
     if (!privateRsaKey) {
       throw new Error('No RSA key with RS256 algorithm found in JWKS');
     }

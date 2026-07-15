@@ -61,6 +61,10 @@ export class UpdaterManager {
     return this.app.browserManager.getMainWindow();
   }
 
+  public isUpdateEnabled(): boolean {
+    return updaterConfig.enableAppUpdate && Boolean(UPDATE_SERVER_URL);
+  }
+
   public getUpdaterState(): UpdaterState {
     const state: UpdaterState = { stage: this.stage };
     if (this.latestProgress) state.progress = this.latestProgress;
@@ -102,8 +106,10 @@ export class UpdaterManager {
   public initialize = async () => {
     logger.debug('Initializing UpdaterManager');
 
-    if (!updaterConfig.enableAppUpdate) {
-      logger.info('App updates are disabled, skipping updater initialization');
+    if (!this.isUpdateEnabled()) {
+      logger.info(
+        'App updates are disabled or UPDATE_SERVER_URL is unset; skipping updater initialization',
+      );
       return;
     }
 
@@ -175,6 +181,11 @@ export class UpdaterManager {
    * Check for updates
    */
   public checkForUpdates = async ({ manual = false }: { manual?: boolean } = {}) => {
+    if (!this.isUpdateEnabled()) {
+      if (manual) logger.info('Update check skipped because UPDATE_SERVER_URL is not configured');
+      return;
+    }
+
     if (this.checking || this.downloading) return;
 
     this.checking = true;
@@ -426,18 +437,7 @@ export class UpdaterManager {
         url: feedUrl,
       });
     } else {
-      // Fallback to GitHub when no S3 URL configured (local dev)
-      logger.info(
-        `No UPDATE_SERVER_URL configured, falling back to GitHub provider for ${this.currentChannel} channel`,
-      );
-
-      autoUpdater.setFeedURL({
-        owner: 'lobehub',
-        provider: 'github',
-        repo: 'lobehub',
-      });
-
-      autoUpdater.allowPrerelease = this.currentChannel !== 'stable';
+      logger.warn('No UPDATE_SERVER_URL configured; update provider remains disabled');
     }
   }
 

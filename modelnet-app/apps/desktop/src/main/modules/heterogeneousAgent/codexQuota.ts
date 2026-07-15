@@ -127,9 +127,7 @@ const parseCreditTimestamp = (value: number | string | null | undefined): number
 
 const normalizeCreditStatus = (status?: string) => status?.toLowerCase() ?? 'unknown';
 
-const getNextAvailableCreditExpiry = (
-  credits: CodexRateLimitResetCredits['credits'] | undefined,
-) =>
+const getNextAvailableCreditExpiry = (credits: CodexRateLimitResetCredits['credits'] | undefined) =>
   credits
     ?.filter((credit) => credit.status === 'available' && typeof credit.expiresAt === 'number')
     .map((credit) => credit.expiresAt as number)
@@ -201,10 +199,10 @@ const readCodexBackendAuth = async (
   if (!accessToken) return null;
 
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${accessToken}`,
+    'Authorization': `Bearer ${accessToken}`,
     'OpenAI-Beta': 'codex-1',
     'User-Agent': 'codex-cli',
-    originator: 'ModelNet Desktop',
+    'originator': 'ModelNet Desktop',
   };
 
   if (auth.tokens?.account_id) {
@@ -420,7 +418,7 @@ const fetchViaRpc = async (
         child.on('error', listeners.error);
         child.on('close', listeners.close);
         initId = sendRpc(child, 'initialize', {
-          clientInfo: { name: 'lobehub', version: '1.0.0' },
+          clientInfo: { name: 'modelnet', version: '1.0.0' },
         });
       })
       .catch((error: unknown) => {

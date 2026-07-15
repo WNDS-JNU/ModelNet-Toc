@@ -183,7 +183,7 @@ else
   echo "   1. 启动打包后的应用"
   echo "   2. 进入 设置 > Beta"
   echo "   3. 在 Update Channel 下拉框中切换渠道"
-  echo "   4. 查看日志: tail -f ~/Library/Logs/lobehub-desktop/main.log"
+  echo "   4. 查看日志: tail -f ~/Library/Logs/ModelNet\ Desktop/main.log"
   echo ""
   echo "运行打包后的应用:"
   echo "  需设置环境变量: FORCE_DEV_UPDATE_CONFIG=true UPDATE_SERVER_URL=http://localhost:$PORT"

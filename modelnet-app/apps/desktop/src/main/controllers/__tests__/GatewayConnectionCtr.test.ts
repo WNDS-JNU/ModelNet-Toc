@@ -333,7 +333,7 @@ describe('GatewayConnectionCtr', () => {
       expect(options.deviceId).toBe('stored-device-id');
       expect(options.gatewayUrl).toBe('https://device-gateway.lobehub.com');
       expect(options.logger).toBeDefined();
-      expect(options.userAgent).toBe('LobeHub Desktop/1.2.3');
+      expect(options.userAgent).toBe('ModelNet Desktop/1.2.3');
     });
 
     it('should use custom gateway URL from store when set', async () => {

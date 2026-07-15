@@ -154,7 +154,7 @@ export class ACPClient {
         fs: { readTextFile: true, writeTextFile: true },
         terminal: true,
       },
-      clientInfo: { name: 'lobehub-desktop', version: '1.0.0' },
+      clientInfo: { name: 'modelnet-desktop', version: '1.0.0' },
       protocolVersion: '0.1',
     };
 

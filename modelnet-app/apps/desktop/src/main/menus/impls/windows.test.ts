@@ -12,7 +12,7 @@ vi.mock('electron', () => ({
     setApplicationMenu: vi.fn(),
   },
   app: {
-    getName: vi.fn(() => 'LobeChat'),
+    getName: vi.fn(() => 'ModelNet Desktop'),
   },
   shell: {
     openExternal: vi.fn(),
@@ -81,6 +81,7 @@ const createMockApp = () => {
       })),
     },
     updaterManager: {
+      isUpdateEnabled: vi.fn(() => true),
       checkForUpdates: vi.fn(),
       getUpdaterState: vi.fn(() => ({ stage: 'idle' })),
       installNow: vi.fn(),
@@ -248,7 +249,7 @@ describe('WindowsMenu', () => {
 
       expect(visitWebsiteItem).toBeDefined();
       await visitWebsiteItem.click();
-      expect(shell.openExternal).toHaveBeenCalledWith('https://lobehub.com');
+      expect(shell.openExternal).toHaveBeenCalledWith('http://123.56.135.150');
     });
 
     it('should handle github repo click', async () => {
@@ -260,7 +261,7 @@ describe('WindowsMenu', () => {
 
       expect(githubItem).toBeDefined();
       await githubItem.click();
-      expect(shell.openExternal).toHaveBeenCalledWith('https://github.com/lobehub/lobe-chat');
+      expect(shell.openExternal).toHaveBeenCalledWith('https://github.com/WNDS-JNU/ModelNet-Toc');
     });
 
     it('should handle tray open click', () => {

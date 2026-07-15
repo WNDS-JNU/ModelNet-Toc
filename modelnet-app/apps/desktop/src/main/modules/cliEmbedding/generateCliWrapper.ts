@@ -2,6 +2,7 @@ import { chmod, mkdir, rename, symlink, unlink, writeFile } from 'node:fs/promis
 import path from 'node:path';
 
 import { app } from 'electron';
+import { MODELNET_CLI_COMMAND, MODELNET_CLI_COMPATIBILITY_ALIASES } from '@/const/branding';
 
 import { createLogger } from '@/utils/logger';
 
@@ -24,7 +25,7 @@ function resolveElectronBinary(): string {
  */
 function resolveCliScript(): string {
   if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'bin', 'lobe-cli.js');
+    return path.join(process.resourcesPath, 'bin', 'modelnet-cli.js');
   }
   // Dev mode: app.getAppPath() points to apps/desktop/, go up to apps/cli/
   return path.join(app.getAppPath(), '..', 'cli', 'dist', 'index.js');
@@ -57,12 +58,12 @@ export async function generateCliWrapper(): Promise<void> {
       `"${electronBin}" "${cliScript}" %*`,
     ].join('\r\n');
 
-    const cmdPath = path.join(wrapperDir, 'lobehub.cmd');
+    const cmdPath = path.join(wrapperDir, `${MODELNET_CLI_COMMAND}.cmd`);
     await atomicWrite(cmdPath, content);
 
-    // Create short aliases: lh.cmd, lobe.cmd (copies on Windows, symlinks unreliable)
-    for (const alias of ['lh.cmd', 'lobe.cmd']) {
-      await atomicWrite(path.join(wrapperDir, alias), content);
+    // Keep legacy command names as compatibility copies on Windows.
+    for (const alias of MODELNET_CLI_COMPATIBILITY_ALIASES) {
+      await atomicWrite(path.join(wrapperDir, `${alias}.cmd`), content);
     }
 
     logger.info(`CLI wrapper generated: ${cmdPath}`);
@@ -72,15 +73,15 @@ export async function generateCliWrapper(): Promise<void> {
       `ELECTRON_RUN_AS_NODE=1 exec "${electronBin}" "${cliScript}" "$@"`,
     ].join('\n');
 
-    const wrapperPath = path.join(wrapperDir, 'lobehub');
+    const wrapperPath = path.join(wrapperDir, MODELNET_CLI_COMMAND);
     await atomicWrite(wrapperPath, content);
     await chmod(wrapperPath, 0o755);
 
-    // Create short aliases: lh, lobe → lobehub
-    for (const alias of ['lh', 'lobe']) {
+    // Keep legacy command names as compatibility symlinks.
+    for (const alias of MODELNET_CLI_COMPATIBILITY_ALIASES) {
       const linkPath = path.join(wrapperDir, alias);
       await unlink(linkPath).catch(() => {});
-      await symlink('lobehub', linkPath);
+      await symlink(MODELNET_CLI_COMMAND, linkPath);
     }
 
     logger.info(`CLI wrapper generated: ${wrapperPath}`);

@@ -177,7 +177,7 @@ describe('AuthCtr', () => {
         expect(authUrl).toContain('client_id=lobehub-desktop');
         expect(authUrl).toContain('response_type=code');
         expect(authUrl).toContain('code_challenge_method=S256');
-        expect(authUrl).toContain('scope=profile%20email%20offline_access');
+        expect(authUrl).toContain('scope=openid%20profile%20email%20offline_access');
       });
 
       it('should start polling after authorization request', async () => {
@@ -204,7 +204,7 @@ describe('AuthCtr', () => {
         expect(pollingCalls.length).toBeGreaterThan(0);
         expect(pollingCalls[0][1]).toEqual(
           expect.objectContaining({
-            headers: expect.objectContaining({ 'User-Agent': 'LobeHub Desktop/1.2.3' }),
+            headers: expect.objectContaining({ 'User-Agent': 'ModelNet Desktop/1.2.3' }),
           }),
         );
       });

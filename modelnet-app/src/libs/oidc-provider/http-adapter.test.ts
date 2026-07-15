@@ -116,3 +116,21 @@ describe('OIDC HTTP adapter', () => {
     });
   });
 });
+
+describe('createNodeResponse', () => {
+  it.each([400, 500])('preserves direct statusCode assignment (%i)', async (statusCode) => {
+    const resolve = vi.fn();
+    const { createNodeResponse } = await import('./http-adapter');
+    const response = createNodeResponse(resolve);
+    const nodeResponse = response.nodeResponse as unknown as {
+      end: (body?: string) => void;
+      statusCode: number;
+    };
+
+    nodeResponse.statusCode = statusCode;
+    nodeResponse.end('{"error":"invalid_grant"}');
+
+    expect(response.responseStatus).toBe(statusCode);
+    expect(resolve).toHaveBeenCalledOnce();
+  });
+});

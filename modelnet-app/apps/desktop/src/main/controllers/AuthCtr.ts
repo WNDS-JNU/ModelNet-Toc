@@ -13,6 +13,7 @@ import GatewayConnectionService from '@/services/gatewayConnectionSrv';
 import { appendVercelCookie } from '@/utils/http-headers';
 import { createLogger } from '@/utils/logger';
 import { netFetch } from '@/utils/net-fetch';
+import { parseOIDCTokenResponse } from '@/utils/oidc-token-response';
 import { setDesktopUserAgentHeader } from '@/utils/user-agent';
 
 import { ControllerModule, IpcMethod } from './index';
@@ -114,7 +115,7 @@ export default class AuthCtr extends ControllerModule {
         // https://github.com/lobehub/lobe-chat/pull/8450
         resource: 'urn:lobehub:chat',
         response_type: 'code',
-        scope: 'profile email offline_access',
+        scope: 'openid profile email offline_access',
         state: this.authRequestState,
       });
 
@@ -497,41 +498,19 @@ export default class AuthCtr extends ControllerModule {
         method: 'POST',
       });
 
-      if (!response.ok) {
-        // Try parsing the error response
-        const errorData = await response.json().catch(() => ({}));
-        const errorMessage = `Failed to get token: ${response.status} ${response.statusText} ${errorData.error_description || errorData.error || ''}`;
-        logger.error(errorMessage);
-        throw new Error(errorMessage);
+      const tokenResponse = await parseOIDCTokenResponse(response, 'Failed to get token');
+      logger.debug('OIDC token exchange response metadata:', tokenResponse.metadata);
+
+      if ('error' in tokenResponse) {
+        logger.error(tokenResponse.error, tokenResponse.metadata);
+        throw new Error(tokenResponse.error);
       }
 
-      let data;
-
-      // Parse response
-      try {
-        data = await response.clone().json();
-      } catch {
-        const status = response.status;
-
-        throw new Error(
-          `Parse JSON failed, please check your server, response status: ${status}, detail:\n\n ${await response.text()} `,
-        );
-      }
-
-      logger.debug('Successfully received token exchange response');
-
-      // Ensure response contains necessary fields
-      if (!data.access_token || !data.refresh_token) {
-        logger.error('Invalid token response: missing access_token or refresh_token');
-        throw new Error('Invalid token response: missing required fields');
-      }
-
-      // Save tokens
       logger.debug('Starting to save exchanged tokens');
       await this.remoteServerConfigCtr.saveTokens(
-        data.access_token,
-        data.refresh_token,
-        data.expires_in,
+        tokenResponse.accessToken,
+        tokenResponse.refreshToken,
+        tokenResponse.expiresIn,
       );
       logger.info('Successfully saved exchanged tokens');
 

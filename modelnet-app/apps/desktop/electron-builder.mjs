@@ -22,13 +22,10 @@ dotenv.config();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const packageJSON = JSON.parse(await fs.readFile(path.join(__dirname, 'package.json'), 'utf8'));
-const isModelNetDesktop = ['1', 'true', 'yes', 'on'].includes(
-  String(process.env.MODELNET_DESKTOP || '').toLowerCase(),
-);
-const desktopProductName = isModelNetDesktop ? 'ModelNet Desktop' : 'ModelNet';
-const linuxExecutableName = isModelNetDesktop ? 'modelnet-desktop' : undefined;
-const modelNetDesktopServerUrl = process.env.MODELNET_DESKTOP_SERVER_URL || 'http://123.56.135.150';
-const appId = isModelNetDesktop ? 'cn.edu.jnu.wnds.modelnet-desktop' : 'com.lobehub.lobehub-desktop';
+const desktopProductName = 'ModelNet Desktop';
+const linuxExecutableName = 'modelnet-desktop';
+const appId = 'cn.edu.jnu.wnds.modelnet-desktop';
+const protocolScheme = 'modelnet';
 
 const channel = process.env.UPDATE_CHANNEL;
 const arch = os.arch();
@@ -44,7 +41,6 @@ console.info(`🏗️ Building for architecture: ${arch}`);
 // Supported channels: stable, nightly, canary
 const isStable = !channel || channel === 'stable';
 const isNightly = channel === 'nightly';
-const isCanary = channel === 'canary';
 
 // Strip trailing channel path from URL for re-appending the correct channel
 // Handles both base URL (https://cdn.example.com) and legacy URL with channel (https://cdn.example.com/stable)
@@ -52,7 +48,7 @@ const stripChannelSuffix = (url) => url.replace(/\/(stable|nightly|canary|beta)\
 
 // 根据 channel 配置 publish provider
 // - 所有渠道 + UPDATE_SERVER_URL: 使用 generic (S3)
-// - 无 UPDATE_SERVER_URL: 回退到 GitHub (本地开发)
+// - 无 UPDATE_SERVER_URL: 禁用发布和更新元数据生成
 const getPublishConfig = () => {
   const channelPath = isStable ? 'stable' : isNightly ? 'nightly' : channel || 'stable';
 
@@ -68,15 +64,8 @@ const getPublishConfig = () => {
     ];
   }
 
-  // 本地开发无 S3 时回退到 GitHub
-  console.info(`📦 ${channelPath} channel: No UPDATE_SERVER_URL, falling back to GitHub provider`);
-  return [
-    {
-      owner: 'lobehub',
-      provider: 'github',
-      repo: 'lobehub',
-    },
-  ];
+  console.info(`📦 ${channelPath} channel: No UPDATE_SERVER_URL, publishing disabled`);
+  return null;
 };
 
 // Keep only these Electron Framework localization folders (*.lproj)
@@ -89,24 +78,6 @@ if (!hasAppleCertificate) {
   process.env.CSC_IDENTITY_AUTO_DISCOVERY = 'false';
   console.info('⚠️ Apple certificate link not found, macOS artifacts will be unsigned.');
 }
-
-// 根据版本类型确定协议 scheme
-const getProtocolScheme = () => {
-  const prefix = isModelNetDesktop ? 'modelnet' : 'lobehub';
-  if (isCanary) return `${prefix}-canary`;
-  if (isNightly) return `${prefix}-nightly`;
-  return prefix;
-};
-
-const protocolScheme = getProtocolScheme();
-
-// Determine icon file based on version type
-const getIconFileName = () => {
-  if (isModelNetDesktop) return 'ModelNet';
-  if (isStable || isCanary) return 'Icon';
-  // nightly uses pre-release icon
-  return 'Icon-nightly';
-};
 
 /**
  * @type {import('electron-builder').Configuration}
@@ -129,28 +100,29 @@ const config = {
     console.info('📦 Building CLI for embedding...');
     execSync('npm run build:cli', { stdio: 'inherit', cwd: __dirname });
     const cliSrc = path.resolve(__dirname, '../cli/dist/index.js');
-    const cliDest = path.resolve(__dirname, 'resources/bin/lobe-cli.js');
+    const legacyCliDest = path.resolve(__dirname, 'resources/bin/lobe-cli.js');
+    const cliDest = path.resolve(__dirname, 'resources/bin/modelnet-cli.js');
     await fs.mkdir(path.dirname(cliDest), { recursive: true });
+    await fs.rm(legacyCliDest, { force: true });
     await fs.copyFile(cliSrc, cliDest);
 
     // Write a minimal package.json next to the CLI bundle so that
     // createRequire('../package.json') resolves correctly in the packaged app.
-    // The CLI script lives at Resources/bin/lobe-cli.js, so '../package.json'
+    // The CLI script lives at Resources/bin/modelnet-cli.js, so '../package.json'
     // resolves to Resources/package.json.
     const cliPkg = JSON.parse(
       await fs.readFile(path.resolve(__dirname, '../cli/package.json'), 'utf8'),
     );
     await fs.writeFile(
       path.resolve(__dirname, 'resources/cli-package.json'),
-      JSON.stringify({ name: cliPkg.name, type: 'module', version: cliPkg.version }),
+      JSON.stringify({ name: 'modelnet-cli', type: 'module', version: cliPkg.version }),
     );
-    console.info('✅ CLI bundle copied to resources/bin/lobe-cli.js');
+    console.info('✅ CLI bundle copied to resources/bin/modelnet-cli.js');
   },
   /**
    * AfterPack hook for post-processing:
    * 1. Copy native modules to asar.unpacked (resolving pnpm symlinks)
-   * 2. Copy Liquid Glass Assets.car for macOS 26+
-   * 3. Remove unused Electron Framework localizations
+   * 2. Remove unused Electron Framework localizations
    *
    * @see https://github.com/electron-userland/electron-builder/issues/9254
    * @see https://github.com/MultiboxLabs/flow-browser/pull/159
@@ -182,10 +154,6 @@ const config = {
       return;
     }
 
-    const iconFileName = getIconFileName();
-    const assetsCarSource = path.join(__dirname, 'build', `${iconFileName}.Assets.car`);
-    const assetsCarDest = path.join(resourcesPath, 'Assets.car');
-
     // Remove unused Electron Framework localizations to reduce app size
     const frameworkResourcePath = path.join(
       context.appOutDir,
@@ -213,30 +181,20 @@ const config = {
     } catch {
       // Non-critical: folder may not exist depending on packaging details
     }
-
-    try {
-      await fs.access(assetsCarSource);
-      await fs.copyFile(assetsCarSource, assetsCarDest);
-      console.info(`✅ Copied Liquid Glass icon: ${iconFileName}.Assets.car`);
-    } catch {
-      // Non-critical: Assets.car not found or copy failed
-      // App will use fallback .icns icon on all macOS versions
-      console.info(`⏭️  Skipping Assets.car (not found or copy failed)`);
-    }
   },
   appId,
-  ...(isModelNetDesktop ? { productName: desktopProductName } : {}),
-  ...(isModelNetDesktop
-    ? {
-        extraMetadata: {
-          author: 'ModelNet',
-          description: 'ModelNet Desktop Application',
-          homepage: modelNetDesktopServerUrl,
-          name: 'modelnet-desktop',
-          productName: desktopProductName,
-        },
-      }
-    : {}),
+  productName: desktopProductName,
+  extraMetadata: {
+    author: 'ModelNet',
+    description: 'ModelNet Desktop Application',
+    homepage: 'http://123.56.135.150',
+    name: 'modelnet-desktop',
+    productName: desktopProductName,
+    repository: {
+      type: 'git',
+      url: 'https://github.com/WNDS-JNU/ModelNet-Toc.git',
+    },
+  },
   appImage: {
     artifactName: '${productName}-${version}.${ext}',
   },
@@ -253,7 +211,7 @@ const config = {
 
   dmg: {
     artifactName: '${productName}-${version}-${arch}.${ext}',
-    background: 'resources/dmg.png',
+    background: 'resources/modelnet-dmg.png',
     contents: [
       { type: 'file', x: 150, y: 240 },
       { type: 'link', path: '/Applications', x: 450, y: 240 },
@@ -274,7 +232,7 @@ const config = {
     'resources',
     'dist/renderer/**/*',
     '!resources/locales',
-    '!resources/dmg.png',
+    '!resources/modelnet-dmg.png',
     // Exclude all node_modules first
     '!node_modules',
     // Then explicitly include native modules using object form (handles pnpm symlinks)
@@ -285,13 +243,13 @@ const config = {
   generateUpdatesFilesForAllChannels: true,
   linux: {
     category: 'Utility',
-    ...(linuxExecutableName ? { executableName: linuxExecutableName } : {}),
-    icon: 'build/icon.png',
-    maintainer: 'electronjs.org',
+    executableName: linuxExecutableName,
+    icon: 'build/modelnet-icon.png',
+    maintainer: 'ModelNet',
     target: ['AppImage', 'snap', 'deb', 'rpm', 'tar.gz'],
   },
   mac: {
-    ...(isModelNetDesktop ? { icon: 'build/modelnet-icon.icns' } : {}),
+    icon: 'build/modelnet-icon.icns',
     compression: 'maximum',
     entitlementsInherit: 'build/entitlements.mac.plist',
     extendInfo: {
@@ -327,12 +285,15 @@ const config = {
     allowToChangeInstallationDirectory: true,
     artifactName: '${productName}-${version}-setup.${ext}',
     createDesktopShortcut: 'always',
-    installerHeader: './build/nsis-header.bmp',
-    installerSidebar: './build/nsis-sidebar.bmp',
+    installerHeader: './build/modelnet-nsis-header.bmp',
+    installerHeaderIcon: './build/modelnet-icon.ico',
+    installerIcon: './build/modelnet-icon.ico',
+    installerSidebar: './build/modelnet-nsis-sidebar.bmp',
     oneClick: false,
     shortcutName: '${productName}',
     uninstallDisplayName: '${productName}',
-    uninstallerSidebar: './build/nsis-sidebar.bmp',
+    uninstallerIcon: './build/modelnet-icon.ico',
+    uninstallerSidebar: './build/modelnet-nsis-sidebar.bmp',
   },
   protocols: [
     {
@@ -356,6 +317,7 @@ const config = {
 
   win: {
     executableName: desktopProductName,
+    icon: 'build/modelnet-icon.ico',
   },
 };
 

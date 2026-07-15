@@ -96,8 +96,8 @@ export class App {
     logger.info('Starting ModelNet...');
 
     // Append the CLI wrapper directory to PATH so spawned shells can resolve
-    // `lobehub` / `lh` / `lobe`. Managed binary dirs (e.g. agent-browser) are
-    // augmented separately by `binaryManager.augmentPath()` during bootstrap.
+    // `modelnet` plus legacy compatibility aliases. Managed binary dirs
+    // (e.g. agent-browser) are augmented separately during bootstrap.
     const pathSep = process.platform === 'win32' ? ';' : ':';
     process.env.PATH = `${process.env.PATH}${pathSep}${getCliWrapperDir()}`;
 
@@ -442,7 +442,7 @@ export class App {
 
     logger.debug('Setting up dev branding');
     if (electronIs.macOS()) {
-      app.dock!.setIcon(path.join(buildDir, 'icon-dev.png'));
+      app.dock!.setIcon(path.join(buildDir, 'modelnet-icon.png'));
     }
   };
 

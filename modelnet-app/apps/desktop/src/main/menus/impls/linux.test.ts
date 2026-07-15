@@ -15,7 +15,7 @@ vi.mock('electron', () => ({
     setApplicationMenu: vi.fn(),
   },
   app: {
-    getName: vi.fn(() => 'LobeChat'),
+    getName: vi.fn(() => 'ModelNet Desktop'),
     getVersion: vi.fn(() => '1.0.0'),
   },
   shell: {
@@ -84,7 +84,7 @@ const createMockApp = () => {
     const translations: Record<string, string> = {
       'about.title': 'About',
       'about.message': `${params?.appName || 'App'} ${params?.appVersion || '1.0.0'}`,
-      'about.detail': 'LobeChat Desktop Application',
+      'about.detail': 'ModelNet Desktop Application',
     };
     return translations[key] || key;
   });
@@ -109,6 +109,7 @@ const createMockApp = () => {
       })),
     },
     updaterManager: {
+      isUpdateEnabled: vi.fn(() => true),
       checkForUpdates: vi.fn(),
     },
     storeManager: {
@@ -274,7 +275,7 @@ describe('LinuxMenu', () => {
 
       expect(visitWebsiteItem).toBeDefined();
       await visitWebsiteItem.click();
-      expect(shell.openExternal).toHaveBeenCalledWith('https://lobehub.com');
+      expect(shell.openExternal).toHaveBeenCalledWith('http://123.56.135.150');
     });
 
     it('should handle github repo click', async () => {
@@ -286,7 +287,7 @@ describe('LinuxMenu', () => {
 
       expect(githubItem).toBeDefined();
       await githubItem.click();
-      expect(shell.openExternal).toHaveBeenCalledWith('https://github.com/lobehub/lobe-chat');
+      expect(shell.openExternal).toHaveBeenCalledWith('https://github.com/WNDS-JNU/ModelNet-Toc');
     });
 
     it('should handle about dialog click', () => {
@@ -654,7 +655,7 @@ describe('LinuxMenu', () => {
       aboutItem.click();
 
       const callArgs = (dialog.showMessageBox as any).mock.calls[0][0];
-      expect(callArgs.message).toContain('LobeChat');
+      expect(callArgs.message).toContain('ModelNet Desktop');
       expect(callArgs.message).toContain('1.0.0');
     });
   });

@@ -3,7 +3,7 @@ import type { AIChatModelCard } from '../types/aiModel';
 const modelNetChatModels: AIChatModelCard[] = [
   {
     abilities: {
-      functionCall: true,
+      functionCall: false,
     },
     displayName: 'ModelNet',
     enabled: true,
@@ -12,7 +12,7 @@ const modelNetChatModels: AIChatModelCard[] = [
   },
   {
     abilities: {
-      functionCall: true,
+      functionCall: false,
     },
     displayName: 'Auto Network',
     enabled: true,
@@ -21,7 +21,7 @@ const modelNetChatModels: AIChatModelCard[] = [
   },
   {
     abilities: {
-      functionCall: true,
+      functionCall: false,
     },
     displayName: 'Qwen3.5-35B-A3B-GPTQ-Int4',
     enabled: true,

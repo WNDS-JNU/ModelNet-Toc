@@ -4,6 +4,7 @@ import type {
 } from '@lobechat/electron-client-ipc';
 import { app, Notification } from 'electron';
 import * as electronIs from 'electron-is';
+import { MODELNET_DESKTOP_APP_ID } from '@/const/branding';
 
 import { getIpcContext } from '@/utils/ipc';
 import { createLogger } from '@/utils/logger';
@@ -89,7 +90,7 @@ export default class NotificationCtr extends ControllerModule {
 
       // Set app user model ID on Windows
       if (electronIs.windows()) {
-        app.setAppUserModelId('com.lobehub.chat');
+        app.setAppUserModelId(MODELNET_DESKTOP_APP_ID);
         logger.debug('Set Windows App User Model ID for notifications');
       }
 

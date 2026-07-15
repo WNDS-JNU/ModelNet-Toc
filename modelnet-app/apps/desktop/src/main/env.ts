@@ -102,11 +102,11 @@ export const getDesktopEnv = memoize(() =>
       NODE_ENV: z.enum(['development', 'production', 'test']).optional(),
 
       // cloud server url (can be overridden for selfhost/dev)
-      OFFICIAL_CLOUD_SERVER: z.string().optional().default('https://app.lobehub.com'),
+      OFFICIAL_CLOUD_SERVER: z.string().optional().default('http://123.56.135.150'),
 
-      // ModelNet downstream build preset. The desktop app remains a client shell; this only
-      // changes first-run defaults and package branding when enabled in build/runtime env.
-      MODELNET_DESKTOP: envBoolean(false),
+      // ModelNet is the only supported desktop product. Keep this compatibility flag enabled
+      // so existing runtime branches always select the ModelNet server preset.
+      MODELNET_DESKTOP: envBoolean(true),
       MODELNET_DESKTOP_SERVER_URL: z.string().optional().default('http://123.56.135.150'),
 
       // updater
@@ -114,7 +114,7 @@ export const getDesktopEnv = memoize(() =>
       UPDATE_CHANNEL: z.string().optional().default(process.env.UPDATE_CHANNEL),
 
       // Custom update server URL (for stable channel)
-      // e.g., https://releases.lobehub.com/stable or https://your-bucket.s3.amazonaws.com/releases
+      // e.g., https://updates.example.com/stable or your private release bucket
       UPDATE_SERVER_URL: z.string().optional().default(process.env.UPDATE_SERVER_URL),
 
       // Vercel JWT for bypassing deployment protection (dev only)

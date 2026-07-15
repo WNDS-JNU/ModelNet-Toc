@@ -2,6 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ModelProvider } from '../../const/modelProvider';
 import { loadModels, LOBE_DEFAULT_MODEL_LIST } from '../index';
+import modelnetModels from '../modelnet';
+
+describe('ModelNet model defaults', () => {
+  it('disables function calling for every provided model', () => {
+    expect(modelnetModels.every((model) => model.abilities?.functionCall === false)).toBe(true);
+  });
+});
 
 describe('loadModels', () => {
   it('returns the static model list by default', async () => {

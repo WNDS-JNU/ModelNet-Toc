@@ -66,4 +66,27 @@ describe('OIDC route', () => {
     await expect(response.text()).resolves.toContain('body stream aborted');
     expect(mocks.middleware).not.toHaveBeenCalled();
   });
+
+  it('preserves the provider invalid_grant HTTP status', async () => {
+    mocks.createNodeRequest.mockResolvedValue({});
+    mocks.createNodeResponse.mockImplementation((_resolve) => ({
+      nodeResponse: {},
+      responseBody: '{"error":"invalid_grant"}',
+      responseHeaders: { 'content-type': 'application/json' },
+      responseStatus: 400,
+    }));
+    mocks.middleware.mockImplementation((_request, _response, done) => done());
+
+    const { POST } = await import('./route');
+    const response = await POST(
+      new Request('https://example.com/oidc/token', {
+        body: 'grant_type=authorization_code&code=invalid',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        method: 'POST',
+      }) as unknown as NextRequest,
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: 'invalid_grant' });
+  });
 });

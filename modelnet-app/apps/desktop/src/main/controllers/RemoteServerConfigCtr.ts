@@ -13,6 +13,7 @@ import GatewayConnectionService from '@/services/gatewayConnectionSrv';
 import { appendVercelCookie } from '@/utils/http-headers';
 import { createLogger } from '@/utils/logger';
 import { netFetch } from '@/utils/net-fetch';
+import { parseOIDCTokenResponse } from '@/utils/oidc-token-response';
 import { setDesktopUserAgentHeader } from '@/utils/user-agent';
 
 import { ControllerModule, IpcMethod } from './index';
@@ -495,28 +496,20 @@ export default class RemoteServerConfigCtr extends ControllerModule {
       setDesktopUserAgentHeader(headers);
       const response = await netFetch(tokenUrl.toString(), { body, headers, method: 'POST' });
 
-      if (!response.ok) {
-        // Try to parse error response
-        const errorData = await response.json().catch(() => ({}));
-        const errorMessage = `Token refresh failed: ${response.status} ${response.statusText} ${
-          errorData.error_description || errorData.error || ''
-        }`.trim();
-        logger.error(errorMessage, errorData);
-        return { error: errorMessage, success: false };
+      const tokenResponse = await parseOIDCTokenResponse(response, 'Token refresh failed');
+      logger.debug('OIDC token refresh response metadata:', tokenResponse.metadata);
+
+      if ('error' in tokenResponse) {
+        logger.error(tokenResponse.error, tokenResponse.metadata);
+        return { error: tokenResponse.error, success: false };
       }
 
-      // Parse response
-      const data = await response.json();
-
-      // Check if response contains necessary tokens
-      if (!data.access_token || !data.refresh_token) {
-        logger.error('Refresh response missing access_token or refresh_token', data);
-        return { error: 'Missing tokens in refresh response', success: false };
-      }
-
-      // Save new tokens
       logger.info('Token refresh successful, saving new tokens.');
-      await this.saveTokens(data.access_token, data.refresh_token, data.expires_in);
+      await this.saveTokens(
+        tokenResponse.accessToken,
+        tokenResponse.refreshToken,
+        tokenResponse.expiresIn,
+      );
 
       return { success: true };
     } catch (error) {

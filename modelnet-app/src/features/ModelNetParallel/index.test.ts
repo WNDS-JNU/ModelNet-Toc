@@ -73,6 +73,9 @@ describe('ModelNetParallel helpers', () => {
       'inference-qwen3',
       'inference-deepseek',
     ]);
+    expect(
+      modelnet?.children.slice(0, 2).map((item) => item.abilities?.functionCall),
+    ).toEqual([false, false]);
     expect(getModelNetParallelCandidates(result, 'modelnet').map((item) => item.id)).toEqual([
       'inference-qwen3',
       'inference-deepseek',

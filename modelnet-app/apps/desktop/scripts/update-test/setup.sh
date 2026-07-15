@@ -64,7 +64,7 @@ cat > "$SCRIPT_DIR/dev-app-update.local.yml" << 'EOF'
 
 provider: generic
 url: http://localhost:8787/stable
-updaterCacheDirName: lobehub-desktop-local-test
+updaterCacheDirName: modelnet-desktop-local-test
 channel: stable
 EOF
 echo "✅ 创建本地测试配置文件"

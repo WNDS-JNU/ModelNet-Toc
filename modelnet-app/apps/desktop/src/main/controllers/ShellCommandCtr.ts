@@ -17,20 +17,20 @@ const logger = createLogger('controllers:ShellCommandCtr');
 
 const processManager = new ShellProcessManager();
 
-/** Prefix for a simple `lh`/`lobe`/`lobehub` invocation (keyword + boundary, args via slice). */
-const SIMPLE_LH_PREFIX = /^\s*(?:lh|lobe|lobehub)(?=\s|$)/;
+/** Prefix for ModelNet CLI and its legacy compatibility aliases. */
+const SIMPLE_MODELNET_PREFIX = /^\s*(?:modelnet|lh|lobe|lobehub)(?=\s|$)/;
 
 export default class ShellCommandCtr extends ControllerModule {
   static override readonly groupName = 'shellCommand';
 
   @IpcMethod()
   async handleRunCommand(params: RunCommandParams): Promise<RunCommandResult> {
-    const prefixMatch = SIMPLE_LH_PREFIX.exec(params.command);
+    const prefixMatch = SIMPLE_MODELNET_PREFIX.exec(params.command);
     if (prefixMatch) {
       const cliCtr = this.app.getController(CliCtr);
       if (cliCtr) {
         const args = params.command.slice(prefixMatch[0].length).trim();
-        logger.debug('Routing lh command to CliCtr.runCliCommand:', args);
+        logger.debug('Routing ModelNet CLI command to CliCtr.runCliCommand:', args);
         const result = await cliCtr.runCliCommand(args);
         return {
           exit_code: result.exitCode,

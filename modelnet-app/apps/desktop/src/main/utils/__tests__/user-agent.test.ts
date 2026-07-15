@@ -11,7 +11,7 @@ vi.mock('electron', () => ({
 
 describe('user-agent utilities', () => {
   it('builds desktop user agent from Electron app version', () => {
-    expect(getDesktopUserAgent()).toBe('LobeHub Desktop/1.2.3');
+    expect(getDesktopUserAgent()).toBe('ModelNet Desktop/1.2.3');
   });
 
   it('sets User-Agent on Headers', () => {
@@ -19,7 +19,7 @@ describe('user-agent utilities', () => {
 
     setDesktopUserAgentHeader(headers);
 
-    expect(headers.get('User-Agent')).toBe('LobeHub Desktop/1.2.3');
+    expect(headers.get('User-Agent')).toBe('ModelNet Desktop/1.2.3');
   });
 
   it('replaces case-insensitive User-Agent keys on plain objects', () => {
@@ -27,7 +27,7 @@ describe('user-agent utilities', () => {
 
     setDesktopUserAgentHeader(headers);
 
-    expect(headers).toEqual({ 'User-Agent': 'LobeHub Desktop/1.2.3' });
+    expect(headers).toEqual({ 'User-Agent': 'ModelNet Desktop/1.2.3' });
     expect(app.getVersion).toHaveBeenCalled();
   });
 });

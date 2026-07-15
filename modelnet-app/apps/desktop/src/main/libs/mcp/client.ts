@@ -34,7 +34,7 @@ export class MCPClient {
   private isStdio: boolean = false;
 
   constructor(params: MCPClientParams) {
-    this.mcp = new Client({ name: 'lobehub-desktop-mcp-client', version: '1.0.0' });
+    this.mcp = new Client({ name: 'modelnet-desktop-mcp-client', version: '1.0.0' });
 
     switch (params.type) {
       case 'http': {
@@ -77,7 +77,7 @@ export class MCPClient {
 
       default: {
         // Exhaustive check
-         
+
         const _never: never = params;
         throw new Error(`Unsupported MCP connection type: ${(params as any).type}`);
       }
@@ -106,7 +106,7 @@ export class MCPClient {
   private isMethodNotFoundError(error: unknown) {
     const err = error as any;
     if (!err) return false;
-     
+
     if (err.code === -32601) return true;
     if (typeof err.message === 'string' && err.message.includes('Method not found')) return true;
     return false;

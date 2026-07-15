@@ -251,14 +251,14 @@ export const normalizeModelNetSerialTopology = (
 };
 
 const parallelModel: AiModelForSelect = {
-  abilities: {},
+  abilities: { functionCall: false },
   description: 'Run selected ModelNet models in parallel and synthesize one answer.',
   displayName: MODELNET_PARALLEL_DISPLAY_NAME,
   id: MODELNET_PARALLEL_MODEL_ID,
 };
 
 const serialModel: AiModelForSelect = {
-  abilities: {},
+  abilities: { functionCall: false },
   description: 'Run selected ModelNet models in a gateway-managed serial chain.',
   displayName: MODELNET_SERIAL_DISPLAY_NAME,
   id: MODELNET_SERIAL_MODEL_ID,

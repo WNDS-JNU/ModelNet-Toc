@@ -6,7 +6,7 @@
  * Usage:
  * node scripts/generate-oidc-jwk.mjs
  *
- * Set the output single-line JSON string as the environment variable OIDC_JWKS_KEY
+ * Set the output single-line JSON string as the environment variable JWKS_KEY
  */
 import { exportJWK, generateKeyPair } from 'jose';
 import crypto from 'node:crypto';
@@ -23,6 +23,7 @@ async function generateJwks() {
     // Generate RS256 key pair
     const { privateKey } = await generateKeyPair('RS256', {
       extractable: true,
+      modulusLength: 2048,
     });
 
     // Export as JWK format
@@ -44,10 +45,10 @@ async function generateJwks() {
 
     // Console output
     console.error('\n✅ JWKS 已生成');
-    console.error('请将上面输出的 JSON 字符串直接设置为环境变量 OIDC_JWKS_KEY');
+    console.error('请将上面输出的 JSON 字符串直接设置为环境变量 JWKS_KEY');
     console.error('例如在 .env 文件中添加:');
     console.error('\n> 环境变量配置行 (可直接复制):');
-    console.error(`OIDC_JWKS_KEY='${jwksString}'`);
+    console.error(`JWKS_KEY='${jwksString}'`);
     console.error('\n⚠️ 重要: 请妥善保管此密钥，它用于签署所有 OIDC 令牌');
 
     return jwks;

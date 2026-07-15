@@ -84,7 +84,7 @@ export class TrayManager {
   initializeMainTray() {
     logger.debug('Initialize main tray');
     return this.retrieveOrInitialize({
-      iconPath: isMac ? 'trayTemplate.png' : 'tray.png',
+      iconPath: isMac ? 'modelnet-trayTemplate.png' : 'modelnet-tray.png',
       identifier: 'main',
       isTemplateImage: isMac,
       tooltip: name,
