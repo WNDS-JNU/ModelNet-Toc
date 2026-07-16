@@ -33,6 +33,18 @@ const readStream = async (stream: Readable) => {
 
 describe('OIDC HTTP adapter', () => {
   describe('createNodeRequest', () => {
+    it.each([
+      '/oidc/.well-known/openid-configuration',
+      '/oidc/.well-known/oauth-authorization-server',
+    ])('maps the public metadata path %s to the provider root', async (path) => {
+      const request = new Request(`https://example.com${path}`) as unknown as NextRequest;
+
+      const { createNodeRequest } = await import('./http-adapter');
+      const nodeRequest = await createNodeRequest(request);
+
+      expect(nodeRequest.url).toBe(path.slice('/oidc'.length));
+    });
+
     it('passes POST bodies through as a readable Node stream without pre-parsing', async () => {
       const body = 'grant_type=authorization_code&code=test-code';
       const request = new Request('https://example.com/oidc/token?client_id=test', {

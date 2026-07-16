@@ -23,7 +23,7 @@ import type {
 
 // ─── Constants ───
 
-const DEFAULT_GATEWAY_URL = 'https://device-gateway.lobehub.com';
+const DEFAULT_GATEWAY_URL = 'https://123.56.135.150';
 const HEARTBEAT_INTERVAL = 30_000; // 30s
 const INITIAL_RECONNECT_DELAY = 1000; // 1s
 const MAX_RECONNECT_DELAY = 30_000; // 30s
@@ -245,14 +245,24 @@ export class GatewayClient extends EventEmitter {
   }
 
   private buildWsUrl(): string {
-    const wsProtocol = this.gatewayUrl.startsWith('https') ? 'wss' : 'ws';
-    const host = this.gatewayUrl.replace(/^https?:\/\//, '');
-    const params = new URLSearchParams({
-      connectionId: this.connectionId,
-      deviceId: this.deviceId,
-      hostname: os.hostname(),
-      platform: process.platform,
-    });
+    const url = new URL(this.gatewayUrl);
+    if (url.protocol === 'https:') {
+      url.protocol = 'wss:';
+    } else if (url.protocol === 'http:') {
+      url.protocol = 'ws:';
+    } else if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
+      throw new Error(`Unsupported Device Gateway protocol: ${url.protocol}`);
+    }
+
+    const basePath = url.pathname.replace(/\/+$/, '');
+    url.pathname = `${basePath}/ws`;
+    url.hash = '';
+
+    const params = url.searchParams;
+    params.set('connectionId', this.connectionId);
+    params.set('deviceId', this.deviceId);
+    params.set('hostname', os.hostname());
+    params.set('platform', process.platform);
 
     if (this.channel) {
       params.set('channel', this.channel);
@@ -267,7 +277,7 @@ export class GatewayClient extends EventEmitter {
       params.set('userId', this.userId);
     }
 
-    return `${wsProtocol}://${host}/ws?${params.toString()}`;
+    return url.toString();
   }
 
   // ─── WebSocket Event Handlers ───

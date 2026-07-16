@@ -12,6 +12,16 @@ const log = debug('lobe-oidc:http-adapter');
 
 const methodsWithBody = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
+const OIDC_PUBLIC_METADATA_PREFIX = '/oidc/.well-known/';
+
+/**
+ * oidc-provider registers discovery endpoints at `/.well-known/*` even when
+ * its issuer has a path. The Next.js catch-all route lives below `/oidc`, so
+ * only metadata requests need their public prefix removed before dispatch.
+ */
+export const normalizeOIDCProviderPath = (pathname: string) =>
+  pathname.startsWith(OIDC_PUBLIC_METADATA_PREFIX) ? pathname.slice('/oidc'.length) : pathname;
+
 /**
  * Convert Next.js request headers to standard Node.js HTTP header format
  */
@@ -32,7 +42,7 @@ export const createNodeRequest = async (req: NextRequest): Promise<IncomingMessa
   const url = new URL(req.url);
 
   // Compute path relative to prefix
-  let providerPath = url.pathname;
+  let providerPath = normalizeOIDCProviderPath(url.pathname);
 
   // Ensure path always starts with /
   if (!providerPath.startsWith('/')) {

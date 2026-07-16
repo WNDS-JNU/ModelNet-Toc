@@ -10,7 +10,7 @@ import { type ToolExecutionContext } from '../../types';
 const mockQueryDeviceList = vi.fn();
 vi.mock('@/server/services/deviceGateway', () => ({
   deviceGateway: {
-    queryDeviceList: (...args: any[]) => mockQueryDeviceList(...args),
+    queryDeviceListStrict: (...args: any[]) => mockQueryDeviceList(...args),
   },
 }));
 

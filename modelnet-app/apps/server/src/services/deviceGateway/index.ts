@@ -5,6 +5,7 @@ import {
   type DeviceMessageApiResult,
   type DeviceStatusResult,
   type DeviceSystemInfo,
+  type GatewayDevice,
   type DeviceToolCallResult,
   GatewayHttpClient,
   type GatewayMcpStdioParams,
@@ -79,13 +80,67 @@ const assertPathsWithinWorkspace = (
   }
 };
 
+export type DeviceGatewayStatus =
+  'not_configured' | 'unavailable' | 'unauthorized' | 'offline' | 'online';
+
+export interface DeviceGatewayStatusResult extends DeviceStatusResult {
+  status: DeviceGatewayStatus;
+}
+
+const gatewayStatusMessage: Record<Exclude<DeviceGatewayStatus, 'offline' | 'online'>, string> = {
+  not_configured: 'Device Gateway is not configured',
+  unavailable: 'Device Gateway unavailable',
+  unauthorized: 'Device Gateway authentication failed',
+};
+
+const classifyGatewayFailure = (error: unknown): 'unavailable' | 'unauthorized' => {
+  if (!error || typeof error !== 'object') return 'unavailable';
+  const candidate = error as { code?: unknown; status?: unknown };
+  const code = typeof candidate.code === 'string' ? candidate.code : '';
+  return candidate.status === 401 || /UNAUTHORIZED|AUTH/i.test(code)
+    ? 'unauthorized'
+    : 'unavailable';
+};
+
+export class DeviceGatewayQueryError extends Error {
+  readonly gatewayStatus: 'not_configured' | 'unavailable' | 'unauthorized';
+
+  constructor(
+    gatewayStatus: 'not_configured' | 'unavailable' | 'unauthorized',
+    options?: ErrorOptions,
+  ) {
+    super(gatewayStatusMessage[gatewayStatus], options);
+    this.name = 'DeviceGatewayQueryError';
+    this.gatewayStatus = gatewayStatus;
+  }
+}
+
 export type { DeviceAttachment, DeviceStatusResult, DeviceSystemInfo };
 
 export class DeviceGateway {
   private client: GatewayHttpClient | null = null;
 
   get isConfigured(): boolean {
-    return !!gatewayEnv.DEVICE_GATEWAY_URL;
+    return !!(gatewayEnv.DEVICE_GATEWAY_URL && gatewayEnv.DEVICE_GATEWAY_SERVICE_TOKEN);
+  }
+
+  async queryGatewayStatus(
+    userId: string,
+    workspaceId?: string,
+  ): Promise<DeviceGatewayStatusResult> {
+    const client = this.getClient();
+    if (!client) return { deviceCount: 0, online: false, status: 'not_configured' };
+
+    try {
+      const result = await client.queryDeviceStatusStrict(userId, workspaceId);
+      return { ...result, status: result.online ? 'online' : 'offline' };
+    } catch (error) {
+      return {
+        deviceCount: 0,
+        online: false,
+        status: classifyGatewayFailure(error),
+      };
+    }
   }
 
   async queryDeviceStatus(userId: string, workspaceId?: string): Promise<DeviceStatusResult> {
@@ -106,27 +161,39 @@ export class DeviceGateway {
     if (!client) return [];
 
     try {
-      const devices = await client.queryDeviceList(userId, workspaceId);
-      // The gateway already dedupes to one entry per physical device, with its
-      // live connections nested as `channels`. Map to the runtime shape; every
-      // returned device has at least one channel, so it's online.
-      return devices.map((d) => ({
-        // `channels` may be absent if the gateway worker deploy lags behind the
-        // server (separate Cloudflare deploy); tolerate the legacy flat shape.
-        channels: (d.channels ?? []).map((c) => ({
-          channel: c.channel,
-          connectedAt: new Date(c.connectedAt).toISOString(),
-          connectionId: c.connectionId,
-        })),
-        deviceId: d.deviceId,
-        hostname: d.hostname,
-        lastSeen: new Date(d.connectedAt).toISOString(),
-        online: true,
-        platform: d.platform,
-      }));
+      return this.mapDevices(await client.queryDeviceList(userId, workspaceId));
     } catch {
       return [];
     }
+  }
+
+  async queryDeviceListStrict(userId: string, workspaceId?: string): Promise<DeviceAttachment[]> {
+    const client = this.getClient();
+    if (!client) throw new DeviceGatewayQueryError('not_configured');
+
+    try {
+      return this.mapDevices(await client.queryDeviceListStrict(userId, workspaceId));
+    } catch (error) {
+      throw new DeviceGatewayQueryError(classifyGatewayFailure(error), { cause: error });
+    }
+  }
+
+  private mapDevices(devices: GatewayDevice[]): DeviceAttachment[] {
+    // The gateway already dedupes to one entry per physical device, with its
+    // live connections nested as `channels`. Every returned device is online.
+    return devices.map((device) => ({
+      // Tolerate the legacy flat shape during a rolling gateway deployment.
+      channels: (device.channels ?? []).map((connection) => ({
+        channel: connection.channel,
+        connectedAt: new Date(connection.connectedAt).toISOString(),
+        connectionId: connection.connectionId,
+      })),
+      deviceId: device.deviceId,
+      hostname: device.hostname,
+      lastSeen: new Date(device.connectedAt).toISOString(),
+      online: true,
+      platform: device.platform,
+    }));
   }
 
   async queryDeviceSystemInfo(
@@ -1046,6 +1113,7 @@ export class DeviceGateway {
       arguments: string;
       deviceId: string;
       identifier: string;
+      operationId?: string;
       params: GatewayMcpStdioParams;
       userId: string;
       workspaceId?: string;
@@ -1062,7 +1130,8 @@ export class DeviceGateway {
     }
 
     log(
-      'executeMcpCall: userId=%s, deviceId=%s, mcp=%s/%s',
+      'executeMcpCall: operationId=%s, userId=%s, deviceId=%s, mcp=%s/%s',
+      mcpCall.operationId ?? 'N/A',
       mcpCall.userId,
       mcpCall.deviceId,
       mcpCall.identifier,

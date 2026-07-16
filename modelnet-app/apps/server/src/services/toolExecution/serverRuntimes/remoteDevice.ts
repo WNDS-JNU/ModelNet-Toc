@@ -42,11 +42,13 @@ export const remoteDeviceRuntime: ServerRuntimeRegistration = {
         // personal devices), still tagged with scope.
         if (!serverDB) {
           const scope = workspaceId ? ('workspace' as const) : ('personal' as const);
-          const online = await deviceGateway.queryDeviceList(userId, workspaceId);
+          const online = await deviceGateway.queryDeviceListStrict(userId, workspaceId);
           return online.map((d) => ({ ...d, scope }));
         }
 
-        const devices = await getScopedOnlineDevices(serverDB, userId, workspaceId);
+        const devices = await getScopedOnlineDevices(serverDB, userId, workspaceId, {
+          strictGateway: true,
+        });
         log(
           'listOnlineDevices: workspaceId=%o -> %d device(s): %o',
           workspaceId,

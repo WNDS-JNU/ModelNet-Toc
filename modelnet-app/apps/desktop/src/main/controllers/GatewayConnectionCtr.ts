@@ -198,6 +198,7 @@ export default class GatewayConnectionCtr extends ControllerModule {
 
     // Wire up token provider and refresher
     srv.setTokenProvider(() => this.remoteServerConfigCtr.getAccessToken());
+    srv.setServerUrlProvider(() => this.remoteServerConfigCtr.getRemoteServerUrl());
     srv.setTokenRefresher(() => this.remoteServerConfigCtr.refreshAccessToken());
 
     // Wire up tool call handler
@@ -240,8 +241,10 @@ export default class GatewayConnectionCtr extends ControllerModule {
   }
 
   @IpcMethod()
-  async getConnectionStatus(): Promise<{ status: GatewayConnectionStatus }> {
-    return { status: this.service.getStatus() };
+  async getConnectionStatus(): Promise<{ error?: string; status: GatewayConnectionStatus }> {
+    const error = this.service.getConnectionError();
+    const status = this.service.getStatus();
+    return error ? { error, status } : { status };
   }
 
   @IpcMethod()

@@ -429,6 +429,7 @@ describe('GatewayHttpClient', () => {
         arguments: '{"symbol":"AAPL"}',
         deviceId: 'device-1',
         identifier: 'kimi-datasource',
+        operationId: 'operation-1',
         params: {
           args: ['stock-mcp'],
           command: 'npx',
@@ -437,6 +438,7 @@ describe('GatewayHttpClient', () => {
           type: 'stdio',
         },
         userId: 'user-1',
+        workspaceId: 'workspace-1',
       });
 
       expect(result).toEqual({
@@ -458,6 +460,8 @@ describe('GatewayHttpClient', () => {
       // Routing fields are lifted out of the call descriptor, not tunneled.
       expect(body.toolCall.deviceId).toBeUndefined();
       expect(body.deviceId).toBe('device-1');
+      expect(body.operationId).toBe('operation-1');
+      expect(body.workspaceId).toBe('workspace-1');
     });
 
     it('should surface non-ok responses as a failed result', async () => {

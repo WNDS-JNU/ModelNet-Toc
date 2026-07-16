@@ -22,7 +22,7 @@ export class RemoteDeviceExecutionRuntime {
         content:
           onlineDevices.length > 0
             ? JSON.stringify(onlineDevices)
-            : 'No online devices found. Please make sure your desktop application is running and connected.',
+            : 'No authenticated desktop WebSocket connection is online for the current account or workspace scope.',
         state: { devices: onlineDevices },
         success: true,
       };

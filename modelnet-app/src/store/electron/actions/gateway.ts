@@ -32,22 +32,28 @@ export class ElectronGatewayActionImpl {
   }
 
   connectGateway = async (): Promise<void> => {
-    this.#set({ gatewayConnectionStatus: 'connecting' });
+    this.#set({ gatewayConnectionError: undefined, gatewayConnectionStatus: 'connecting' });
     try {
       const result = await gatewayConnectionService.connect();
       if (!result.success) {
-        this.#set({ gatewayConnectionStatus: 'disconnected' });
+        this.#set({
+          gatewayConnectionError: result.error,
+          gatewayConnectionStatus: 'disconnected',
+        });
       }
     } catch (error) {
       console.error('Gateway connect failed:', error);
-      this.#set({ gatewayConnectionStatus: 'disconnected' });
+      this.#set({
+        gatewayConnectionError: error instanceof Error ? error.message : String(error),
+        gatewayConnectionStatus: 'disconnected',
+      });
     }
   };
 
   disconnectGateway = async (): Promise<void> => {
     try {
       await gatewayConnectionService.disconnect();
-      this.#set({ gatewayConnectionStatus: 'disconnected' });
+      this.#set({ gatewayConnectionError: undefined, gatewayConnectionStatus: 'disconnected' });
     } catch (error) {
       console.error('Gateway disconnect failed:', error);
     }
@@ -57,8 +63,12 @@ export class ElectronGatewayActionImpl {
     await mutate(electronKeys.gatewayDeviceInfo());
   };
 
-  setGatewayConnectionStatus = (status: GatewayConnectionStatus): void => {
-    this.#set({ gatewayConnectionStatus: status }, false, 'setGatewayConnectionStatus');
+  setGatewayConnectionStatus = (status: GatewayConnectionStatus, error?: string): void => {
+    this.#set(
+      { gatewayConnectionError: error, gatewayConnectionStatus: status },
+      false,
+      'setGatewayConnectionStatus',
+    );
   };
 
   updateDeviceDescription = async (description: string): Promise<void> => {
@@ -91,13 +101,20 @@ export class ElectronGatewayActionImpl {
     );
   };
 
-  useFetchGatewayStatus = (): SWRResponse<{ status: GatewayConnectionStatus }> => {
-    return useSWR<{ status: GatewayConnectionStatus }>(
+  useFetchGatewayStatus = (): SWRResponse<{
+    error?: string;
+    status: GatewayConnectionStatus;
+  }> => {
+    return useSWR<{ error?: string; status: GatewayConnectionStatus }>(
       'electron:getGatewayConnectionStatus',
       async () => gatewayConnectionService.getConnectionStatus(),
       {
         onSuccess: (data) => {
-          this.#set({ gatewayConnectionStatus: data.status }, false, 'setGatewayConnectionStatus');
+          this.#set(
+            { gatewayConnectionError: data.error, gatewayConnectionStatus: data.status },
+            false,
+            'setGatewayConnectionStatus',
+          );
         },
       },
     );

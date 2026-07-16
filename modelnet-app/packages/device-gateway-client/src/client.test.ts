@@ -136,6 +136,35 @@ describe('GatewayClient', () => {
       expect(ws.url).toContain('userId=test-user');
     });
 
+    it.each([
+      ['https://gateway.test.com/dev', '/dev/ws'],
+      ['https://gateway.test.com/dev/', '/dev/ws'],
+    ])('should preserve the gateway base path for %s', (gatewayUrl, expectedPath) => {
+      const c = new GatewayClient({
+        autoReconnect: false,
+        deviceId: 'dev-1',
+        gatewayUrl: `${gatewayUrl}?source=desktop`,
+        token: 'tok',
+      });
+      c.connect();
+
+      const ws = (c as any).ws;
+      const url = new URL(ws.url);
+      expect(url.pathname).toBe(expectedPath);
+      expect(url.searchParams.get('source')).toBe('desktop');
+      expect(url.searchParams.get('deviceId')).toBe('dev-1');
+      expect(url.searchParams.get('connectionId')).toBe(c.currentConnectionId);
+      c.disconnect();
+    });
+
+    it('should use the ModelNet production gateway by default', () => {
+      const c = new GatewayClient({ autoReconnect: false, token: 'tok' });
+      c.connect();
+      const ws = (c as any).ws;
+      expect(new URL(ws.url).origin).toBe('wss://123.56.135.150');
+      c.disconnect();
+    });
+
     it('should include connectionId and channel in the URL when provided', () => {
       const c = new GatewayClient({
         autoReconnect: false,

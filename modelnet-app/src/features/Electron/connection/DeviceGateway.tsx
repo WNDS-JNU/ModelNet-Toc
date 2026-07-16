@@ -10,6 +10,10 @@ import { useElectronStore } from '@/store/electron';
 import { electronSyncSelectors } from '@/store/electron/selectors';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
+  errorText: css`
+    font-size: 12px;
+    color: ${cssVar.colorError};
+  `,
   fieldLabel: css`
     font-size: 12px;
     color: ${cssVar.colorTextDescription};
@@ -51,6 +55,7 @@ const DeviceGateway = memo(() => {
   const { t } = useTranslation('electron');
   const [
     gatewayStatus,
+    gatewayError,
     connectGateway,
     disconnectGateway,
     setGatewayConnectionStatus,
@@ -61,6 +66,7 @@ const DeviceGateway = memo(() => {
     gatewayDeviceInfo,
   ] = useElectronStore((s) => [
     s.gatewayConnectionStatus,
+    s.gatewayConnectionError,
     s.connectGateway,
     s.disconnectGateway,
     s.setGatewayConnectionStatus,
@@ -74,8 +80,8 @@ const DeviceGateway = memo(() => {
   useFetchGatewayStatus();
   useFetchGatewayDeviceInfo();
 
-  useWatchBroadcast('gatewayConnectionStatusChanged', ({ status }) => {
-    setGatewayConnectionStatus(status);
+  useWatchBroadcast('gatewayConnectionStatusChanged', ({ error, status }) => {
+    setGatewayConnectionStatus(status, error);
   });
 
   const isConnected = gatewayStatus === 'connected';
@@ -120,6 +126,8 @@ const DeviceGateway = memo(() => {
           onChange={handleSwitchChange}
         />
       </Flexbox>
+
+      {gatewayError && <span className={styles.errorText}>{gatewayError}</span>}
 
       <Flexbox gap={4}>
         <span className={styles.fieldLabel}>{t('gateway.deviceName')}</span>

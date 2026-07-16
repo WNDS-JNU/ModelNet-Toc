@@ -82,6 +82,15 @@ describe('StoreManager', () => {
   });
 
   describe('constructor', () => {
+    it('should register store migrations in order', () => {
+      expect(getStoreMigrations().map((migration) => migration.id)).toEqual([
+        '001-normalize-update-channel',
+        '002-modelnet-device-gateway',
+        '003-modelnet-ip-device-gateway',
+        '004-modelnet-device-gateway-recovery',
+      ]);
+    });
+
     it('should create electron-store with correct options', () => {
       expect(MockStore).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -110,16 +119,17 @@ describe('StoreManager', () => {
       runStoreMigrations(store);
 
       expect(store.set).toHaveBeenCalledWith('updateChannel', 'stable');
-      expect(store.set).toHaveBeenCalledWith(APPLIED_STORE_MIGRATIONS_KEY, [
-        getStoreMigrations()[0].id,
-      ]);
+      expect(store.set).toHaveBeenCalledWith(
+        APPLIED_STORE_MIGRATIONS_KEY,
+        getStoreMigrations().map((migration) => migration.id),
+      );
     });
 
     it('should skip already applied migrations', () => {
-      const appliedMigrationId = getStoreMigrations()[0].id;
+      const appliedMigrationIds = getStoreMigrations().map((migration) => migration.id);
       const store = {
         get: vi.fn((key: string) => {
-          if (key === APPLIED_STORE_MIGRATIONS_KEY) return [appliedMigrationId];
+          if (key === APPLIED_STORE_MIGRATIONS_KEY) return appliedMigrationIds;
           if (key === 'updateChannel') return 'nightly';
         }),
         set: vi.fn(),

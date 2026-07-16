@@ -37,6 +37,7 @@ export const getScopedOnlineDevices = async (
   serverDB: LobeChatDatabase,
   userId: string,
   workspaceId?: string,
+  options: { strictGateway?: boolean } = {},
 ): Promise<DeviceAttachment[]> => {
   const deviceModel = new DeviceModel(serverDB, userId, workspaceId);
   const scope: 'personal' | 'workspace' = workspaceId ? 'workspace' : 'personal';
@@ -48,7 +49,9 @@ export const getScopedOnlineDevices = async (
         return [] as Awaited<ReturnType<typeof deviceModel.queryPersonal>>;
       },
     ),
-    deviceGateway.queryDeviceList(userId, workspaceId),
+    options.strictGateway
+      ? deviceGateway.queryDeviceListStrict(userId, workspaceId)
+      : deviceGateway.queryDeviceList(userId, workspaceId),
   ]);
 
   const liveById = new Map(online.map((d) => [d.deviceId, d]));

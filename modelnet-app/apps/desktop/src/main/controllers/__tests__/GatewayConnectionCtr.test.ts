@@ -103,6 +103,10 @@ const { ipcMainHandleMock, MockGatewayClient } = vi.hoisted(() => {
       });
     }
 
+    simulateAuthFailed(reason: string) {
+      this.emit('auth_failed', reason);
+    }
+
     simulateAuthExpired() {
       this.emit('auth_expired');
     }
@@ -173,6 +177,7 @@ vi.mock('electron-is', () => ({
 
 vi.mock('@/const/env', () => ({
   OFFICIAL_CLOUD_SERVER: 'https://lobehub-cloud.com',
+  IS_MODELNET_DESKTOP: true,
   isMac: false,
   isWindows: false,
   isLinux: false,
@@ -331,8 +336,9 @@ describe('GatewayConnectionCtr', () => {
       expect(options).not.toBeNull();
       expect(options.token).toBe('mock-access-token');
       expect(options.deviceId).toBe('stored-device-id');
-      expect(options.gatewayUrl).toBe('https://device-gateway.lobehub.com');
+      expect(options.gatewayUrl).toBe('https://123.56.135.150');
       expect(options.logger).toBeDefined();
+      expect(options.serverUrl).toBe('https://server.example.com');
       expect(options.userAgent).toBe('ModelNet Desktop/1.2.3');
     });
 
@@ -395,6 +401,22 @@ describe('GatewayConnectionCtr', () => {
       MockGatewayClient.lastInstance!.simulateConnected();
       expect(mockBroadcast).toHaveBeenCalledWith('gatewayConnectionStatusChanged', {
         status: 'connected',
+      });
+    });
+
+    it('should expose the gateway authentication failure reason', async () => {
+      ctr.afterAppReady();
+      await vi.advanceTimersByTimeAsync(0);
+
+      MockGatewayClient.lastInstance!.simulateAuthFailed('AUTH_CLAIM_MISMATCH');
+
+      expect(mockBroadcast).toHaveBeenCalledWith('gatewayConnectionStatusChanged', {
+        error: 'Authentication failed: AUTH_CLAIM_MISMATCH',
+        status: 'disconnected',
+      });
+      await expect(ctr.getConnectionStatus()).resolves.toEqual({
+        error: 'Authentication failed: AUTH_CLAIM_MISMATCH',
+        status: 'disconnected',
       });
     });
   });
@@ -929,9 +951,8 @@ describe('GatewayConnectionCtr', () => {
     });
 
     it('sends rejected ack when remote server URL is not configured', async () => {
-      vi.mocked(mockRemoteServerConfigCtr.getRemoteServerUrl).mockResolvedValueOnce('');
-
       const client = await connectAndOpen();
+      vi.mocked(mockRemoteServerConfigCtr.getRemoteServerUrl).mockResolvedValueOnce('');
       client.simulateAgentRunRequest('openclaw', 'op-fail');
       await vi.advanceTimersByTimeAsync(0);
 

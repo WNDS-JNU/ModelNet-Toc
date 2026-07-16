@@ -4,13 +4,21 @@ import type { ElectronMainStore } from '@/types/store';
 import { createLogger } from '@/utils/logger';
 
 import normalizeUpdateChannelMigration from './001-normalize-update-channel';
+import modelNetDeviceGatewayMigration from './002-modelnet-device-gateway';
+import modelNetIpDeviceGatewayMigration from './003-modelnet-ip-device-gateway';
 import type { StoreMigration } from './defineMigration';
+import modelNetDeviceGatewayRecoveryMigration from './004-modelnet-device-gateway-recovery';
 
 export const APPLIED_STORE_MIGRATIONS_KEY = 'lobeDesktopAppliedStoreMigrations';
 
 const logger = createLogger('core:storeMigration');
 
-const migrations: StoreMigration[] = [normalizeUpdateChannelMigration];
+const migrations: StoreMigration[] = [
+  normalizeUpdateChannelMigration,
+  modelNetDeviceGatewayMigration,
+  modelNetIpDeviceGatewayMigration,
+  modelNetDeviceGatewayRecoveryMigration,
+];
 
 const getAppliedMigrationIds = (store: Store<ElectronMainStore>): string[] => {
   return (

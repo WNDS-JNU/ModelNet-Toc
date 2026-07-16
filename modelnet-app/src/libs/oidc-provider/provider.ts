@@ -243,8 +243,7 @@ export const createOIDCProvider = async (db: LobeChatDatabase): Promise<Provider
         // Read the ui_locales parameter from the OIDC request (space-separated language priorities)
         // https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest
         const uiLocalesRaw = (interaction.params?.ui_locales || ctx.oidc?.params?.ui_locales) as
-          | string
-          | undefined;
+          string | undefined;
 
         let query = '';
         if (uiLocalesRaw) {
@@ -297,6 +296,7 @@ export const createOIDCProvider = async (db: LobeChatDatabase): Promise<Provider
       code_verification: '/oidc/device',
       device_authorization: '/oidc/device/auth',
       end_session: '/oidc/session/end',
+      jwks: '/oidc/jwks',
       token: '/oidc/token',
     },
     // 3. Scopes definition

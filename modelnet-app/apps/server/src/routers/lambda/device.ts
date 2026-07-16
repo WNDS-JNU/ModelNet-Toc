@@ -879,7 +879,7 @@ export const deviceRouter = router({
     }),
 
   status: deviceProcedure.query(async ({ ctx }) => {
-    return deviceGateway.queryDeviceStatus(ctx.userId, ctx.workspaceId);
+    return deviceGateway.queryGatewayStatus(ctx.userId, ctx.workspaceId);
   }),
 
   /** User-editable fields only — never the machine-reported identity columns. */

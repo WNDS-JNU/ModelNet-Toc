@@ -1,10 +1,9 @@
 export type GatewayConnectionStatus =
-  | 'connected'
-  | 'connecting'
-  | 'disconnected'
-  | 'reconnecting'
-  | 'authenticating';
+  'connected' | 'connecting' | 'disconnected' | 'reconnecting' | 'authenticating';
 
 export interface GatewayConnectionBroadcastEvents {
-  gatewayConnectionStatusChanged: (params: { status: GatewayConnectionStatus }) => void;
+  gatewayConnectionStatusChanged: (params: {
+    error?: string;
+    status: GatewayConnectionStatus;
+  }) => void;
 }

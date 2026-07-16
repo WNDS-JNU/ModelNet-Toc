@@ -8,6 +8,8 @@ import type {
 const DEFAULT_GATEWAY_TOOL_CALL_TIMEOUT_MS = 30_000;
 const HTTP_CALL_TIMEOUT_PADDING_MS = 30_000;
 
+type JsonObject = Record<string, unknown>;
+
 export interface DeviceStatusResult {
   deviceCount: number;
   online: boolean;
@@ -37,32 +39,76 @@ export interface GatewayHttpClientOptions {
   serviceToken: string;
 }
 
+export class GatewayHttpError extends Error {
+  readonly code: string;
+  readonly status: number;
+
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.name = 'GatewayHttpError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+const asJsonObject = (value: unknown): JsonObject =>
+  value && typeof value === 'object' && !Array.isArray(value) ? (value as JsonObject) : {};
+
+const readJsonObject = async (response: Response): Promise<JsonObject> =>
+  asJsonObject(await response.json().catch(() => null));
+
+const readHttpError = async (response: Response): Promise<GatewayHttpError> => {
+  const body = await readJsonObject(response);
+  const code = typeof body.code === 'string' ? body.code : `HTTP_${response.status}`;
+  const message =
+    typeof body.error === 'string'
+      ? body.error
+      : typeof body.message === 'string'
+        ? body.message
+        : `Device Gateway request failed (HTTP ${response.status})`;
+  return new GatewayHttpError(response.status, code, message);
+};
+
 export class GatewayHttpClient {
   private gatewayUrl: string;
   private serviceToken: string;
 
   constructor(options: GatewayHttpClientOptions) {
-    this.gatewayUrl = options.gatewayUrl;
+    this.gatewayUrl = options.gatewayUrl.replace(/\/$/, '');
     this.serviceToken = options.serviceToken;
   }
 
-  async queryDeviceStatus(userId: string, workspaceId?: string): Promise<DeviceStatusResult> {
-    const res = await this.post('/api/device/status', { userId, workspaceId });
-    if (!res.ok) return { deviceCount: 0, online: false };
-
-    const data = await res.json();
+  async queryDeviceStatusStrict(userId: string, workspaceId?: string): Promise<DeviceStatusResult> {
+    const response = await this.post('/api/device/status', { userId, workspaceId });
+    if (!response.ok) throw await readHttpError(response);
+    const data = await readJsonObject(response);
     return {
-      deviceCount: data.deviceCount ?? 0,
-      online: data.online ?? false,
+      deviceCount: typeof data.deviceCount === 'number' ? data.deviceCount : 0,
+      online: data.online === true,
     };
   }
 
-  async queryDeviceList(userId: string, workspaceId?: string): Promise<GatewayDevice[]> {
-    const res = await this.post('/api/device/devices', { userId, workspaceId });
-    if (!res.ok) return [];
+  async queryDeviceStatus(userId: string, workspaceId?: string): Promise<DeviceStatusResult> {
+    try {
+      return await this.queryDeviceStatusStrict(userId, workspaceId);
+    } catch {
+      return { deviceCount: 0, online: false };
+    }
+  }
 
-    const data = await res.json();
-    return Array.isArray(data.devices) ? data.devices : [];
+  async queryDeviceListStrict(userId: string, workspaceId?: string): Promise<GatewayDevice[]> {
+    const response = await this.post('/api/device/devices', { userId, workspaceId });
+    if (!response.ok) throw await readHttpError(response);
+    const data = await readJsonObject(response);
+    return Array.isArray(data.devices) ? (data.devices as GatewayDevice[]) : [];
+  }
+
+  async queryDeviceList(userId: string, workspaceId?: string): Promise<GatewayDevice[]> {
+    try {
+      return await this.queryDeviceListStrict(userId, workspaceId);
+    } catch {
+      return [];
+    }
   }
 
   async executeToolCall(
@@ -78,28 +124,21 @@ export class GatewayHttpClient {
     return this.postToolCall(params, { ...toolCall, type: 'tool' });
   }
 
-  /**
-   * Tunnel a stdio MCP tool call to the device. Rides the same
-   * `/api/device/tool-call` relay as {@link executeToolCall} — the gateway
-   * forwards `toolCall` opaquely — but carries `params` (the stdio connection
-   * params) so the device routes it to its local MCP client (spawning the
-   * stdio server) rather than the builtin local-system tool switch. The cloud
-   * server can't spawn the user's binary, so execution must happen on the
-   * device.
-   */
+  /** Tunnel a stdio MCP call through the same device tool-call relay. */
   async executeMcpCall(mcpCall: {
     apiName: string;
     arguments: string;
     deviceId?: string;
     identifier: string;
+    operationId?: string;
     params: GatewayMcpStdioParams;
     timeout?: number;
     userId: string;
     workspaceId?: string;
   }): Promise<DeviceToolCallResult> {
-    const { deviceId, timeout, userId, workspaceId, ...toolCall } = mcpCall;
+    const { deviceId, operationId, timeout, userId, workspaceId, ...toolCall } = mcpCall;
     return this.postToolCall(
-      { deviceId, timeout, userId, workspaceId },
+      { deviceId, operationId, timeout, userId, workspaceId },
       { ...toolCall, type: 'mcp' },
     );
   }
@@ -124,7 +163,7 @@ export class GatewayHttpClient {
       typeof params.timeout === 'number' && Number.isFinite(params.timeout)
         ? Math.max(Math.trunc(params.timeout), 0)
         : DEFAULT_GATEWAY_TOOL_CALL_TIMEOUT_MS;
-    const res = await this.post(
+    const response = await this.post(
       '/api/device/tool-call',
       {
         deviceId: params.deviceId,
@@ -137,23 +176,17 @@ export class GatewayHttpClient {
       { timeout: timeout + HTTP_CALL_TIMEOUT_PADDING_MS },
     );
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
       return {
-        content: `Device tool call failed (HTTP ${res.status})`,
-        error: text || `HTTP ${res.status}`,
+        content: `Device tool call failed (HTTP ${response.status})`,
+        error: text || `HTTP ${response.status}`,
         success: false,
       };
     }
 
-    const data = await res.json();
+    const data = await readJsonObject(response);
     return {
-      // Device sends a typed envelope ({ content, state, success }). The legacy
-      // fallback used to JSON.stringify `data.content ?? data` — when content
-      // was missing it would stringify the *entire response body* including
-      // `success` and any other top-level fields, which leaked the structured
-      // payload into the LLM-facing content string. Only stringify the
-      // `content` field itself; never fall back to the whole body.
       content:
         typeof data.content === 'string'
           ? data.content
@@ -162,9 +195,9 @@ export class GatewayHttpClient {
             : typeof data.error === 'string'
               ? data.error
               : '',
-      error: data.error,
+      error: typeof data.error === 'string' ? data.error : undefined,
       state: data.state,
-      success: data.success ?? true,
+      success: data.success !== false,
     };
   }
 
@@ -172,7 +205,7 @@ export class GatewayHttpClient {
     params: { deviceId?: string; timeout?: number; userId: string; workspaceId?: string },
     api: { apiName: string; payload: Record<string, unknown>; platform: string },
   ): Promise<DeviceMessageApiResult> {
-    const res = await this.post('/api/device/message-api', {
+    const response = await this.post('/api/device/message-api', {
       api,
       deviceId: params.deviceId,
       timeout: params.timeout,
@@ -180,31 +213,33 @@ export class GatewayHttpClient {
       workspaceId: params.workspaceId,
     });
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
       return {
-        content: `Device message API call failed (HTTP ${res.status})`,
-        error: text || `HTTP ${res.status}`,
+        content: `Device message API call failed (HTTP ${response.status})`,
+        error: text || `HTTP ${response.status}`,
         success: false,
       };
     }
 
-    const data = await res.json();
+    const data = await readJsonObject(response);
     return {
       content:
-        typeof data.content === 'string' ? data.content : JSON.stringify(data.content ?? data),
-      error: data.error,
-      success: data.success ?? true,
+        typeof data.content === 'string'
+          ? data.content
+          : data.content === undefined || data.content === null
+            ? ''
+            : JSON.stringify(data.content),
+      error: typeof data.error === 'string' ? data.error : undefined,
+      success: data.success !== false,
     };
   }
 
   async dispatchAgentRun(params: {
     agentType: string;
-    /** Resolved `lh hetero exec` wrapper args. */
     args?: string[];
     cwd?: string;
     deviceId?: string;
-    /** Image attachments forwarded into the `agent_run_request` message. */
     imageList?: Array<{ id?: string; url: string }>;
     jwt: string;
     operationId: string;
@@ -216,15 +251,20 @@ export class GatewayHttpClient {
     userId: string;
     workspaceId?: string;
   }): Promise<{ success: boolean; error?: string }> {
-    const res = await this.post('/api/device/agent/run', params);
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      return { error: text || `HTTP ${res.status}`, success: false };
+    const response = await this.post('/api/device/agent/run', params);
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      return { error: text || `HTTP ${response.status}`, success: false };
     }
-    const data = await res.json().catch(() => null);
-    if (data && (data.success === false || data.status === 'rejected')) {
+    const data = await readJsonObject(response);
+    if (data.success === false || data.status === 'rejected') {
       return {
-        error: data.error ?? data.reason ?? 'DEVICE_REJECTED',
+        error:
+          typeof data.error === 'string'
+            ? data.error
+            : typeof data.reason === 'string'
+              ? data.reason
+              : 'DEVICE_REJECTED',
         success: false,
       };
     }
@@ -232,13 +272,6 @@ export class GatewayHttpClient {
     return { success: true };
   }
 
-  /**
-   * Invoke a named device-side method over the generic RPC relay. Server-only —
-   * the gateway forwards `{ method, params }` opaquely to the device's RPC
-   * dispatcher and correlates the response by `requestId`, so new methods need
-   * no per-method gateway route. Distinct from {@link executeToolCall}, which is
-   * the LLM-facing tool channel.
-   */
   async invokeRpc<T = unknown>(
     params: { deviceId?: string; timeout?: number; userId: string; workspaceId?: string },
     rpc: { method: string; params?: unknown },
@@ -247,7 +280,7 @@ export class GatewayHttpClient {
       typeof params.timeout === 'number' && Number.isFinite(params.timeout)
         ? Math.max(Math.trunc(params.timeout), 0)
         : DEFAULT_GATEWAY_TOOL_CALL_TIMEOUT_MS;
-    const res = await this.post(
+    const response = await this.post(
       '/api/device/rpc',
       {
         deviceId: params.deviceId,
@@ -260,13 +293,17 @@ export class GatewayHttpClient {
       { timeout: timeout + HTTP_CALL_TIMEOUT_PADDING_MS },
     );
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      return { error: text || `HTTP ${res.status}`, success: false };
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      return { error: text || `HTTP ${response.status}`, success: false };
     }
 
-    const data = await res.json();
-    return { data: data.data, error: data.error, success: data.success ?? false };
+    const data = await readJsonObject(response);
+    return {
+      data: data.data as T | undefined,
+      error: typeof data.error === 'string' ? data.error : undefined,
+      success: data.success === true,
+    };
   }
 
   async getDeviceSystemInfo(
@@ -274,27 +311,34 @@ export class GatewayHttpClient {
     deviceId: string,
     workspaceId?: string,
   ): Promise<{ success: boolean; systemInfo?: DeviceSystemInfo }> {
-    const res = await this.post('/api/device/system-info', { deviceId, userId, workspaceId });
-    if (!res.ok) {
-      return { success: false };
-    }
+    const response = await this.post('/api/device/system-info', { deviceId, userId, workspaceId });
+    if (!response.ok) return { success: false };
 
-    const data = await res.json();
+    const data = await readJsonObject(response);
     return {
-      success: data.success ?? false,
-      systemInfo: data.systemInfo,
+      success: data.success === true,
+      systemInfo: data.systemInfo as DeviceSystemInfo | undefined,
     };
   }
 
-  private post(path: string, body: unknown, options?: { timeout?: number }): Promise<Response> {
-    return fetch(`${this.gatewayUrl}${path}`, {
-      body: JSON.stringify(body),
-      headers: {
-        'Authorization': `Bearer ${this.serviceToken}`,
-        'Content-Type': 'application/json',
-      },
-      method: 'POST',
-      ...(options?.timeout ? { signal: AbortSignal.timeout(options.timeout) } : {}),
-    });
+  private async post(
+    path: string,
+    body: unknown,
+    options?: { timeout?: number },
+  ): Promise<Response> {
+    try {
+      return await fetch(`${this.gatewayUrl}${path}`, {
+        body: JSON.stringify(body),
+        headers: {
+          'Authorization': `Bearer ${this.serviceToken}`,
+          'Content-Type': 'application/json',
+        },
+        method: 'POST',
+        ...(options?.timeout ? { signal: AbortSignal.timeout(options.timeout) } : {}),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Device Gateway request failed';
+      throw new GatewayHttpError(0, 'GATEWAY_UNAVAILABLE', message);
+    }
   }
 }

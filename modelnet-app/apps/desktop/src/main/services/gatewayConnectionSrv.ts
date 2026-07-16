@@ -17,6 +17,7 @@ import type { GatewayConnectionStatus } from '@lobechat/electron-client-ipc';
 import { app, powerSaveBlocker } from 'electron';
 
 import { isDev } from '@/const/env';
+import { DEFAULT_DEVICE_GATEWAY_URL } from '@/const/gateway';
 import { getDesktopEnv } from '@/env';
 import { createLogger } from '@/utils/logger';
 import { getDesktopUserAgent } from '@/utils/user-agent';
@@ -24,8 +25,6 @@ import { getDesktopUserAgent } from '@/utils/user-agent';
 import { ServiceModule } from './index';
 
 const logger = createLogger('services:GatewayConnectionSrv');
-
-const DEFAULT_GATEWAY_URL = 'https://device-gateway.lobehub.com';
 
 /**
  * Result envelope a tool-call handler must return. Mirrors
@@ -113,6 +112,7 @@ interface DeviceRegistrar {
 export default class GatewayConnectionService extends ServiceModule {
   private client: GatewayClient | null = null;
   private status: GatewayConnectionStatus = 'disconnected';
+  private connectionError: string | null = null;
   private deviceId: string | null = null;
   private powerSaveBlockerId: number | null = null;
 
@@ -120,6 +120,7 @@ export default class GatewayConnectionService extends ServiceModule {
 
   private tokenProvider: (() => Promise<string | null>) | null = null;
   private tokenRefresher: (() => Promise<{ error?: string; success: boolean }>) | null = null;
+  private serverUrlProvider: (() => Promise<string | null>) | null = null;
   private toolCallHandler: ToolCallHandler | null = null;
   private mcpCallHandler: McpCallHandler | null = null;
   private messageApiHandler: MessageApiHandler | null = null;
@@ -134,6 +135,11 @@ export default class GatewayConnectionService extends ServiceModule {
    */
   setTokenProvider(provider: () => Promise<string | null>) {
     this.tokenProvider = provider;
+  }
+
+  /** Set the ModelNet Server URL sent with API-key-capable gateway auth. */
+  setServerUrlProvider(provider: () => Promise<string | null>) {
+    this.serverUrlProvider = provider;
   }
 
   /**
@@ -242,6 +248,10 @@ export default class GatewayConnectionService extends ServiceModule {
     return this.status;
   }
 
+  getConnectionError(): string | undefined {
+    return this.connectionError ?? undefined;
+  }
+
   getDeviceInfo() {
     return {
       description: this.getDeviceDescription(),
@@ -284,7 +294,7 @@ export default class GatewayConnectionService extends ServiceModule {
       await this.client.disconnect();
       this.client = null;
     }
-    this.setStatus('disconnected');
+    this.setStatus('disconnected', null);
     return { success: true };
   }
 
@@ -294,19 +304,28 @@ export default class GatewayConnectionService extends ServiceModule {
       await this.client.disconnect();
       this.client = null;
     }
+    this.connectionError = null;
 
     if (!this.tokenProvider) {
-      logger.warn('Cannot connect: no token provider configured');
-      return { error: 'No token provider configured', success: false };
+      const error = 'No token provider configured';
+      logger.warn(`Cannot connect: ${error}`);
+      this.setStatus('disconnected', error);
+      return { error, success: false };
     }
 
     const token = await this.tokenProvider();
     if (!token) {
-      logger.warn('Cannot connect: no access token');
-      return { error: 'No access token available', success: false };
+      const error = 'No access token available';
+      logger.warn(`Cannot connect: ${error}`);
+      this.setStatus('disconnected', error);
+      return { error, success: false };
     }
 
     const gatewayUrl = this.getGatewayUrl();
+    const serverUrl = await this.serverUrlProvider?.().catch((error) => {
+      logger.warn(`Failed to resolve ModelNet Server URL: ${(error as Error).message}`);
+      return null;
+    });
     const userId = this.extractUserIdFromToken(token);
     logger.info(`Connecting to device gateway: ${gatewayUrl}, userId: ${userId || 'unknown'}`);
 
@@ -331,6 +350,7 @@ export default class GatewayConnectionService extends ServiceModule {
       deviceId: this.getDeviceId(),
       gatewayUrl,
       logger,
+      serverUrl: serverUrl || undefined,
       token,
       userAgent: getDesktopUserAgent(),
       userId: userId || undefined,
@@ -368,13 +388,21 @@ export default class GatewayConnectionService extends ServiceModule {
       this.handleAgentRunRequest(client, request);
     });
 
+    client.on('auth_failed', (reason) => {
+      const error = `Authentication failed: ${reason}`;
+      logger.error(error);
+      this.setStatus('disconnected', error);
+    });
+
     client.on('auth_expired', () => {
       logger.warn('Received auth_expired, will reconnect with refreshed token');
       this.handleAuthExpired();
     });
 
     client.on('error', (error) => {
-      logger.error('WebSocket error:', error.message);
+      const message = `Device Gateway unavailable: ${error.message}`;
+      logger.error(message);
+      this.setStatus(this.status, message);
     });
   }
 
@@ -611,11 +639,14 @@ export default class GatewayConnectionService extends ServiceModule {
 
   // ─── Status Broadcasting ───
 
-  private setStatus(status: GatewayConnectionStatus) {
-    if (this.status === status) return;
+  private setStatus(status: GatewayConnectionStatus, error?: null | string) {
+    const nextError =
+      error !== undefined ? error : status === 'connected' ? null : this.connectionError;
+    if (this.status === status && this.connectionError === nextError) return;
 
     logger.info(`Connection status: ${this.status} → ${status}`);
     this.status = status;
+    this.connectionError = nextError;
 
     // Keep the app process alive while gateway is connected so macOS App Nap
     // does not suspend it during display sleep, which would drop the WebSocket.
@@ -625,7 +656,10 @@ export default class GatewayConnectionService extends ServiceModule {
       this.stopPowerSaveBlocker();
     }
 
-    this.app.browserManager.broadcastToAllWindows('gatewayConnectionStatusChanged', { status });
+    this.app.browserManager.broadcastToAllWindows(
+      'gatewayConnectionStatusChanged',
+      this.connectionError ? { error: this.connectionError, status } : { status },
+    );
   }
 
   // ─── Gateway URL ───
@@ -636,7 +670,7 @@ export default class GatewayConnectionService extends ServiceModule {
     return (
       getDesktopEnv().DEVICE_GATEWAY_URL ||
       this.app.storeManager.get('gatewayUrl') ||
-      DEFAULT_GATEWAY_URL
+      DEFAULT_DEVICE_GATEWAY_URL
     );
   }
 

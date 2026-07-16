@@ -29,6 +29,7 @@ export interface ElectronState extends NavigationHistoryState, RecentPagesState,
   appTrayVisible: boolean;
   dataSyncConfig: DataSyncConfig;
   desktopHotkeys: Record<string, string>;
+  gatewayConnectionError?: string;
   gatewayConnectionStatus: GatewayConnectionStatus;
   gatewayDeviceInfo?: GatewayDeviceInfo;
   isAppStateInit?: boolean;
@@ -49,6 +50,7 @@ export const initialState: ElectronState = {
   appTrayVisible: true,
   dataSyncConfig: { storageMode: 'cloud' },
   desktopHotkeys: {},
+  gatewayConnectionError: undefined,
   gatewayConnectionStatus: 'disconnected',
   isAppStateInit: false,
   isConnectingServer: false,

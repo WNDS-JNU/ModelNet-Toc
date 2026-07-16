@@ -5,6 +5,7 @@ import { DEFAULT_ELECTRON_DESKTOP_SHORTCUTS } from '@lobechat/const/desktopGloba
 import type { DataSyncConfig, NetworkProxySettings } from '@lobechat/electron-client-ipc';
 
 import { appStorageDir } from '@/const/dir';
+import { DEFAULT_DEVICE_GATEWAY_URL } from '@/const/gateway';
 import { IS_MODELNET_DESKTOP, MODELNET_DESKTOP_SERVER_URL } from '@/const/env';
 import { UPDATE_CHANNEL } from '@/modules/updater/configs';
 import type { ElectronMainStore } from '@/types/store';
@@ -38,7 +39,7 @@ export const STORE_DEFAULTS: ElectronMainStore = {
   gatewayDeviceId: '',
   gatewayDeviceName: '',
   gatewayEnabled: true,
-  gatewayUrl: 'https://device-gateway.lobehub.com',
+  gatewayUrl: DEFAULT_DEVICE_GATEWAY_URL,
   heteroTracingEnabled: false,
   imessageBridgeConfigs: [],
   locale: 'auto',

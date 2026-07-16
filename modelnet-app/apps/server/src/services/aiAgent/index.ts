@@ -2484,25 +2484,21 @@ export class AiAgentService {
       if (agentRuntimeMode !== 'cloud') {
         delete toolManifestMap[CloudSandboxManifest.identifier];
       }
-      // Same single-point deletion for the device tools: a `none` / `sandbox`
-      // session must not expose the remote-device proxy either — leaving it
-      // discoverable would let the model activate a device mid-run and bypass
-      // the execution plan ("无设备" means NO device, not "no device yet").
-      // Scoped to gateway deployments: in the standalone Electron deployment
-      // (no DEVICE_GATEWAY) local-system routes in-process via the 'client'
-      // executor marking below, and the desktop client owns the tool gate.
-      const stripDeviceTools = gatewayConfigured && !deviceCapable;
-      if (stripDeviceTools) {
-        delete toolManifestMap[RemoteDeviceManifest.identifier];
-        delete toolManifestMap[LocalSystemManifest.identifier];
-      }
+      // RemoteDevice is a server proxy and is never usable without a fully
+      // configured gateway. LocalSystem is different: a standalone Electron
+      // deployment executes it in-process on the client, so keep it available
+      // when no gateway is configured and the desktop owns the tool gate.
+      const stripRemoteDevice = !gatewayConfigured || !deviceCapable;
+      const stripLocalSystem = gatewayConfigured && !deviceCapable;
+      if (stripRemoteDevice) delete toolManifestMap[RemoteDeviceManifest.identifier];
+      if (stripLocalSystem) delete toolManifestMap[LocalSystemManifest.identifier];
       for (const tool of allowedBuiltinTools) {
         // lobe-cloud-sandbox is only activator-discoverable when runtimeMode resolves
         // to 'cloud' (i.e. executionTarget='sandbox').
         if (tool.identifier === CloudSandboxManifest.identifier && agentRuntimeMode !== 'cloud')
           continue;
-        // device tools are only activator-discoverable in device-capable sessions
-        if (stripDeviceTools && isDeviceToolIdentifier(tool.identifier)) continue;
+        if (tool.identifier === RemoteDeviceManifest.identifier && stripRemoteDevice) continue;
+        if (tool.identifier === LocalSystemManifest.identifier && stripLocalSystem) continue;
         if (tool.discoverable !== false && !toolManifestMap[tool.identifier]) {
           toolManifestMap[tool.identifier] = tool.manifest as LobeToolManifest;
         }

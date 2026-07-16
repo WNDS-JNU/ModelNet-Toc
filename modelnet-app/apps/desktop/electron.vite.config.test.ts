@@ -17,6 +17,7 @@ describe('Electron main-process build environment', () => {
     const { default: viteConfig } = await import('./electron.vite.config');
 
     expect(viteConfig.main?.define).toMatchObject({
+      'process.env.DEVICE_GATEWAY_URL': JSON.stringify(undefined),
       'process.env.MODELNET_DESKTOP': JSON.stringify('1'),
       'process.env.MODELNET_DESKTOP_SERVER_URL': JSON.stringify('http://123.56.135.150'),
     });
@@ -44,6 +45,15 @@ describe('Electron main-process build environment', () => {
     expect(builderConfig.publish).toBeNull();
   });
 
+  it('bakes the configured development Gateway URL into the main process', async () => {
+    vi.stubEnv('DEVICE_GATEWAY_URL', 'https://123.56.135.150/dev');
+    vi.resetModules();
+
+    const { default: viteConfig } = await import('./electron.vite.config');
+    expect(viteConfig.main?.define).toMatchObject({
+      'process.env.DEVICE_GATEWAY_URL': JSON.stringify('https://123.56.135.150/dev'),
+    });
+  });
   it('uses only the configured generic update server', async () => {
     vi.stubEnv('UPDATE_CHANNEL', 'nightly');
     vi.stubEnv('UPDATE_SERVER_URL', 'https://updates.example.com/stable');

@@ -288,6 +288,10 @@ export default defineConfig({
     },
     define: {
       'process.env.DESKTOP_EXTERNAL_NAVIGATION_HOSTS': JSON.stringify(externalNavigationHosts),
+      // Bake the dev Gateway endpoint into a packaged development build. The
+      // regular production build leaves this undefined and uses the ModelNet
+      // public-IP default from the store migration.
+      'process.env.DEVICE_GATEWAY_URL': JSON.stringify(process.env.DEVICE_GATEWAY_URL),
       'process.env.MODELNET_DESKTOP': JSON.stringify(process.env.MODELNET_DESKTOP),
       'process.env.MODELNET_DESKTOP_SERVER_URL': JSON.stringify(
         process.env.MODELNET_DESKTOP_SERVER_URL,

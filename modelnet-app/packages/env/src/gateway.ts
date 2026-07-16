@@ -1,6 +1,17 @@
 import { createEnv } from '@t3-oss/env-core';
 import { z } from 'zod';
 
+// Docker Compose represents an intentionally unset variable as an empty
+// string. Treat it as absent so a disabled gateway does not fail the URL
+// schema at server startup.
+const optionalString = z.preprocess(
+  (value) => (value === '' ? undefined : value),
+  z.string().optional(),
+);
+const optionalUrl = z.preprocess(
+  (value) => (value === '' ? undefined : value),
+  z.string().url().optional(),
+);
 export const getGatewayConfig = () => {
   return createEnv({
     runtimeEnv: {
@@ -12,11 +23,11 @@ export const getGatewayConfig = () => {
     },
 
     server: {
-      DEVICE_GATEWAY_SERVICE_TOKEN: z.string().optional(),
-      DEVICE_GATEWAY_URL: z.string().url().optional(),
+      DEVICE_GATEWAY_SERVICE_TOKEN: optionalString,
+      DEVICE_GATEWAY_URL: optionalUrl,
       MESSAGE_GATEWAY_ENABLED: z.string().optional(),
-      MESSAGE_GATEWAY_SERVICE_TOKEN: z.string().optional(),
-      MESSAGE_GATEWAY_URL: z.string().url().optional(),
+      MESSAGE_GATEWAY_SERVICE_TOKEN: optionalString,
+      MESSAGE_GATEWAY_URL: optionalUrl,
     },
   });
 };

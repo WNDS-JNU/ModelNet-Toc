@@ -286,6 +286,7 @@ export class ToolExecutionService {
         arguments: args,
         deviceId: context.activeDeviceId!,
         identifier,
+        operationId: context.operationId,
         params: {
           args: mcpParams.args ?? [],
           command: mcpParams.command,
@@ -294,6 +295,7 @@ export class ToolExecutionService {
           type: 'stdio',
         },
         userId: context.userId!,
+        workspaceId: context.workspaceId,
       },
       context.executionTimeoutMs,
     );

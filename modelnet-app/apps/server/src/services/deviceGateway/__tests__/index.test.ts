@@ -41,8 +41,9 @@ describe('DeviceGateway', () => {
       expect(proxy.isConfigured).toBe(false);
     });
 
-    it('should return true when DEVICE_GATEWAY_URL is set', () => {
+    it('should return true only when URL and service token are set', () => {
       mockEnv.DEVICE_GATEWAY_URL = 'https://gateway.example.com';
+      mockEnv.DEVICE_GATEWAY_SERVICE_TOKEN = 'token';
       const proxy = new DeviceGateway();
       expect(proxy.isConfigured).toBe(true);
     });
@@ -299,6 +300,7 @@ describe('DeviceGateway', () => {
       arguments: '{"symbol":"AAPL"}',
       deviceId: 'dev-1',
       identifier: 'kimi-datasource',
+      operationId: 'operation-1',
       params: {
         args: ['stock-mcp'],
         command: 'npx',
@@ -307,6 +309,7 @@ describe('DeviceGateway', () => {
         type: 'stdio' as const,
       },
       userId: 'user-1',
+      workspaceId: 'workspace-1',
     };
 
     it('should return error when not configured', async () => {
