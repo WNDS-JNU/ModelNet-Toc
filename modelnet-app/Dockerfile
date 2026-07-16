@@ -1,8 +1,9 @@
 ## Set global build ENV
 ARG NODEJS_VERSION="24"
+ARG NODEJS_REGISTRY="node"
 
 ## Base image for all building stages
-FROM node:${NODEJS_VERSION}-slim AS base
+FROM ${NODEJS_REGISTRY}:${NODEJS_VERSION}-slim AS base
 
 ARG USE_CN_MIRROR
 

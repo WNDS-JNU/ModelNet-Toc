@@ -1,0 +1,7 @@
+# Replace the key body below with the public key for
+# ~/.ssh/modelnet_aliyun_tunnel_ed25519 on 4A100. Keep this as one line in
+# /var/lib/modelnet-tunnel/.ssh/authorized_keys on Aliyun. The remote account
+# must use a non-login shell and sshd must keep GatewayPorts disabled. Port
+# 13081 remains available to the separately managed TOC tunnel; this service
+# opens only 13080/13093/13193.
+restrict,port-forwarding,permitlisten="127.0.0.1:13080",permitlisten="127.0.0.1:13081",permitlisten="127.0.0.1:13093",permitlisten="127.0.0.1:13193" ssh-ed25519 REPLACE_WITH_MODELNET_TUNNEL_PUBLIC_KEY modelnet-tunnel

@@ -1,0 +1,8 @@
+# Staged production rollout: deploy the Device Gateway-aware App code while
+# keeping RemoteDevice hidden until a Desktop client has connected successfully.
+services:
+  modelnet-app:
+    image: modelnet/modelnet-toc:device-gateway-20260716-r2
+    environment:
+      DEVICE_GATEWAY_URL: ""
+      DEVICE_GATEWAY_SERVICE_TOKEN: ""

@@ -1,0 +1,10 @@
+[Unit]
+Description=Renew the ModelNet Gateway public IP TLS certificate
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/modelnet/modelnet-gateway-ip-cert.env
+ExecStart=/usr/local/sbin/renew-modelnet-gateway-ip-certificate production
+TimeoutStartSec=10min

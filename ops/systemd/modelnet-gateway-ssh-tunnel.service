@@ -1,0 +1,28 @@
+[Unit]
+Description=ModelNet Gateway SSH reverse tunnels to Aliyun
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ssh -F /dev/null -NT \
+  -o BatchMode=yes \
+  -o ConnectTimeout=10 \
+  -o ConnectionAttempts=1 \
+  -o ExitOnForwardFailure=yes \
+  -o IdentitiesOnly=yes \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -o StrictHostKeyChecking=yes \
+  -o TCPKeepAlive=yes \
+  -i %h/.ssh/modelnet_aliyun_tunnel_ed25519 \
+  -R 127.0.0.1:13080:127.0.0.1:80 \
+  -R 127.0.0.1:13093:127.0.0.1:3093 \
+  -R 127.0.0.1:13193:127.0.0.1:3193 \
+  modelnet-tunnel@123.56.135.150
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
