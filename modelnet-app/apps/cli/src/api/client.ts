@@ -41,7 +41,7 @@ async function getAuthAndServer() {
   const result = await getValidToken();
   if (!result) {
     log.error(
-      `No authentication found. Run 'lh login' (or 'npx -y @lobehub/cli login') first, or set ${CLI_API_KEY_ENV}.`,
+      `No authentication found. Run 'modelnet login' (or 'npx -y @modelnet/cli login') first, or set ${CLI_API_KEY_ENV}.`,
     );
     process.exit(1);
   }
@@ -93,7 +93,7 @@ export async function getTrpcClient(workspaceId?: string): Promise<TrpcClient> {
 /**
  * Build a Lambda tRPC client from an already-resolved auth context, without
  * re-running credential discovery. Use this when the caller already holds a
- * token (e.g. `lh connect --token <jwt>`) — `getTrpcClient` would re-resolve
+ * token (e.g. `modelnet connect --token <jwt>`) — `getTrpcClient` would re-resolve
  * via env/stored creds and `process.exit(1)` when none exist, which would
  * abort an otherwise-valid explicit-token session.
  */

@@ -1,16 +1,12 @@
 {
-  "name": "@lobehub/cli",
+  "name": "@modelnet/cli",
   "version": "0.0.38",
   "type": "module",
   "bin": {
-    "lh": "./dist/index.js",
-    "lobe": "./dist/index.js",
-    "lobehub": "./dist/index.js"
+    "modelnet": "./dist/index.js"
   },
   "man": [
-    "./man/man1/lh.1",
-    "./man/man1/lobe.1",
-    "./man/man1/lobehub.1"
+    "./man/man1/modelnet.1"
   ],
   "files": [
     "dist",
@@ -20,7 +16,7 @@
     "build": "tsdown",
     "cli:link": "bun link",
     "cli:unlink": "bun unlink",
-    "dev": "LOBEHUB_CLI_HOME=.lobehub-dev bun src/index.ts",
+    "dev": "MODELNET_CLI_HOME=.modelnet-dev bun src/index.ts",
     "man:generate": "bun src/man/generate.ts",
     "prepublishOnly": "npm run build && npm run man:generate",
     "test": "bunx vitest run --config vitest.config.mts --silent='passed-only'",

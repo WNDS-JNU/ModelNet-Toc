@@ -120,14 +120,16 @@ export function registerBriefCommand(program: Command) {
           for (const a of actions) {
             const cmd =
               a.type === 'comment'
-                ? `lh brief resolve ${b.id} --action ${a.key} -m "message"`
-                : `lh brief resolve ${b.id} --action ${a.key}`;
+                ? `modelnet brief resolve ${b.id} --action ${a.key} -m "message"`
+                : `modelnet brief resolve ${b.id} --action ${a.key}`;
             console.log(`  ${a.label}  ${pc.dim(cmd)}`);
           }
         } else {
           console.log(pc.dim('Actions:'));
-          console.log(pc.dim(`  lh brief resolve ${b.id}                   # Approve`));
-          console.log(pc.dim(`  lh brief resolve ${b.id} --reply "revision notes"  # Request revision`));
+          console.log(pc.dim(`  modelnet brief resolve ${b.id}                   # Approve`));
+          console.log(
+            pc.dim(`  modelnet brief resolve ${b.id} --reply "revision notes"  # Request revision`),
+          );
         }
       } else if ((b as any).resolvedComment) {
         console.log(`${pc.dim('Comment:')} ${(b as any).resolvedComment}`);

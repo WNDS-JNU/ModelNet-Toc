@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // Mock resolveToken
 vi.mock('../auth/resolveToken', () => ({
   resolveToken: vi.fn().mockResolvedValue({
-    serverUrl: 'https://app.lobehub.com',
+    serverUrl: 'https://app.modelnet.com',
     token: 'test-token',
     tokenType: 'jwt',
     userId: 'test-user',
@@ -129,7 +129,7 @@ describe('status command', () => {
     clientEventHandlers['connected']?.();
 
     await parsePromise;
-    expect(clientOptions.serverUrl).toBe('https://app.lobehub.com');
+    expect(clientOptions.serverUrl).toBe('https://app.modelnet.com');
   });
 
   it('should log CONNECTED on successful connection', async () => {

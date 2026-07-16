@@ -8,7 +8,7 @@ vi.mock('../auth/refresh', () => ({
 }));
 vi.mock('../auth/resolveToken', () => ({
   resolveToken: vi.fn().mockResolvedValue({
-    serverUrl: 'https://app.lobehub.com',
+    serverUrl: 'https://app.modelnet.com',
     token: 'test-token',
     tokenType: 'jwt',
     userId: 'test-user',
@@ -176,7 +176,7 @@ describe('connect command', () => {
     await program.parseAsync(['node', 'test', 'connect']);
 
     expect(connectCalled).toBe(true);
-    expect(log.info).toHaveBeenCalledWith(expect.stringContaining('LobeHub CLI'));
+    expect(log.info).toHaveBeenCalledWith(expect.stringContaining('ModelNet CLI'));
   });
 
   it('should require explicit gateway for custom login server', async () => {
@@ -212,7 +212,7 @@ describe('connect command', () => {
     const program = createProgram();
     await program.parseAsync(['node', 'test', 'connect']);
 
-    expect(clientOptions.serverUrl).toBe('https://app.lobehub.com');
+    expect(clientOptions.serverUrl).toBe('https://app.modelnet.com');
   });
 
   it('should handle tool call requests', async () => {
@@ -262,7 +262,7 @@ describe('connect command', () => {
 
   it('should retry auth_failed with token refresh when new token available', async () => {
     vi.mocked(resolveToken).mockResolvedValueOnce({
-      serverUrl: 'https://app.lobehub.com',
+      serverUrl: 'https://app.modelnet.com',
       token: 'refreshed-token',
       tokenType: 'jwt',
       userId: 'test-user',
@@ -282,7 +282,7 @@ describe('connect command', () => {
 
   it('should handle auth_expired', async () => {
     vi.mocked(resolveToken).mockResolvedValueOnce({
-      serverUrl: 'https://app.lobehub.com',
+      serverUrl: 'https://app.modelnet.com',
       token: 'new-tok',
       tokenType: 'jwt',
       userId: 'user',

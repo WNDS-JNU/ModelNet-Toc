@@ -14,7 +14,7 @@ import {
 } from './index';
 
 const tmpDir = path.join(os.tmpdir(), 'lobehub-cli-test-settings');
-const settingsDir = path.join(tmpDir, '.lobehub');
+const settingsDir = path.join(tmpDir, '.modelnet');
 const settingsFile = path.join(settingsDir, 'settings.json');
 const originalServer = process.env.LOBEHUB_SERVER;
 
@@ -60,7 +60,7 @@ describe('settings', () => {
   });
 
   it('should clear official server settings instead of persisting them', () => {
-    saveSettings({ serverUrl: 'https://app.lobehub.com/' });
+    saveSettings({ serverUrl: 'http://123.56.135.150/' });
 
     expect(fs.existsSync(settingsFile)).toBe(false);
     expect(loadSettings()).toBeNull();
@@ -95,7 +95,7 @@ describe('settings', () => {
 
     fs.unlinkSync(settingsFile);
 
-    expect(resolveServerUrl()).toBe('https://app.lobehub.com');
+    expect(resolveServerUrl()).toBe('http://123.56.135.150');
   });
 
   it('should create a connectionId once and reuse it across calls', () => {
@@ -110,7 +110,7 @@ describe('settings', () => {
   it('should keep the connectionId even when settings.json is cleared', () => {
     const id = loadOrCreateConnectionId();
     // Clearing official-server settings unlinks settings.json — connectionId must survive.
-    saveSettings({ serverUrl: 'https://app.lobehub.com/' });
+    saveSettings({ serverUrl: 'http://123.56.135.150/' });
 
     expect(fs.existsSync(settingsFile)).toBe(false);
     expect(loadOrCreateConnectionId()).toBe(id);

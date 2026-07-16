@@ -140,7 +140,7 @@ export function registerFileCommand(program: Command) {
           value.startsWith('http://') || value.startsWith('https://');
 
         // Resolve the local file path: explicit --file, or a positional that is
-        // not a URL (e.g. `lh file upload ./games_list.txt`).
+        // not a URL (e.g. `modelnet file upload ./games_list.txt`).
         const localPath = options.file ?? (source && !isUrl(source) ? source : undefined);
 
         const client = await getTrpcClient();

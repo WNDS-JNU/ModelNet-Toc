@@ -20,7 +20,7 @@ export function registerCompletionCommand(program: Command) {
     .allowUnknownOption()
     .argument('[words...]')
     .action((words: string[] = []) => {
-      const currentWordIndex = parseCompletionWordIndex(process.env.LOBEHUB_COMP_CWORD, words);
+      const currentWordIndex = parseCompletionWordIndex(process.env.MODELNET_COMP_CWORD, words);
       const candidates = getCompletionCandidates(program, words, currentWordIndex);
 
       for (const candidate of candidates) {

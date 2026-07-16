@@ -3,18 +3,18 @@ import { execSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 /**
- * E2E tests for `lh model` AI model management commands.
+ * E2E tests for `modelnet model` AI model management commands.
  *
  * Prerequisites:
- * - `lh` CLI is installed and linked globally
- * - User is authenticated (`lh login` completed)
- * - Network access to the LobeHub server
+ * - `modelnet` CLI is installed and linked globally
+ * - User is authenticated (`modelnet login` completed)
+ * - Network access to the ModelNet server
  * - At least one provider (e.g. openai) must be available
  *
  * These tests create a real model, verify CRUD operations, then clean up.
  */
 
-const CLI = process.env.LH_CLI_PATH || 'lh';
+const CLI = process.env.LH_CLI_PATH || 'modelnet';
 const TIMEOUT = 30_000;
 const TEST_PROVIDER = 'openai';
 
@@ -31,7 +31,7 @@ function runJson<T = any>(args: string): T {
   return JSON.parse(output) as T;
 }
 
-describe('lh model - E2E', () => {
+describe('modelnet model - E2E', () => {
   const testModelId = `e2e-model-${Date.now()}`;
   const testDisplayName = 'E2E Test Model';
 

@@ -10,7 +10,7 @@ vi.mock('./credentials', () => ({
   saveCredentials: vi.fn(),
 }));
 vi.mock('../settings', () => ({
-  loadSettings: vi.fn().mockReturnValue({ serverUrl: 'https://app.lobehub.com' }),
+  loadSettings: vi.fn().mockReturnValue({ serverUrl: 'https://app.modelnet.com' }),
 }));
 
 describe('getValidToken', () => {

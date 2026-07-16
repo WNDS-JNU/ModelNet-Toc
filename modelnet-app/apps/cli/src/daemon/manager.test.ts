@@ -6,7 +6,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const tmpDir = path.join(os.tmpdir(), 'daemon-test-' + process.pid);
-const mockDir = path.join(tmpDir, '.lobehub');
+const mockDir = path.join(tmpDir, '.modelnet');
 
 vi.mock('node:os', async (importOriginal) => {
   const actual = await importOriginal<Record<string, any>>();

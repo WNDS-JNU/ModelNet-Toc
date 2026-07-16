@@ -1,5 +1,5 @@
 /**
- * `lh bot messengers ...` — manages the user's System Bot installations
+ * `modelnet bot messengers ...` — manages the user's System Bot installations
  * (Slack workspaces, Discord guilds, Telegram), distinct from per-agent bots.
  *
  * Mirrors `bot ...` (per-agent CRUD) and `bot message ...` (send/read), but
@@ -56,7 +56,7 @@ export function registerBotMessengersCommands(bot: Command) {
       if (installations.length === 0) {
         console.log('No System Bot installations connected.');
         console.log(
-          `\nRun ${pc.dim('lh bot messengers platforms')} to see what's available, then install via ` +
+          `\nRun ${pc.dim('modelnet bot messengers platforms')} to see what's available, then install via ` +
             `${pc.dim('Settings → Messenger')} (OAuth requires a browser).`,
         );
         return;
@@ -72,7 +72,7 @@ export function registerBotMessengersCommands(bot: Command) {
       printTable(rows, ['INSTALLATION ID', 'PLATFORM', 'TENANT', 'APP ID', 'INSTALLED']);
       console.log(
         `\nUse ${pc.dim('@<INSTALLATION ID>')} as the positional argument on ` +
-          `${pc.dim('lh bot message send/dm/thread reply')} to route through a System Bot install.`,
+          `${pc.dim('modelnet bot message send/dm/thread reply')} to route through a System Bot install.`,
       );
     });
 

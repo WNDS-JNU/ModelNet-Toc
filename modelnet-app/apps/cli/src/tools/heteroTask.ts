@@ -13,7 +13,7 @@ import { log } from '../utils/logger';
 // Maps topicId → hermes session_id so multi-turn conversations can resume
 // the same session across separate `runHeteroTask` invocations.
 
-const LOBEHUB_DIR_NAME = process.env.LOBEHUB_CLI_HOME || '.lobehub';
+const LOBEHUB_DIR_NAME = process.env.MODELNET_CLI_HOME || '.modelnet';
 const HERMES_SESSIONS_FILE = path.join(os.homedir(), LOBEHUB_DIR_NAME, 'hermes-sessions.json');
 
 function getHermesSessionId(topicId: string): string | undefined {
@@ -40,12 +40,12 @@ function saveHermesSessionId(topicId: string, sessionId: string): void {
   fs.writeFileSync(HERMES_SESSIONS_FILE, JSON.stringify(data), 'utf8');
 }
 
-/** Resolve the absolute path to the `lh` binary to avoid PATH issues in child processes. */
+/** Resolve the absolute path to the `modelnet` binary to avoid PATH issues in child processes. */
 function resolveLhPath(): string {
   try {
-    return execFileSync('which', ['lh'], { encoding: 'utf8' }).trim();
+    return execFileSync('which', ['modelnet'], { encoding: 'utf8' }).trim();
   } catch {
-    return 'lh';
+    return 'modelnet';
   }
 }
 
@@ -60,7 +60,7 @@ export interface RunHeteroTaskParams {
   /**
    * Workspace id seeded by the server when the dispatched topic lives in a
    * workspace. Threaded into auto-notify calls (as `X-Workspace-Id`) and into
-   * the spawned child's `LOBEHUB_WORKSPACE_ID` env so its own `lh notify`
+   * the spawned child's `LOBEHUB_WORKSPACE_ID` env so its own `modelnet notify`
    * shells inherit the same scope.
    */
   workspaceId?: string;
@@ -98,7 +98,7 @@ async function sendAutoNotify(
  *
  * Pass `error` to finalize the run as FAILED (non-zero process exit) — the
  * server marks the owning task failed and renders the error. Omit it for a
- * clean completion (the agent already sent its final message via `lh notify`).
+ * clean completion (the agent already sent its final message via `modelnet notify`).
  */
 async function sendTerminalSignal(
   topicId: string,
@@ -123,7 +123,7 @@ async function sendTerminalSignal(
 
 /**
  * Build the notify protocol injected into the first message of a new hetero-agent session.
- * Tells the agent how to push updates back to the ModelNet user via `lh notify`.
+ * Tells the agent how to push updates back to the ModelNet user via `modelnet notify`.
  */
 function buildNotifyProtocol(lhPath: string, topicId: string): string {
   return (
@@ -157,7 +157,7 @@ export async function runHeteroTask(params: RunHeteroTaskParams): Promise<string
   const { agentId, agentType, cwd, operationId, prompt, taskId, topicId, workspaceId } = params;
   const workDir = cwd || process.cwd();
   const lhPath = resolveLhPath();
-  // Propagate workspace scope into the spawned child so its own `lh notify`
+  // Propagate workspace scope into the spawned child so its own `modelnet notify`
   // invocations (and any grandchildren it shells out) inherit the same scope
   // via getTrpcClient → resolveWorkspaceId.
   const childEnv: NodeJS.ProcessEnv = workspaceId
@@ -233,7 +233,7 @@ export async function runHeteroTask(params: RunHeteroTaskParams): Promise<string
     // - Cancelled (killed by signal, e.g. interruptTask): write a notice + a plain
     //   terminal signal — cancellation is not a failure.
     // - Clean exit (code=0, no signal): openclaw already sent its final message via
-    //   `lh notify`; just send a terminal signal to publish `agent_runtime_end`.
+    //   `modelnet notify`; just send a terminal signal to publish `agent_runtime_end`.
     child.on('close', (code, signal) => {
       removeTask(taskId);
       if (code !== 0 || signal !== null) {

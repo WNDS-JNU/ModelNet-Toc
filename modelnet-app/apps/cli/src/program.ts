@@ -41,7 +41,7 @@ export function createProgram() {
   const program = new Command();
 
   program
-    .name('lh')
+    .name('modelnet')
     .description('ModelNet CLI - manage and connect to ModelNet services')
     .version(cliVersion);
 

@@ -6,17 +6,17 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * E2E tests for `lh kb` knowledge base management commands.
+ * E2E tests for `modelnet kb` knowledge base management commands.
  *
  * Prerequisites:
- * - `lh` CLI is installed and linked globally
- * - User is authenticated (`lh login` completed)
- * - Network access to the LobeHub server
+ * - `modelnet` CLI is installed and linked globally
+ * - User is authenticated (`modelnet login` completed)
+ * - Network access to the ModelNet server
  *
  * These tests create a real knowledge base, verify CRUD operations, then clean up.
  */
 
-const CLI = process.env.LH_CLI_PATH || 'lh';
+const CLI = process.env.LH_CLI_PATH || 'modelnet';
 const TIMEOUT = 30_000;
 
 function run(args: string): string {
@@ -39,7 +39,7 @@ function extractId(output: string, prefix: string): string {
   return match![0];
 }
 
-describe('lh kb - E2E', () => {
+describe('modelnet kb - E2E', () => {
   const testName = `E2E-Test-${Date.now()}`;
   const testDescription = 'Created by E2E test';
   let createdId: string;

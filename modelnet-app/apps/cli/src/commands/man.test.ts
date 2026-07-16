@@ -17,7 +17,7 @@ describe('man command', () => {
   function createProgram() {
     const program = new Command();
 
-    program.name('lh').description('Sample CLI').version('1.0.0');
+    program.name('modelnet').description('Sample CLI').version('1.0.0');
 
     const generate = program
       .command('generate')
@@ -30,7 +30,7 @@ describe('man command', () => {
       .description('Generate text from a prompt')
       .option('--json', 'Output raw JSON');
 
-    program.command('login').description('Log in to LobeHub');
+    program.command('login').description('Log in to ModelNet');
 
     registerManCommand(program);
     program.exitOverride();
@@ -45,10 +45,10 @@ describe('man command', () => {
 
     const output = consoleSpy.mock.calls.at(0)?.[0];
 
-    expect(output).toContain('LH(1)');
-    expect(output).toContain('NAME\n  lh - Sample CLI');
-    expect(output).toContain('ALIASES\n  lobe, lobehub');
-    expect(output).toContain('SYNOPSIS\n  lh [options] [command]');
+    expect(output).toContain('MODELNET(1)');
+    expect(output).toContain('NAME\n  modelnet - Sample CLI');
+    expect(output).not.toContain('ALIASES');
+    expect(output).toContain('SYNOPSIS\n  modelnet [options] [command]');
     expect(output).toContain('generate|gen [options] [command]');
     expect(output).toContain('man [options] [command...]');
   });
@@ -60,10 +60,10 @@ describe('man command', () => {
 
     const output = consoleSpy.mock.calls.at(0)?.[0];
 
-    expect(output).toContain('LH-GENERATE(1)');
-    expect(output).toContain('NAME\n  lh generate - Generate content');
+    expect(output).toContain('MODELNET-GENERATE(1)');
+    expect(output).toContain('NAME\n  modelnet generate - Generate content');
     expect(output).toContain('ALIASES\n  gen');
-    expect(output).toContain('SYNOPSIS\n  lh generate [options] [command]');
+    expect(output).toContain('SYNOPSIS\n  modelnet generate [options] [command]');
     expect(output).toContain('text [options] <prompt>');
     expect(output).toContain('-m, --model <model>');
   });
@@ -75,8 +75,8 @@ describe('man command', () => {
 
     const output = consoleSpy.mock.calls.at(0)?.[0];
 
-    expect(output).toContain('LH-GENERATE-TEXT(1)');
-    expect(output).toContain('NAME\n  lh generate text - Generate text from a prompt');
+    expect(output).toContain('MODELNET-GENERATE-TEXT(1)');
+    expect(output).toContain('NAME\n  modelnet generate text - Generate text from a prompt');
     expect(output).toContain('ARGUMENTS');
     expect(output).toContain('<prompt>');
     expect(output).toContain('Required argument');

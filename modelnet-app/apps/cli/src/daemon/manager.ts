@@ -6,7 +6,7 @@ import path from 'node:path';
 const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB
 
 function getLobehubDir() {
-  return path.join(os.homedir(), '.lobehub');
+  return path.join(os.homedir(), '.modelnet');
 }
 
 function getPidPath() {
@@ -75,7 +75,7 @@ export function isProcessAlive(pid: number): boolean {
  *
  * A bare `isProcessAlive` check is not enough: if a daemon dies without cleaning
  * up `daemon.pid` (crash, `kill -9`, reboot), the OS can later reuse that PID
- * for an unrelated process. Acting on the stale PID would let `lh logout` /
+ * for an unrelated process. Acting on the stale PID would let `modelnet logout` /
  * `connect stop` SIGTERM a stranger. The daemon is always spawned as
  * `<node> … connect … --daemon-child`, so we confirm that signature in the
  * process command line before trusting the PID.

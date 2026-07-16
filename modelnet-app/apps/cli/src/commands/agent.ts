@@ -288,7 +288,7 @@ export function registerAgentCommand(program: Command) {
             deviceId = resolveLocalDeviceId();
             if (!deviceId) {
               log.error(
-                "No local device found. Run 'lh connect' first, then retry with --device local.",
+                "No local device found. Run 'modelnet connect' first, then retry with --device local.",
               );
               process.exit(1);
               return;
@@ -302,14 +302,16 @@ export function registerAgentCommand(program: Command) {
             (device: { deviceId?: string; online?: boolean }) => device.deviceId === deviceId,
           );
           if (!matchedDevice) {
-            log.error(`Device "${deviceId}" was not found. Check 'lh device list' and try again.`);
+            log.error(
+              `Device "${deviceId}" was not found. Check 'modelnet device list' and try again.`,
+            );
             process.exit(1);
             return;
           }
           if (!matchedDevice.online) {
             log.error(
               options.device === 'local'
-                ? `Local device "${deviceId}" is not online. Reconnect with 'lh connect' and try again.`
+                ? `Local device "${deviceId}" is not online. Reconnect with 'modelnet connect' and try again.`
                 : `Device "${deviceId}" is not online. Bring it online and try again.`,
             );
             process.exit(1);

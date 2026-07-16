@@ -55,7 +55,10 @@ export function registerAsrCommand(parent: Command) {
             fileName = downloaded.name;
             mimeType = downloaded.mimeType;
             size = downloaded.bytes.byteLength;
-            tempPath = path.join(os.tmpdir(), `lh-asr-${process.pid}-${Date.now()}-${fileName}`);
+            tempPath = path.join(
+              os.tmpdir(),
+              `modelnet-asr-${process.pid}-${Date.now()}-${fileName}`,
+            );
             await writeFile(tempPath, downloaded.bytes);
             localPath = tempPath;
           } else {

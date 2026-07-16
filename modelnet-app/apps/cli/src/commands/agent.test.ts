@@ -605,7 +605,9 @@ describe('agent command', () => {
         'local',
       ]);
 
-      expect(log.error).toHaveBeenCalledWith(expect.stringContaining("Run 'lh connect' first"));
+      expect(log.error).toHaveBeenCalledWith(
+        expect.stringContaining("Run 'modelnet connect' first"),
+      );
       expect(exitSpy).toHaveBeenCalledWith(1);
     });
 

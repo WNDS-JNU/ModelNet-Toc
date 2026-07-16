@@ -3,19 +3,19 @@ import { execSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 /**
- * E2E tests for `lh agent` agent management commands.
+ * E2E tests for `modelnet agent` agent management commands.
  *
  * Prerequisites:
- * - `lh` CLI is installed and linked globally
- * - User is authenticated (`lh login` completed)
- * - Network access to the LobeHub server
+ * - `modelnet` CLI is installed and linked globally
+ * - User is authenticated (`modelnet login` completed)
+ * - Network access to the ModelNet server
  *
  * These tests create a real agent, verify CRUD operations, then clean up.
  * Note: `agent run` and `agent status` are not tested here as they require
  * active SSE connections and running agents.
  */
 
-const CLI = process.env.LH_CLI_PATH || 'lh';
+const CLI = process.env.LH_CLI_PATH || 'modelnet';
 const TIMEOUT = 30_000;
 
 function run(args: string): string {
@@ -31,7 +31,7 @@ function runJson<T = any>(args: string): T {
   return JSON.parse(output) as T;
 }
 
-describe('lh agent - E2E', () => {
+describe('modelnet agent - E2E', () => {
   const testTitle = `E2E-Agent-${Date.now()}`;
   const testDescription = 'Created by E2E test';
   let createdId: string;

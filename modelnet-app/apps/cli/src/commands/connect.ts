@@ -148,8 +148,8 @@ export function registerConnectCommand(program: Command) {
       handleDaemonStart({ ...options, daemon: true });
     });
 
-  // Top-level alias for `connect stop`. Users who run `lh connect` naturally
-  // reach for `lh disconnect` to undo it; the nested `connect stop` is not
+  // Top-level alias for `connect stop`. Users who run `modelnet connect` naturally
+  // reach for `modelnet disconnect` to undo it; the nested `connect stop` is not
   // discoverable enough on its own.
   program
     .command('disconnect')
@@ -172,7 +172,7 @@ function handleDaemonStart(options: ConnectOptions) {
   const existingPid = getRunningDaemonPid();
   if (existingPid !== null) {
     log.error(`Daemon is already running (PID ${existingPid}).`);
-    log.error("Use 'lh connect stop' to stop it, or 'lh connect restart' to restart.");
+    log.error("Use 'modelnet connect stop' to stop it, or 'modelnet connect restart' to restart.");
     process.exit(1);
   }
 
@@ -182,8 +182,8 @@ function handleDaemonStart(options: ConnectOptions) {
 
   log.info(`Daemon started (PID ${pid}).`);
   log.info(`  Logs: ${getLogPath()}`);
-  log.info("  Run 'lh connect status' to check connection.");
-  log.info("  Run 'lh connect stop' to stop.");
+  log.info("  Run 'modelnet connect status' to check connection.");
+  log.info("  Run 'modelnet connect stop' to stop.");
 }
 
 function buildDaemonArgs(options: ConnectOptions): string[] {
@@ -377,7 +377,7 @@ async function runConnect(options: ConnectOptions, isDaemonChild: boolean) {
   });
 
   // Handle gateway-dispatched agent runs (heterogeneous agents, e.g. Claude
-  // Code). Mirrors the desktop app: spawn `lh hetero exec`, which owns the full
+  // Code). Mirrors the desktop app: spawn `modelnet hetero exec`, which owns the full
   // execution + server-ingest pipeline. Ack with the spawn outcome — `accepted`
   // once the child starts, `rejected` if it fails to spawn (e.g. bad cwd) — so
   // a failed dispatch surfaces as an error instead of a stuck assistant message.
@@ -468,7 +468,7 @@ async function runConnect(options: ConnectOptions, isDaemonChild: boolean) {
 
     error(`Authentication failed: ${reason}`);
     error(
-      `Run 'lh login', or set ${CLI_API_KEY_ENV} and run 'lh login --server <url>' to configure API key authentication.`,
+      `Run 'modelnet login', or set ${CLI_API_KEY_ENV} and run 'modelnet login --server <url>' to configure API key authentication.`,
     );
     cleanup();
     process.exit(1);
@@ -496,7 +496,7 @@ async function runConnect(options: ConnectOptions, isDaemonChild: boolean) {
       // refresh failed — fall through
     }
 
-    error("Could not refresh token. Run 'lh login' to re-authenticate.");
+    error("Could not refresh token. Run 'modelnet login' to re-authenticate.");
     cleanup();
     process.exit(1);
   });
@@ -529,7 +529,7 @@ async function runConnect(options: ConnectOptions, isDaemonChild: boolean) {
   });
 
   // Register this device in the server registry before opening the WS, so the
-  // row exists by the time the gateway reports it online. `lh login` already
+  // row exists by the time the gateway reports it online. `modelnet login` already
   // registers, but re-running here is cheap (idempotent upsert) and covers
   // `--token` sessions that never went through login. Best-effort: a failure
   // must not block the connection.
@@ -648,7 +648,7 @@ function collectSystemInfo(): DeviceSystemInfo {
     homePath: home,
     musicPath: path.join(home, 'Music'),
     picturesPath: path.join(home, 'Pictures'),
-    userDataPath: path.join(home, '.lobehub'),
+    userDataPath: path.join(home, '.modelnet'),
     videosPath: path.join(home, videosDir),
     workingDirectory: process.cwd(),
   };

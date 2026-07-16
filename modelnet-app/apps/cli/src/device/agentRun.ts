@@ -7,7 +7,7 @@ import {
 
 export interface SpawnHeteroAgentRunParams {
   agentType: string;
-  /** Resolved `lh hetero exec` wrapper args. */
+  /** Resolved `modelnet hetero exec` wrapper args. */
   args?: string[];
   cwd?: string;
   /** Image attachments (signed URLs) appended as image content blocks. */
@@ -32,14 +32,14 @@ interface SpawnHeteroAgentRunLogger {
 }
 
 /**
- * Spawn `lh hetero exec` for a gateway-dispatched agent run. Mirrors the
+ * Spawn `modelnet hetero exec` for a gateway-dispatched agent run. Mirrors the
  * desktop app's `spawnLhHeteroExec`: the spawned CLI owns the full pipeline
  * (spawn -> adapt -> BatchIngester -> server ingest), so the connect daemon
  * needs no local stream handling — it only kicks off the process.
  *
  * Re-invokes the current CLI entry (`process.execPath` + `process.argv[1]`)
- * instead of relying on `lh` being on `PATH`, so it also works inside the
- * detached `lh connect --daemon` child where `PATH` may be minimal.
+ * instead of relying on `modelnet` being on `PATH`, so it also works inside the
+ * detached `modelnet connect --daemon` child where `PATH` may be minimal.
  *
  * Resolves only once the child's outcome is known: `accepted` on the `spawn`
  * event, `rejected` on an early `error`. `spawn()` reports failures (missing or
@@ -91,7 +91,7 @@ export function spawnHeteroAgentRun(
 
   // systemContext / image attachments turn the payload into a content-block
   // array: context block first, then the user's prompt, then images — mirrors
-  // the desktop path. `lh hetero exec` coerces both shapes via
+  // the desktop path. `modelnet hetero exec` coerces both shapes via
   // coerceJsonPrompt.
   const stdinPayload = buildHeteroExecStdinPayload({ imageList, prompt, systemContext });
 

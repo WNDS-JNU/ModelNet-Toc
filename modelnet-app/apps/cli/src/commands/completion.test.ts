@@ -13,7 +13,7 @@ describe('completion command', () => {
 
   afterEach(() => {
     consoleSpy.mockRestore();
-    delete process.env.LOBEHUB_COMP_CWORD;
+    delete process.env.MODELNET_COMP_CWORD;
     process.env.SHELL = originalShell;
   });
 
@@ -41,8 +41,11 @@ describe('completion command', () => {
     const program = createProgram();
     await program.parseAsync(['node', 'test', 'completion']);
 
-    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('compdef _lobehub_completion'));
-    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('lh lobe lobehub'));
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('compdef _modelnet_completion'),
+    );
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('#compdef modelnet'));
+    expect(consoleSpy).not.toHaveBeenCalledWith(expect.stringMatching(/\b(?:lobe|lobehub)\b/));
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('"${(@)words[@]:1}"'));
   });
 
@@ -55,7 +58,7 @@ describe('completion command', () => {
   });
 
   it('should suggest root commands and aliases', async () => {
-    process.env.LOBEHUB_COMP_CWORD = '0';
+    process.env.MODELNET_COMP_CWORD = '0';
 
     const program = createProgram();
     await program.parseAsync(['node', 'test', '__complete', 'g']);
@@ -64,7 +67,7 @@ describe('completion command', () => {
   });
 
   it('should suggest nested subcommands in the current command context', async () => {
-    process.env.LOBEHUB_COMP_CWORD = '1';
+    process.env.MODELNET_COMP_CWORD = '1';
 
     const program = createProgram();
     await program.parseAsync(['node', 'test', '__complete', 'agent']);
@@ -73,7 +76,7 @@ describe('completion command', () => {
   });
 
   it('should suggest command options after leaf commands', async () => {
-    process.env.LOBEHUB_COMP_CWORD = '1';
+    process.env.MODELNET_COMP_CWORD = '1';
 
     const program = createProgram();
     await program.parseAsync(['node', 'test', '__complete', 'usage']);
@@ -82,7 +85,7 @@ describe('completion command', () => {
   });
 
   it('should not suggest commands while completing an option value', async () => {
-    process.env.LOBEHUB_COMP_CWORD = '2';
+    process.env.MODELNET_COMP_CWORD = '2';
 
     const program = createProgram();
     await program.parseAsync(['node', 'test', '__complete', 'usage', '--month']);
@@ -91,7 +94,7 @@ describe('completion command', () => {
   });
 
   it('should not expose hidden commands', async () => {
-    process.env.LOBEHUB_COMP_CWORD = '0';
+    process.env.MODELNET_COMP_CWORD = '0';
 
     const program = createProgram();
     await program.parseAsync(['node', 'test', '__complete']);

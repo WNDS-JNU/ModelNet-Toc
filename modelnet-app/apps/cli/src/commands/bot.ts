@@ -120,7 +120,7 @@ async function resolvePlatform(client: TrpcClient, platformId: string) {
   if (!def) {
     const ids = (platforms as any[]).map((p: any) => p.id).join(', ');
     log.error(`Invalid platform "${platformId}". Must be one of: ${ids}`);
-    log.info('Run `lh bot platforms` to see required credentials for each platform.');
+    log.info('Run `modelnet bot platforms` to see required credentials for each platform.');
     process.exit(1);
   }
   return def;
@@ -129,7 +129,7 @@ async function resolvePlatform(client: TrpcClient, platformId: string) {
 // ── Allowlist subcommand factory ────────────────────────
 
 interface AllowlistGroupOptions {
-  /** Description shown by `lh bot <name> --help`. */
+  /** Description shown by `modelnet bot <name> --help`. */
   description: string;
   /** Settings field to mutate — `allowFrom` (user IDs) or `groupAllowFrom` (channel IDs). */
   fieldKey: 'allowFrom' | 'groupAllowFrom';
@@ -631,7 +631,10 @@ export function registerBotCommand(program: Command) {
     .command('add')
     .description('Add a bot integration to an agent')
     .requiredOption('-a, --agent <agentId>', 'Agent ID')
-    .requiredOption('--platform <platform>', 'Platform (run `lh bot platforms` to see options)')
+    .requiredOption(
+      '--platform <platform>',
+      'Platform (run `modelnet bot platforms` to see options)',
+    )
     .requiredOption('--app-id <appId>', 'Application ID for webhook routing')
     .option('--bot-token <token>', 'Bot token (Discord, Slack, Telegram)')
     .option('--bot-id <id>', 'Bot ID (WeChat)')

@@ -94,7 +94,7 @@ describe('bot message send --attachment', () => {
   });
 
   it('base64-encodes a local file path', async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), 'lh-cli-attach-'));
+    const dir = await mkdtemp(path.join(tmpdir(), 'modelnet-cli-attach-'));
     const filePath = path.join(dir, 'tiny.txt');
     await writeFile(filePath, 'hello');
 

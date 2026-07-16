@@ -46,7 +46,7 @@ describe('verify rubric config commands', () => {
     const program = new Command();
     program.exitOverride();
     registerVerifyCommand(program);
-    await program.parseAsync(['node', 'lh', 'verify', ...args]);
+    await program.parseAsync(['node', 'modelnet', 'verify', ...args]);
   };
 
   it('passes maxRepairRounds config when creating a rubric', async () => {
@@ -113,7 +113,7 @@ describe('verify run delete command', () => {
     const program = new Command();
     program.exitOverride();
     registerVerifyCommand(program);
-    await program.parseAsync(['node', 'lh', 'verify', ...args]);
+    await program.parseAsync(['node', 'modelnet', 'verify', ...args]);
   };
 
   it('deletes the run without prompting when --yes is passed', async () => {
@@ -141,7 +141,7 @@ describe('verify evidence upload command', () => {
     const program = new Command();
     program.exitOverride();
     registerVerifyCommand(program);
-    await program.parseAsync(['node', 'lh', 'verify', ...args]);
+    await program.parseAsync(['node', 'modelnet', 'verify', ...args]);
   };
 
   it('rejects evidence with both file and inline content', async () => {
@@ -190,7 +190,7 @@ describe('verify init command', () => {
     const program = new Command();
     program.exitOverride();
     registerVerifyCommand(program);
-    await program.parseAsync(['node', 'lh', 'verify', ...args]);
+    await program.parseAsync(['node', 'modelnet', 'verify', ...args]);
   };
 
   it('writes SKILL.md and resource files into .claude/skills/verify', async () => {

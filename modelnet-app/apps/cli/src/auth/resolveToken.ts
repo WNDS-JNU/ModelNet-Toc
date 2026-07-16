@@ -93,7 +93,7 @@ export async function resolveToken(options: ResolveTokenOptions): Promise<Resolv
 
     const userId = parseJwtSub(credentials.accessToken);
     if (!userId) {
-      log.error("Stored token is invalid. Run 'lh login' again.");
+      log.error("Stored token is invalid. Run 'modelnet login' again.");
       process.exit(1);
     }
 
@@ -101,7 +101,7 @@ export async function resolveToken(options: ResolveTokenOptions): Promise<Resolv
   }
 
   log.error(
-    `No authentication found. Run 'lh login' first, or set ${CLI_API_KEY_ENV}, or provide --token.`,
+    `No authentication found. Run 'modelnet login' first, or set ${CLI_API_KEY_ENV}, or provide --token.`,
   );
   process.exit(1);
 }

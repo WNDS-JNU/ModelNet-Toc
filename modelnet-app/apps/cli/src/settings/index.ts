@@ -12,7 +12,7 @@ export interface StoredSettings {
   serverUrl?: string;
 }
 
-const LOBEHUB_DIR_NAME = process.env.LOBEHUB_CLI_HOME || '.lobehub';
+const LOBEHUB_DIR_NAME = process.env.MODELNET_CLI_HOME || '.modelnet';
 const SETTINGS_DIR = path.join(os.homedir(), LOBEHUB_DIR_NAME);
 const SETTINGS_FILE = path.join(SETTINGS_DIR, 'settings.json');
 // Kept in its own file rather than settings.json, which is unlinked whenever
@@ -59,11 +59,11 @@ export function saveSettings(settings: StoredSettings): void {
 }
 
 /**
- * Stable per-install connection routing key for `lh connect`. Decoupled from
+ * Stable per-install connection routing key for `modelnet connect`. Decoupled from
  * the (machine-derived, shared-across-clients) deviceId so the gateway only
  * replaces this install's own stale socket — a co-running desktop app on the
  * same machine keeps its connection. Persisted under the CLI home dir, so a
- * separate `LOBEHUB_CLI_HOME` (e.g. a dev build) naturally gets its own id.
+ * separate `MODELNET_CLI_HOME` (e.g. a dev build) naturally gets its own id.
  */
 export function loadOrCreateConnectionId(): string {
   try {
@@ -103,7 +103,7 @@ export function loadSettings(): StoredSettings | null {
     return normalized;
   } catch {
     log.warn(
-      `Could not parse ${SETTINGS_FILE}. Please delete this file and run 'lh login' again if needed.`,
+      `Could not parse ${SETTINGS_FILE}. Please delete this file and run 'modelnet login' again if needed.`,
     );
     return null;
   }

@@ -21,7 +21,7 @@ const baseParams = {
   jwt: 'jwt',
   operationId: 'op',
   prompt: 'hi',
-  serverUrl: 'https://app.lobehub.com',
+  serverUrl: 'https://app.modelnet.com',
   topicId: 'tpc',
 };
 
@@ -30,7 +30,7 @@ describe('spawnHeteroAgentRun', () => {
     spawnMock.mockReset();
   });
 
-  it('spawns `lh hetero exec` in server-ingest mode via the current CLI entry', async () => {
+  it('spawns `modelnet hetero exec` in server-ingest mode via the current CLI entry', async () => {
     const child = makeFakeChild();
     spawnMock.mockReturnValue(child);
 
@@ -68,7 +68,7 @@ describe('spawnHeteroAgentRun', () => {
       cwd: '/work/dir',
       env: expect.objectContaining({
         LOBEHUB_JWT: 'jwt-token',
-        LOBEHUB_SERVER: 'https://app.lobehub.com',
+        LOBEHUB_SERVER: 'https://app.modelnet.com',
       }),
     });
 
@@ -103,7 +103,7 @@ describe('spawnHeteroAgentRun', () => {
     expect(args).toContain('sess-9');
   });
 
-  it('forwards resolved args to lh hetero exec', () => {
+  it('forwards resolved args to modelnet hetero exec', () => {
     const child = makeFakeChild();
     spawnMock.mockReturnValue(child);
 

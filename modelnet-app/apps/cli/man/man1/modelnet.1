@@ -1,0 +1,42 @@
+.\" Code generated from the ModelNet Commander command tree.
+.TH MODELNET 1 "" "@modelnet/cli 0.0.38" "User Commands"
+.SH NAME
+modelnet \- manage and connect to ModelNet services
+.SH SYNOPSIS
+.B modelnet
+[\fIOPTION\fR]...
+[\fICOMMAND\fR]
+.SH DESCRIPTION
+ModelNet CLI provides authentication, device gateway connectivity, content generation, resource search, and management commands for agents, files, models, providers, skills, knowledge bases, threads, topics, and related resources.
+.SH FILES
+.TP
+.I ~/.modelnet/credentials.json
+Encrypted access and refresh tokens.
+.TP
+.I ~/.modelnet/settings.json
+CLI settings such as server and gateway URLs.
+.TP
+.I ~/.modelnet/daemon.pid
+Background daemon PID file.
+.TP
+.I ~/.modelnet/daemon.status
+Background daemon status metadata.
+.TP
+.I ~/.modelnet/daemon.log
+Background daemon log output.
+.PP
+The base directory can be overridden with the
+.B MODELNET_CLI_HOME
+environment variable.
+.SH EXAMPLES
+.TP
+.B modelnet login
+Start interactive login in the browser.
+.TP
+.B modelnet connect --daemon
+Start the device gateway connection in the background.
+.TP
+.B modelnet --help
+Show all available commands.
+.SH SEE ALSO
+.B modelnet man

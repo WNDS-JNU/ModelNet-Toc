@@ -3,17 +3,17 @@ import { execSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 /**
- * E2E tests for `lh memory` user memory management commands.
+ * E2E tests for `modelnet memory` user memory management commands.
  *
  * Prerequisites:
- * - `lh` CLI is installed and linked globally
- * - User is authenticated (`lh login` completed)
- * - Network access to the LobeHub server
+ * - `modelnet` CLI is installed and linked globally
+ * - User is authenticated (`modelnet login` completed)
+ * - Network access to the ModelNet server
  *
  * These tests create real identity memories, verify CRUD operations, then clean up.
  */
 
-const CLI = process.env.LH_CLI_PATH || 'lh';
+const CLI = process.env.LH_CLI_PATH || 'modelnet';
 const TIMEOUT = 60_000;
 
 function run(args: string): string {
@@ -30,7 +30,7 @@ function runJson<T = any>(args: string): T {
 }
 
 describe(
-  'lh memory - E2E',
+  'modelnet memory - E2E',
   () => {
     const testDesc = `E2E-Memory-${Date.now()}`;
     let createdIdentityId: string;

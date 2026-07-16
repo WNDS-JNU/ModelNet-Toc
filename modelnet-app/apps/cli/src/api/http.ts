@@ -20,7 +20,7 @@ export async function getAuthInfo(): Promise<AuthInfo> {
       process.exit(1);
     }
 
-    log.error("No authentication found. Run 'lh login' first.");
+    log.error("No authentication found. Run 'modelnet login' first.");
     process.exit(1);
   }
 
@@ -80,7 +80,7 @@ export async function getAgentStreamAuthInfo(): Promise<AgentStreamAuthInfo> {
 
   const result = await getValidToken();
   if (!result) {
-    log.error(`No authentication found. Run 'lh login' first, or set ${CLI_API_KEY_ENV}.`);
+    log.error(`No authentication found. Run 'modelnet login' first, or set ${CLI_API_KEY_ENV}.`);
     process.exit(1);
 
     return {

@@ -62,7 +62,7 @@ describe('runHeteroTask (openclaw)', () => {
     vi.clearAllMocks();
     // Clear task store
     for (const key of Object.keys(taskStore)) delete taskStore[key];
-    execFileSyncMock.mockReturnValue('/usr/local/bin/lh\n');
+    execFileSyncMock.mockReturnValue('/usr/local/bin/modelnet\n');
   });
 
   afterEach(() => {
@@ -87,7 +87,7 @@ describe('runHeteroTask (openclaw)', () => {
     const messageArg = spawnArgs[msgIdx + 1];
 
     expect(messageArg).toContain('what time is it');
-    expect(messageArg).toContain('lh notify');
+    expect(messageArg).toContain('modelnet notify');
     expect(messageArg).toContain('MSG_ID');
   });
 
@@ -120,7 +120,7 @@ describe('runHeteroTask (openclaw)', () => {
     for (const call of spawnMock.mock.calls) {
       const args = call[1] as string[];
       const msg = args[args.indexOf('--message') + 1];
-      expect(msg).toContain('lh notify');
+      expect(msg).toContain('modelnet notify');
     }
   });
 

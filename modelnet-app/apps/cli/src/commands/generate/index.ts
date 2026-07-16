@@ -41,11 +41,11 @@ function parseGenStatusError(
       `  The second argument must be the ${pc.bold('asyncTaskId')} — the UUID printed after\n` +
       `  "→ Task" in the video/image output, not the generation ID (gen_xxx).\n` +
       `\n` +
-      `  Example output from "lh gen video":\n` +
+      `  Example output from "modelnet gen video":\n` +
       `    Generation ${pc.bold('gen_abc123')} → Task ${pc.dim('7ad0eb13-e9a5-4403-8070-1f7fe95b2f95')}\n` +
       `\n` +
       `  Correct usage:\n` +
-      `    ${pc.cyan(`lh gen ${command} gen_abc123 7ad0eb13-e9a5-4403-8070-1f7fe95b2f95`)}`
+      `    ${pc.cyan(`modelnet gen ${command} gen_abc123 7ad0eb13-e9a5-4403-8070-1f7fe95b2f95`)}`
     );
   }
 
@@ -57,7 +57,7 @@ function parseGenStatusError(
       `  video/image output.\n` +
       `\n` +
       `  Correct usage:\n` +
-      `    ${pc.cyan(`lh gen ${command} <generationId> <asyncTaskId>`)}`
+      `    ${pc.cyan(`modelnet gen ${command} <generationId> <asyncTaskId>`)}`
     );
   }
 
@@ -201,7 +201,9 @@ export function registerGenerateCommand(program: Command) {
             console.log(
               `${pc.red('✗')} Timed out after ${options.timeout}s. Task still ${result.status}.`,
             );
-            console.log(pc.dim(`Run "lh gen status ${generationId} ${asyncTaskId}" to check later.`));
+            console.log(
+              pc.dim(`Run "modelnet gen status ${generationId} ${asyncTaskId}" to check later.`),
+            );
             process.exit(1);
           }
 

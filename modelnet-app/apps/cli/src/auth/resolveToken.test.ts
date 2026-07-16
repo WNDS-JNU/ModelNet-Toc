@@ -11,9 +11,9 @@ vi.mock('./refresh', () => ({
   getValidToken: vi.fn(),
 }));
 vi.mock('../settings', () => ({
-  loadSettings: vi.fn().mockReturnValue({ serverUrl: 'https://app.lobehub.com' }),
+  loadSettings: vi.fn().mockReturnValue({ serverUrl: 'https://app.modelnet.com' }),
   resolveServerUrl: vi.fn(() =>
-    (process.env.LOBEHUB_SERVER || 'https://app.lobehub.com').replace(/\/$/, ''),
+    (process.env.LOBEHUB_SERVER || 'https://app.modelnet.com').replace(/\/$/, ''),
   ),
 }));
 vi.mock('../utils/logger', () => ({
@@ -61,7 +61,7 @@ describe('resolveToken', () => {
       const result = await resolveToken({ token });
 
       expect(result).toEqual({
-        serverUrl: 'https://app.lobehub.com',
+        serverUrl: 'https://app.modelnet.com',
         token,
         tokenType: 'jwt',
         userId: 'user-123',
@@ -91,7 +91,7 @@ describe('resolveToken', () => {
       });
 
       expect(result).toEqual({
-        serverUrl: 'https://app.lobehub.com',
+        serverUrl: 'https://app.modelnet.com',
         token: 'svc-token',
         tokenType: 'serviceToken',
         userId: 'user-456',
@@ -106,29 +106,32 @@ describe('resolveToken', () => {
 
   describe('with environment api key', () => {
     it('should return API key from environment', async () => {
-      process.env.LOBEHUB_CLI_API_KEY = 'sk-lh-test';
+      process.env.LOBEHUB_CLI_API_KEY = 'sk-modelnet-test';
       vi.mocked(getUserIdFromApiKey).mockResolvedValue('user-789');
 
       const result = await resolveToken({});
 
-      expect(getUserIdFromApiKey).toHaveBeenCalledWith('sk-lh-test', 'https://app.lobehub.com');
+      expect(getUserIdFromApiKey).toHaveBeenCalledWith(
+        'sk-modelnet-test',
+        'https://app.modelnet.com',
+      );
       expect(result).toEqual({
-        serverUrl: 'https://app.lobehub.com',
-        token: 'sk-lh-test',
+        serverUrl: 'https://app.modelnet.com',
+        token: 'sk-modelnet-test',
         tokenType: 'apiKey',
         userId: 'user-789',
       });
     });
 
     it('should prefer LOBEHUB_SERVER when validating the API key', async () => {
-      process.env.LOBEHUB_CLI_API_KEY = 'sk-lh-test';
+      process.env.LOBEHUB_CLI_API_KEY = 'sk-modelnet-test';
       process.env.LOBEHUB_SERVER = 'https://self-hosted.example.com/';
       vi.mocked(getUserIdFromApiKey).mockResolvedValue('user-789');
 
       const result = await resolveToken({});
 
       expect(getUserIdFromApiKey).toHaveBeenCalledWith(
-        'sk-lh-test',
+        'sk-modelnet-test',
         'https://self-hosted.example.com',
       );
       expect(result.serverUrl).toBe('https://self-hosted.example.com');
@@ -147,7 +150,7 @@ describe('resolveToken', () => {
       const result = await resolveToken({});
 
       expect(result).toEqual({
-        serverUrl: 'https://app.lobehub.com',
+        serverUrl: 'https://app.modelnet.com',
         token,
         tokenType: 'jwt',
         userId: 'stored-user',

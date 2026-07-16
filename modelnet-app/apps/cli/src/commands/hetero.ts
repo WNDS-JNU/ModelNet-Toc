@@ -351,7 +351,7 @@ interface RawStreamDumpAttempt {
  * view can't tell a CC-side empty `tool_result` apart from an adapter
  * extraction bug; the raw dump can.
  *
- * Enabled via `lh hetero exec --raw-dump <dir>`. Each exec gets its own
+ * Enabled via `modelnet hetero exec --raw-dump <dir>`. Each exec gets its own
  * `<dir>/<timestamp>-<operationId>/` session folder; each spawn attempt (the
  * resume retry is a second attempt) writes `<label>.stdout.jsonl` /
  * `<label>.stderr.log`. Fully best-effort: any dump failure is logged and

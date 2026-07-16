@@ -1,6 +1,6 @@
 import type { Argument, Command } from 'commander';
 
-const ROOT_ALIASES = ['lobe', 'lobehub'];
+const ROOT_ALIASES: string[] = [];
 const HELP_COMMAND_NAME = 'help';
 
 interface DefinitionItem {
@@ -141,11 +141,11 @@ function formatSeeAlsoSection(root: Command, command: Command) {
   const parent = command.parent;
   if (parent) {
     const parentPath = buildCommandPath(parent).slice(1).join(' ');
-    items.add(parentPath ? `lh man ${parentPath}` : 'lh man');
+    items.add(parentPath ? `modelnet man ${parentPath}` : 'modelnet man');
   }
 
   for (const subcommand of getVisibleCommands(command).slice(0, 5)) {
-    items.add(`lh man ${buildCommandPath(subcommand).slice(1).join(' ')}`);
+    items.add(`modelnet man ${buildCommandPath(subcommand).slice(1).join(' ')}`);
   }
 
   return ['SEE ALSO', ...Array.from(items).map((item) => `  ${item}`)].join('\n');

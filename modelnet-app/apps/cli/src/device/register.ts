@@ -21,8 +21,8 @@ export function resolveDeviceIdentity(
 }
 
 /**
- * Register this device in the server registry. Shared by `lh login` (so the
- * device row exists right after auth) and `lh connect` (so the row exists
+ * Register this device in the server registry. Shared by `modelnet login` (so the
+ * device row exists right after auth) and `modelnet connect` (so the row exists
  * before the WS opens). Best-effort by contract: callers should wrap this in a
  * try/catch and treat any failure as non-fatal.
  */

@@ -78,8 +78,8 @@ describe('login command', () => {
         expires_in: 600,
         interval: 1,
         user_code: 'USER-CODE',
-        verification_uri: 'https://app.lobehub.com/verify',
-        verification_uri_complete: 'https://app.lobehub.com/verify?code=USER-CODE',
+        verification_uri: 'https://app.modelnet.com/verify',
+        verification_uri_complete: 'https://app.modelnet.com/verify?code=USER-CODE',
         ...overrides,
       }),
       ok: true,
@@ -137,20 +137,23 @@ describe('login command', () => {
         refreshToken: 'refresh-tok',
       }),
     );
-    expect(saveSettings).toHaveBeenCalledWith({ serverUrl: 'https://app.lobehub.com' });
+    expect(saveSettings).toHaveBeenCalledWith({ serverUrl: 'https://app.modelnet.com' });
     expect(log.info).toHaveBeenCalledWith(expect.stringContaining('Login successful'));
   });
 
   it('should use environment api key without storing credentials', async () => {
-    process.env.LOBEHUB_CLI_API_KEY = 'sk-lh-env-test';
+    process.env.LOBEHUB_CLI_API_KEY = 'sk-modelnet-env-test';
     vi.mocked(getUserIdFromApiKey).mockResolvedValue('user-123');
 
     const program = createProgram();
     await runLogin(program);
 
-    expect(getUserIdFromApiKey).toHaveBeenCalledWith('sk-lh-env-test', 'https://app.lobehub.com');
+    expect(getUserIdFromApiKey).toHaveBeenCalledWith(
+      'sk-modelnet-env-test',
+      'https://app.modelnet.com',
+    );
     expect(saveCredentials).not.toHaveBeenCalled();
-    expect(saveSettings).toHaveBeenCalledWith({ serverUrl: 'https://app.lobehub.com' });
+    expect(saveSettings).toHaveBeenCalledWith({ serverUrl: 'https://app.modelnet.com' });
     expect(log.info).toHaveBeenCalledWith(expect.stringContaining('Login successful'));
   });
 
@@ -184,7 +187,7 @@ describe('login command', () => {
   });
 
   it('should preserve existing gateway for environment api key on the same server', async () => {
-    process.env.LOBEHUB_CLI_API_KEY = 'sk-lh-env-test';
+    process.env.LOBEHUB_CLI_API_KEY = 'sk-modelnet-env-test';
     vi.mocked(getUserIdFromApiKey).mockResolvedValue('user-123');
     vi.mocked(loadSettings).mockReturnValueOnce({
       gatewayUrl: 'https://gateway.example.com',

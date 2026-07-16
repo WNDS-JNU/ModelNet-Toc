@@ -3,15 +3,15 @@ import { execSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 /**
- * E2E tests for `lh generate` (alias `lh gen`) content generation commands.
+ * E2E tests for `modelnet generate` (alias `modelnet gen`) content generation commands.
  *
  * Prerequisites:
- * - `lh` CLI is installed and linked globally
- * - User is authenticated (`lh login` completed)
- * - Network access to the LobeHub server
+ * - `modelnet` CLI is installed and linked globally
+ * - User is authenticated (`modelnet login` completed)
+ * - Network access to the ModelNet server
  */
 
-const CLI = process.env.LH_CLI_PATH || 'lh';
+const CLI = process.env.LH_CLI_PATH || 'modelnet';
 const TIMEOUT = 30_000;
 
 function run(args: string): string {
@@ -27,7 +27,7 @@ function runJson<T = any>(args: string): T {
   return JSON.parse(output) as T;
 }
 
-describe('lh generate - E2E', () => {
+describe('modelnet generate - E2E', () => {
   // ── text ──────────────────────────────────────────────
 
   describe('text', () => {

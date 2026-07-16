@@ -417,7 +417,8 @@ export function registerTopicCommand(program: Command) {
         if (t?.favorite) console.log(`${pc.bold('Favorite:')} ★`);
         if (t?.updatedAt) console.log(`${pc.bold('Updated:')}  ${timeAgo(t.updatedAt)}`);
         if (t?.status) console.log(`${pc.bold('Status:')}   ${t.status}`);
-        if (t?.model) console.log(`${pc.bold('Model:')}    ${t.model}${t.provider ? ` (${t.provider})` : ''}`);
+        if (t?.model)
+          console.log(`${pc.bold('Model:')}    ${t.model}${t.provider ? ` (${t.provider})` : ''}`);
         console.log('');
 
         // ── Messages ──
@@ -480,9 +481,7 @@ export function registerTopicCommand(program: Command) {
 
         // Print only top-level messages (parentId === null/undefined, or parentId not in current page)
         const msgIds = new Set(messages.map((m: any) => m.id));
-        const topLevel = messages.filter(
-          (m: any) => !m.parentId || !msgIds.has(m.parentId),
-        );
+        const topLevel = messages.filter((m: any) => !m.parentId || !msgIds.has(m.parentId));
 
         for (const m of topLevel) {
           printMessage(m, 0);

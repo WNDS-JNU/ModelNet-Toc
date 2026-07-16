@@ -294,7 +294,7 @@ describe('streamAgentEventsViaWebSocket', () => {
     const promise = streamAgentEventsViaWebSocket({
       gatewayUrl: 'https://gw.test.com',
       operationId: 'op-1',
-      serverUrl: 'https://app.lobehub.com',
+      serverUrl: 'https://app.modelnet.com',
       token: 'lh_sk_abc',
       tokenType: 'apiKey',
     });
@@ -305,7 +305,7 @@ describe('streamAgentEventsViaWebSocket', () => {
     // serverUrl is forwarded so the gateway can call back to /api/v1/users/me
     // to verify the API key.
     expect(ws.sent.map((s) => JSON.parse(s))[0]).toEqual({
-      serverUrl: 'https://app.lobehub.com',
+      serverUrl: 'https://app.modelnet.com',
       token: 'lh_sk_abc',
       tokenType: 'apiKey',
       type: 'auth',
@@ -488,13 +488,13 @@ describe('streamAgentEventsViaWebSocket', () => {
 
   it('should construct correct WebSocket URL from HTTPS gateway URL', async () => {
     const promise = streamAgentEventsViaWebSocket({
-      gatewayUrl: 'https://agent-gateway.lobehub.com',
+      gatewayUrl: 'https://agent-gateway.modelnet.com',
       operationId: 'op-123',
       token: 'tok',
     });
 
     await flush();
-    expect(capturedWs!.url).toBe('wss://agent-gateway.lobehub.com/ws?operationId=op-123');
+    expect(capturedWs!.url).toBe('wss://agent-gateway.modelnet.com/ws?operationId=op-123');
 
     capturedWs!.simulateMessage({ id: '1', type: 'session_complete' });
     await promise;

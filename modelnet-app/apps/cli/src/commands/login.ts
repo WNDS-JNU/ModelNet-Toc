@@ -216,16 +216,16 @@ export function registerLoginCommand(program: Command) {
             );
 
             // Register this device in the server registry right after auth, so
-            // the device row exists without waiting for a later `lh connect`
+            // the device row exists without waiting for a later `modelnet connect`
             // (which only adds the channel-online step). Mirrors the desktop
             // app, which registers on login. Best-effort: a failure here must
             // not fail the login.
             //
-            // Skip the `fallback` source: `lh login` has no `--device-id` and
+            // Skip the `fallback` source: `modelnet login` has no `--device-id` and
             // persists no fallback id, so a machine without a readable
             // machine-id would derive a *fresh random* id on every login —
             // registering it just spawns orphan device rows that never match
-            // the id a later `lh connect` resolves. Defer registration to
+            // the id a later `modelnet connect` resolves. Defer registration to
             // `connect` in that case, where the same id is reused for the WS.
             const identity = resolveDeviceIdentity(parseJwtSub(body.access_token));
             if (identity && identity.identitySource !== 'fallback') {

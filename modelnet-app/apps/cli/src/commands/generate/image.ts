@@ -68,7 +68,7 @@ export function registerImageCommand(parent: Command) {
           }
           console.log();
           console.log(
-            pc.dim('Use "lh generate status <generationId> <taskId>" to check progress.'),
+            pc.dim('Use "modelnet generate status <generationId> <taskId>" to check progress.'),
           );
         }
       },

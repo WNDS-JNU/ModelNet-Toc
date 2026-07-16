@@ -26,7 +26,7 @@ export function registerDeviceCommand(program: Command) {
 
       if (devices.length === 0) {
         console.log('No online devices found.');
-        console.log(pc.dim("Use 'lh connect' to connect this device."));
+        console.log(pc.dim("Use 'modelnet connect' to connect this device."));
         return;
       }
 
@@ -109,7 +109,7 @@ export function registerDeviceCommand(program: Command) {
         if (!device) {
           failed += 1;
           log.error(
-            `Device "${deviceId}" was not found. Run 'lh device list' to see available devices.`,
+            `Device "${deviceId}" was not found. Run 'modelnet device list' to see available devices.`,
           );
           continue;
         }

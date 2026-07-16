@@ -3,10 +3,10 @@ import { execSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Manual E2E coverage for `lh agent space fs` against a real backend.
+ * Manual E2E coverage for `modelnet agent space fs` against a real backend.
  *
  * Run when:
- * - A local or remote LobeHub backend is reachable by the CLI
+ * - A local or remote ModelNet backend is reachable by the CLI
  * - `AGENT_FS_E2E_AGENT_ID` points at an agent with document access
  *
  * Expects:
@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest';
  * - This suite is skipped unless `AGENT_FS_E2E_AGENT_ID` is set
  */
 const AGENT_ID = process.env.AGENT_FS_E2E_AGENT_ID;
-const CLI = process.env.LH_CLI_PATH || 'LOBEHUB_CLI_HOME=.lobehub-dev bun src/index.ts';
+const CLI = process.env.LH_CLI_PATH || 'MODELNET_CLI_HOME=.modelnet-dev bun src/index.ts';
 const TIMEOUT = 30_000;
 
 function run(args: string): string {
@@ -25,7 +25,7 @@ function run(args: string): string {
   }).trim();
 }
 
-describe.skipIf(!AGENT_ID)('lh agent space fs unified VFS - manual E2E', () => {
+describe.skipIf(!AGENT_ID)('modelnet agent space fs unified VFS - manual E2E', () => {
   const testRoot = `agent:/vfs-cli-e2e-${Date.now()}`;
 
   it('exercises root, mounted namespaces, writes, copy, move, trash, and cleanup', () => {

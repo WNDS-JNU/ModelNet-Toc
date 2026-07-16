@@ -66,7 +66,7 @@ export function registerLifecycleCommands(task: Command) {
 
         if (!options.follow) {
           log.info(
-            `Agent running in background. Use ${pc.dim(`lh task view ${id}`)} to check status.`,
+            `Agent running in background. Use ${pc.dim(`modelnet task view ${id}`)} to check status.`,
           );
           return;
         }
@@ -160,7 +160,7 @@ export function registerLifecycleCommands(task: Command) {
 
           if (!shouldFollow) {
             log.info(
-              `Agent running in background. Use ${pc.dim(`lh task view ${id}`)} to check status.`,
+              `Agent running in background. Use ${pc.dim(`modelnet task view ${id}`)} to check status.`,
             );
             return;
           }
@@ -258,7 +258,7 @@ export function registerLifecycleCommands(task: Command) {
 
   task
     .command('sort <id> <identifiers...>')
-    .description('Reorder subtasks (e.g. lh task sort T-1 T-2 T-4 T-3)')
+    .description('Reorder subtasks (e.g. modelnet task sort T-1 T-2 T-4 T-3)')
     .action(async (id: string, identifiers: string[]) => {
       const client = await getTrpcClient();
       const result = (await client.task.reorderSubtasks.mutate({

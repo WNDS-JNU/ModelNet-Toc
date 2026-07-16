@@ -9,7 +9,7 @@ export interface StoredCredentials {
   refreshToken?: string;
 }
 
-const LOBEHUB_DIR_NAME = process.env.LOBEHUB_CLI_HOME || '.lobehub';
+const LOBEHUB_DIR_NAME = process.env.MODELNET_CLI_HOME || '.modelnet';
 const CREDENTIALS_DIR = path.join(os.homedir(), LOBEHUB_DIR_NAME);
 const CREDENTIALS_FILE = path.join(CREDENTIALS_DIR, 'credentials.json');
 

@@ -231,7 +231,7 @@ export function registerMemoryCommand(program: Command) {
       if ((result as any)?.id) {
         console.log(`Task ID: ${pc.bold((result as any).id)}`);
       }
-      console.log(pc.dim('Use "lh memory extract-status" to check progress.'));
+      console.log(pc.dim('Use "modelnet memory extract-status" to check progress.'));
     });
 
   // ── extract-status ────────────────────────────────────
