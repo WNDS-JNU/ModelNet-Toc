@@ -74,7 +74,7 @@ Some specialized events require explicit approval from Tencent.
 
 #### WebSocket Mode
 
-- ModelNet's \`lh bot connect\` handles the WebSocket gateway automatically
+- ModelNet's \`modelnet bot connect\` handles the WebSocket gateway automatically
 - No URL configuration needed — just provide AppID and AppSecret
 
 ### Step 6: Configure IP Whitelist
@@ -94,13 +94,13 @@ Some specialized events require explicit approval from Tencent.
 ### Step 8: Connect via CLI
 
 \`\`\`bash
-lh bot add -a <agentId> \\
+modelnet bot add -a <agentId> \\
   --platform qq \\
   --app-id <appId> \\
   --app-secret <appSecret>
 
-lh bot test <botId>
-lh bot connect <botId>
+modelnet bot test <botId>
+modelnet bot connect <botId>
 \`\`\`
 
 ## Notes

@@ -13,11 +13,15 @@ interface PluginTagProps {
   type: 'builtin' | 'customPlugin' | 'plugin';
 }
 
+const isOfficialModelNetAuthor = (author?: string) =>
+  author === 'ModelNet' || author === 'LobeHub' || author === 'LobeHub Market';
+
 const PluginTag = memo<PluginTagProps>(
   ({ showIcon = true, author, type, showText = true, isMCP }) => {
     const { t } = useTranslation('plugin');
     const isCustom = type === 'customPlugin';
-    const isOfficial = author === 'LobeHub';
+    const isOfficial = isOfficialModelNetAuthor(author);
+    const displayAuthor = isOfficial ? 'ModelNet' : author;
 
     const customTag = (
       <Tag color={'warning'} icon={showIcon && <Icon icon={Package} />} size={'small'}>
@@ -42,7 +46,7 @@ const PluginTag = memo<PluginTagProps>(
         icon={showIcon && <Icon icon={isOfficial ? BadgeCheck : CircleUser} />}
         size={'small'}
       >
-        {showText && (author || t('store.communityPlugin'))}
+        {showText && (displayAuthor || t('store.communityPlugin'))}
       </Tag>
     );
   },

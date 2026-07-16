@@ -4,7 +4,7 @@ import { ExclamationCircleOutlined, FolderOpenOutlined } from '@ant-design/icons
 import { Button, FluentEmoji, Text } from '@lobehub/ui';
 import { Result } from 'antd';
 import { memo } from 'react';
-import { Trans, useTranslation } from 'react-i18next';
+import { useTranslation } from 'react-i18next';
 
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 
@@ -15,6 +15,9 @@ interface StatusPageProps {
 const StatusPage = memo<StatusPageProps>(({ status }) => {
   const navigate = useWorkspaceAwareNavigate();
   const { t } = useTranslation('discover');
+  const administrator = t('user.workspaceProfile.settings.members.role.admin');
+  const replaceSupportContact = (message: string) =>
+    message.replaceAll(/<email>.*?<\/email>/gu, administrator);
 
   const handleBackToMarket = () => {
     navigate('/community/agent');
@@ -42,13 +45,7 @@ const StatusPage = memo<StatusPageProps>(({ status }) => {
           }
           subTitle={
             <Text fontSize={16} type={'secondary'}>
-              <Trans
-                i18nKey="assistants.status.unpublished.subtitle"
-                ns="discover"
-                components={{
-                  email: <a href="mailto:support@lobehub.com">support@lobehub.com</a>,
-                }}
-              />
+              {replaceSupportContact(t('assistants.status.unpublished.subtitle'))}
             </Text>
           }
           title={
@@ -96,15 +93,7 @@ const StatusPage = memo<StatusPageProps>(({ status }) => {
               <li>{t(`assistants.status.${statusKey}.reasons.owner`)}</li>
               <li>{t(`assistants.status.${statusKey}.reasons.official`)}</li>
             </ul>
-            <p>
-              <Trans
-                i18nKey="assistants.status.support"
-                ns="discover"
-                components={{
-                  email: <a href="mailto:support@lobehub.com">support@lobehub.com</a>,
-                }}
-              />
-            </p>
+            <p>{replaceSupportContact(t('assistants.status.support'))}</p>
           </div>
         }
       />

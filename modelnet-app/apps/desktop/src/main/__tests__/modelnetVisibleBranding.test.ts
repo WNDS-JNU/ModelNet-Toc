@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const desktopRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+const repoRoot = resolve(desktopRoot, '../..');
 
 const visibleTextSurfaces = [
   'electron-builder.mjs',
@@ -36,6 +37,8 @@ const modelnetAssets = [
   'build/modelnet-nsis-sidebar.bmp',
 ].map((file) => resolve(desktopRoot, file));
 
+modelnetAssets.push(resolve(repoRoot, 'public/avatars/modelnet.png'));
+
 const retiredLobeAssets = [
   'resources/dmg.png',
   'resources/tray.png',
@@ -60,6 +63,8 @@ const retiredLobeAssets = [
   'build/nsis-header.bmp',
   'build/nsis-sidebar.bmp',
 ].map((file) => resolve(desktopRoot, file));
+
+retiredLobeAssets.push(resolve(repoRoot, 'public/avatars/lobe-ai.png'));
 
 describe('ModelNet-only visible branding', () => {
   it('does not expose LobeHub websites, repositories, or product names', () => {

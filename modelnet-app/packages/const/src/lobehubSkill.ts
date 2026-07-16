@@ -1,6 +1,8 @@
 import type { IconType } from '@icons-pack/react-simple-icons';
 import { SiGithub, SiLinear, SiPosthog, SiVercel, SiX } from '@icons-pack/react-simple-icons';
 
+import { OFFICIAL_URL } from './url';
+
 export interface LobehubSkillProviderType {
   /**
    * Author/Developer of the integration
@@ -48,8 +50,8 @@ export type LobehubConnectorProviderType = LobehubSkillProviderType;
  */
 export const LOBEHUB_SKILL_PROVIDERS: LobehubSkillProviderType[] = [
   {
-    author: 'LobeHub',
-    authorUrl: 'https://lobehub.com',
+    author: 'ModelNet',
+    authorUrl: OFFICIAL_URL,
     defaultVisible: true,
     description:
       'GitHub is a platform for version control and collaboration, enabling developers to host, review, and manage code repositories.',
@@ -60,8 +62,8 @@ export const LOBEHUB_SKILL_PROVIDERS: LobehubSkillProviderType[] = [
       'Connect to GitHub to access your repositories, create and manage issues, review pull requests, and collaborate on code—all through natural conversation with your AI assistant.',
   },
   {
-    author: 'LobeHub',
-    authorUrl: 'https://lobehub.com',
+    author: 'ModelNet',
+    authorUrl: OFFICIAL_URL,
     defaultVisible: true,
     description:
       'Linear is a modern issue tracking and project management tool designed for high-performance teams to build better software faster',
@@ -72,8 +74,8 @@ export const LOBEHUB_SKILL_PROVIDERS: LobehubSkillProviderType[] = [
     label: 'Linear',
   },
   {
-    author: 'LobeHub',
-    authorUrl: 'https://lobehub.com',
+    author: 'ModelNet',
+    authorUrl: OFFICIAL_URL,
     defaultVisible: true,
     description:
       'Outlook Calendar is an integrated scheduling tool within Microsoft Outlook that enables users to create appointments, organize meetings with others, and manage their time and events effectively.',
@@ -84,8 +86,8 @@ export const LOBEHUB_SKILL_PROVIDERS: LobehubSkillProviderType[] = [
     label: 'Outlook Calendar',
   },
   {
-    author: 'LobeHub',
-    authorUrl: 'https://lobehub.com',
+    author: 'ModelNet',
+    authorUrl: OFFICIAL_URL,
     defaultVisible: true,
     description: 'Notion is a collaborative productivity and note-taking application.',
     icon: 'https://hub-apac-1.lobeobjects.space/assets/logos/notion.svg',
@@ -95,8 +97,8 @@ export const LOBEHUB_SKILL_PROVIDERS: LobehubSkillProviderType[] = [
     label: 'Notion',
   },
   {
-    author: 'LobeHub',
-    authorUrl: 'https://lobehub.com',
+    author: 'ModelNet',
+    authorUrl: OFFICIAL_URL,
     defaultVisible: true,
     description:
       'PostHog is an open-source product analytics platform for analyzing events, funnels, cohorts, feature flags, experiments, and user behavior.',
@@ -107,8 +109,8 @@ export const LOBEHUB_SKILL_PROVIDERS: LobehubSkillProviderType[] = [
       'Connect to PostHog to query product analytics, inspect dashboards, review feature flags and experiments, and understand user behavior through natural conversation with your AI assistant.',
   },
   {
-    author: 'LobeHub',
-    authorUrl: 'https://lobehub.com',
+    author: 'ModelNet',
+    authorUrl: OFFICIAL_URL,
     defaultVisible: true,
     description:
       'X (Twitter) is a social media platform for sharing real-time updates, news, and engaging with your audience through posts, replies, and direct messages.',
@@ -119,8 +121,8 @@ export const LOBEHUB_SKILL_PROVIDERS: LobehubSkillProviderType[] = [
     label: 'X (Twitter)',
   },
   {
-    author: 'LobeHub',
-    authorUrl: 'https://lobehub.com',
+    author: 'ModelNet',
+    authorUrl: OFFICIAL_URL,
     defaultVisible: true,
     description:
       'Vercel is a cloud platform for frontend developers, providing hosting and serverless functions to deploy web applications with ease.',

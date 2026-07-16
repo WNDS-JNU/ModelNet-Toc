@@ -1,17 +1,17 @@
-const content = `# lh gen - Content Generation
+const content = `# modelnet gen - Content Generation
 
-Generate text, images, videos, and audio. Alias: \`lh generate\`.
+Generate text, images, videos, and audio. Alias: \`modelnet generate\`.
 
 ## Subcommands
 
-- \`lh gen text <prompt> [-m <model>] [-p <provider>] [--stream] [--temperature <t>]\` - Generate text
-- \`lh gen image <prompt> [-m <model>] [-n <count>] [--width <w>] [--height <h>]\` - Generate image
-- \`lh gen video <prompt> -m <model> -p <provider> [--aspect-ratio <r>] [--duration <d>] [--resolution <res>]\` - Generate video
-- \`lh gen tts <text> [-o <output>] [--voice <v>] [--speed <s>]\` - Text-to-speech
-- \`lh gen asr <audioFile> [--model <m>] [--language <l>]\` - Speech-to-text
-- \`lh gen status <generationId> <asyncTaskId>\` - Check generation task status
-- \`lh gen download <generationId> <asyncTaskId> [-o <output>]\` - Wait and download result
-- \`lh gen list\` - List generation topics
+- \`modelnet gen text <prompt> [-m <model>] [-p <provider>] [--stream] [--temperature <t>]\` - Generate text
+- \`modelnet gen image <prompt> [-m <model>] [-n <count>] [--width <w>] [--height <h>]\` - Generate image
+- \`modelnet gen video <prompt> -m <model> -p <provider> [--aspect-ratio <r>] [--duration <d>] [--resolution <res>]\` - Generate video
+- \`modelnet gen tts <text> [-o <output>] [--voice <v>] [--speed <s>]\` - Text-to-speech
+- \`modelnet gen asr <audioFile> [--model <m>] [--language <l>]\` - Speech-to-text
+- \`modelnet gen status <generationId> <asyncTaskId>\` - Check generation task status
+- \`modelnet gen download <generationId> <asyncTaskId> [-o <output>]\` - Wait and download result
+- \`modelnet gen list\` - List generation topics
 
 ## Tips
 
@@ -21,17 +21,17 @@ Generate text, images, videos, and audio. Alias: \`lh generate\`.
 
 ## Finding Available Video / Image Models
 
-Before generating, always look up the correct model ID with \`lh model list\`:
+Before generating, always look up the correct model ID with \`modelnet model list\`:
 
 \`\`\`bash
 # List all video models for the lobehub provider
-lh model list lobehub --type video
+modelnet model list lobehub --type video
 
 # List only enabled video models
-lh model list lobehub --type video --enabled
+modelnet model list lobehub --type video --enabled
 
 # List image generation models
-lh model list lobehub --type image
+modelnet model list lobehub --type image
 \`\`\`
 
 Use the \`id\` field from the output as the \`-m\` argument. Model IDs for video/image are
@@ -39,11 +39,11 @@ Use the \`id\` field from the output as the \`-m\` argument. Model IDs for video
 
 Example:
 \`\`\`bash
-# ✅ Correct — use the id from lh model list
-lh gen video "a cat riding a skateboard" -p lobehub -m dreamina-seedance-2-0-260128
+# ✅ Correct — use the id from modelnet model list
+modelnet gen video "a cat riding a skateboard" -p lobehub -m dreamina-seedance-2-0-260128
 
 # ❌ Wrong — guessed slugs will fail with no_valid_channel_error
-lh gen video "a cat riding a skateboard" -p lobehub -m seedance-2.0
+modelnet gen video "a cat riding a skateboard" -p lobehub -m seedance-2.0
 \`\`\`
 
 ## ⚠️ asyncTaskId vs generationId
@@ -56,7 +56,7 @@ lh gen video "a cat riding a skateboard" -p lobehub -m seedance-2.0
 
 Passing \`gen_xxx\` as \`<asyncTaskId>\` will cause a server error. Always use the UUID.
 
-Example output from \`lh gen video\`:
+Example output from \`modelnet gen video\`:
 \`\`\`
 ✓ Video generation started
   Batch ID: gb_xxx
@@ -66,8 +66,8 @@ Example output from \`lh gen video\`:
 
 Correct usage:
 \`\`\`bash
-lh gen status gen_abc123 7ad0eb13-e9a5-4403-8070-1f7fe95b2f95
-lh gen download gen_abc123 7ad0eb13-e9a5-4403-8070-1f7fe95b2f95 -o result.mp4
+modelnet gen status gen_abc123 7ad0eb13-e9a5-4403-8070-1f7fe95b2f95
+modelnet gen download gen_abc123 7ad0eb13-e9a5-4403-8070-1f7fe95b2f95 -o result.mp4
 \`\`\`
 `;
 

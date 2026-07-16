@@ -86,21 +86,21 @@ Connect a Feishu custom app bot to your agent.
 ### Step 8: Connect via CLI
 
 \`\`\`bash
-lh bot add -a <agentId> \\
+modelnet bot add -a <agentId> \\
   --platform feishu \\
   --app-id <appId> \\
   --app-secret <appSecret>
 
 # Optional: with webhook verification
-lh bot add -a <agentId> \\
+modelnet bot add -a <agentId> \\
   --platform feishu \\
   --app-id <appId> \\
   --app-secret <appSecret> \\
   --verification-token <token> \\
   --encrypt-key <key>
 
-lh bot test <botId>
-lh bot connect <botId>
+modelnet bot test <botId>
+modelnet bot connect <botId>
 \`\`\`
 
 ## Notes

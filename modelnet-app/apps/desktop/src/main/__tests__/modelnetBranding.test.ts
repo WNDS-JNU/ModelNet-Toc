@@ -50,6 +50,12 @@ describe('ModelNet desktop branding', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('does not embed the retired Lobe wordmark in the splash screen', () => {
+    const splash = readSurface(resolve(desktopRoot, 'resources/splash.html'));
+
+    expect(splash).not.toMatch(/lobe-brand-loading|viewBox="0 0 940 320"/i);
+  });
+
   it('keeps desktop auth and startup surfaces branded as ModelNet', () => {
     const missing = brandingSurfaces
       .filter((file) => !readSurface(file).includes('ModelNet'))

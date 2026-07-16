@@ -44,7 +44,7 @@ const StatusPage = memo<StatusPageProps>(({ status }) => {
             <Text fontSize={16} type={'secondary'}>
               {t('groupAgents.status.unpublished.subtitle', {
                 defaultValue:
-                  'This group agent is under review. Please contact support@lobehub.com if you have questions.',
+                  'This group agent is under review. Please contact your ModelNet administrator if you have questions.',
               })}
             </Text>
           }

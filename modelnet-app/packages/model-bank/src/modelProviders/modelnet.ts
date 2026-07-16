@@ -5,7 +5,8 @@ import modelnetModels from '../aiModels/modelnet';
 const ModelNet: ModelProviderCard = {
   chatModels: modelnetModels,
   checkModel: 'modelnet-auto',
-  description: 'ModelNet routes requests across the local ModelNet model network through the TOC gateway.',
+  description:
+    'ModelNet routes requests across the local ModelNet model network through the TOC gateway.',
   enabled: true,
   id: 'modelnet',
   modelList: { showModelFetcher: true },
@@ -17,7 +18,7 @@ const ModelNet: ModelProviderCard = {
     sdkType: 'openai',
     showModelFetcher: true,
   },
-  url: 'https://github.com/lobehub/lobehub',
+  url: 'https://github.com/WNDS-JNU/ModelNet-Toc',
 };
 
 export default ModelNet;

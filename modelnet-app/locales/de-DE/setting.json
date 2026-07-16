@@ -2266,7 +2266,7 @@
   "workspace.permission.requiresPrimaryOwner": "Nur der Hauptbesitzer kann diesen Arbeitsbereich löschen. Übertragen Sie zuerst die Hauptbesitzerschaft, falls erforderlich.",
   "workspace.personalTag": "Persönlich",
   "workspace.slugBrandApply.button": "Anwenden",
-  "workspace.slugBrandApply.mailBody": "Hallo ModelNet-Team,\n\nIch möchte die Arbeitsbereichs-URL \"{{slug}}\" (https://lobehub.com/{{slug}}) beantragen.\n\n- Marke / Organisation, die ich vertrete:\n- Offizielle Website / Domain:\n- Meine Rolle in der Organisation:\n- Organisations-E-Mail (bitte antworten Sie von dieser Adresse):\n\nDanke!",
+  "workspace.slugBrandApply.mailBody": "Hallo ModelNet-Team,\n\nIch möchte die Arbeitsbereichs-URL \"{{slug}}\" (http://123.56.135.150/{{slug}}) beantragen.\n\n- Marke / Organisation, die ich vertrete:\n- Offizielle Website / Domain:\n- Meine Rolle in der Organisation:\n- Organisations-E-Mail (bitte antworten Sie von dieser Adresse):\n\nDanke!",
   "workspace.slugBrandApply.mailButton": "Per E-Mail beantragen",
   "workspace.slugBrandApply.mailSubject": "Anfrage für geschützte Arbeitsbereichs-URL: {{slug}}",
   "workspace.slugBrandApply.modalCreateTip": "Sie können Ihren Arbeitsbereich jetzt auch mit einer anderen URL erstellen und uns später von Ihrer Organisations-E-Mail aus unter {{email}} kontaktieren, um diese anzufordern.",

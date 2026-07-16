@@ -9,7 +9,7 @@ export const params = {
   baseURL: 'https://api.together.xyz/v1',
   constructorOptions: {
     defaultHeaders: {
-      'HTTP-Referer': 'https://chat-preview.lobehub.com',
+      'HTTP-Referer': 'http://123.56.135.150',
       'X-Title': 'Lobe Chat',
     },
   },

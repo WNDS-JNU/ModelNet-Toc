@@ -61,7 +61,7 @@ interface AutoLinkPattern {
 // becomes clickable.
 const AUTO_LINK_PATTERNS: AutoLinkPattern[] = [
   {
-    build: (match) => `https://github.com/lobehub/lobehub/issues/${match.slice(1)}`,
+    build: (match) => `https://github.com/WNDS-JNU/ModelNet-Toc/issues/${match.slice(1)}`,
     regex: /#\d+/g,
   },
 ];

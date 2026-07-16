@@ -1,18 +1,18 @@
-const content = `# lh skill - Skill Management
+const content = `# modelnet skill - Skill Management
 
 Manage agent skills (reusable prompt+resource bundles).
 
 ## Subcommands
 
-- \`lh skill list [--source <builtin|market|user>]\` - List skills
-- \`lh skill view <id>\` - View skill details
-- \`lh skill create -n <name> -d <description> -c <content>\` - Create user skill
-- \`lh skill edit <id> [-c <content>] [-n <name>] [-d <description>]\` - Update skill
-- \`lh skill delete <id> [--yes]\` - Delete skill
-- \`lh skill search <query>\` - Search skills
-- \`lh skill install <source> [--branch <b>]\` - Install from GitHub/URL/marketplace
-- \`lh skill resources <id>\` - List skill resource files
-- \`lh skill read-resource <id> <path>\` - Read a skill resource file
+- \`modelnet skill list [--source <builtin|market|user>]\` - List skills
+- \`modelnet skill view <id>\` - View skill details
+- \`modelnet skill create -n <name> -d <description> -c <content>\` - Create user skill
+- \`modelnet skill edit <id> [-c <content>] [-n <name>] [-d <description>]\` - Update skill
+- \`modelnet skill delete <id> [--yes]\` - Delete skill
+- \`modelnet skill search <query>\` - Search skills
+- \`modelnet skill install <source> [--branch <b>]\` - Install from GitHub/URL/marketplace
+- \`modelnet skill resources <id>\` - List skill resource files
+- \`modelnet skill read-resource <id> <path>\` - Read a skill resource file
 
 ## Tips
 

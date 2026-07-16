@@ -115,7 +115,7 @@ const config = {
     );
     await fs.writeFile(
       path.resolve(__dirname, 'resources/cli-package.json'),
-      JSON.stringify({ name: 'modelnet-cli', type: 'module', version: cliPkg.version }),
+      JSON.stringify({ name: '@modelnet/cli', type: 'module', version: cliPkg.version }),
     );
     console.info('✅ CLI bundle copied to resources/bin/modelnet-cli.js');
   },
@@ -185,7 +185,10 @@ const config = {
   appId,
   productName: desktopProductName,
   extraMetadata: {
-    author: 'ModelNet',
+    // Keep author structured: electron-builder reads author.name for the
+    // Windows CompanyName version resource. A string leaves Electron's
+    // upstream "GitHub, Inc." value untouched.
+    author: { name: 'ModelNet' },
     description: 'ModelNet Desktop Application',
     homepage: 'http://123.56.135.150',
     name: 'modelnet-desktop',
@@ -231,6 +234,13 @@ const config = {
     'dist',
     'resources',
     'dist/renderer/**/*',
+    '!dist/renderer/_spa/**',
+    '!dist/renderer/_spa-auth/**',
+    '!dist/renderer/screenshots/**',
+    '!dist/renderer/avatars/lobe-ai.png',
+    '!dist/renderer/avatars/agent-builder.png',
+    '!dist/renderer/avatars/agent-default.png',
+    '!dist/renderer/avatars/doc-copilot.png',
     '!resources/locales',
     '!resources/modelnet-dmg.png',
     // Exclude all node_modules first

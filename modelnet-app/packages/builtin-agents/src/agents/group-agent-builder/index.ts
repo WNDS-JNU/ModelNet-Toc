@@ -10,7 +10,7 @@ import { systemRoleTemplate } from './systemRole';
  * Group Agent Builder - used for configuring group chat settings and managing group members
  */
 export const GROUP_AGENT_BUILDER: BuiltinAgentDefinition = {
-  avatar: '/avatars/agent-builder.png',
+  avatar: '/avatars/modelnet.png',
 
   // Persist config - stored in database
   persist: {

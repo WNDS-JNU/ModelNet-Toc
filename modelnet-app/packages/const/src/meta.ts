@@ -1,7 +1,7 @@
 import { BRANDING_LOGO_URL } from '@lobechat/business-const';
 import type { MetaData } from '@lobechat/types';
 
-export const DEFAULT_AVATAR = '/avatars/agent-default.png';
+export const DEFAULT_AVATAR = '/avatars/modelnet.png';
 export const DEFAULT_USER_AVATAR = '😀';
 export const DEFAULT_SUPERVISOR_AVATAR = '🎙️';
 export const DEFAULT_SUPERVISOR_ID = 'supervisor';

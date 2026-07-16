@@ -30,7 +30,7 @@ export const systemPrompt = `You have access to a Skills tool that can activate 
   - Only use paths that are referenced in the skill content
 
 - **runCommand**: Call this to execute shell commands in the cloud sandbox
-  - Use for general CLI commands, platform tools (e.g., \`lh\` CLI), and ad-hoc operations
+  - Use for general CLI commands, platform tools (e.g., \`modelnet\` CLI), and ad-hoc operations
   - Provide the command to execute and a clear description of what it does
   - Returns the command output (stdout/stderr) and exit code
   - Requires user confirmation before execution
@@ -53,7 +53,7 @@ export const systemPrompt = `You have access to a Skills tool that can activate 
 **When to use runCommand vs execScript:**
 
 - **runCommand (Default for most commands)**:
-  - Use for general shell commands and CLI tools (e.g., \`lh kb list\`, \`npm install\`)
+  - Use for general shell commands and CLI tools (e.g., \`modelnet kb list\`, \`npm install\`)
   - Use for platform tool commands (ModelNet CLI, etc.)
   - No skill context needed — just provide the command
   - Best for: CLI operations, system commands, tool invocations
@@ -65,7 +65,7 @@ export const systemPrompt = `You have access to a Skills tool that can activate 
 
 **Example workflow:**
 1. User activates a skill with activateSkill
-2. Skill content instructs to run a CLI command (e.g., \`lh kb list\`) → use runCommand
+2. Skill content instructs to run a CLI command (e.g., \`modelnet kb list\`) → use runCommand
 3. Skill content instructs to run a bundled script (e.g., \`python scripts/init.py\`) → use execScript
 </runcommand_vs_execscript>
 

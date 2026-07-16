@@ -79,7 +79,7 @@ export const params = {
   },
   constructorOptions: {
     defaultHeaders: {
-      'http-referer': 'https://lobehub.com',
+      'http-referer': 'http://123.56.135.150',
       'x-title': 'ModelNet',
     },
   },

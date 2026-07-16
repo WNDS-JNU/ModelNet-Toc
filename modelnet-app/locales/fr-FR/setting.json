@@ -2266,7 +2266,7 @@
   "workspace.permission.requiresPrimaryOwner": "Seul le propriétaire principal peut supprimer cet espace de travail. Transférez d'abord la propriété principale si nécessaire.",
   "workspace.personalTag": "Personnel",
   "workspace.slugBrandApply.button": "Postuler",
-  "workspace.slugBrandApply.mailBody": "Bonjour l'équipe ModelNet,\n\nJe souhaite demander l'URL de l'espace de travail \"{{slug}}\" (https://lobehub.com/{{slug}}).\n\n- Marque / organisation que je représente :\n- Site officiel / domaine :\n- Mon rôle dans l'organisation :\n- E-mail de l'organisation (veuillez répondre depuis cette adresse) :\n\nMerci !",
+  "workspace.slugBrandApply.mailBody": "Bonjour l'équipe ModelNet,\n\nJe souhaite demander l'URL de l'espace de travail \"{{slug}}\" (http://123.56.135.150/{{slug}}).\n\n- Marque / organisation que je représente :\n- Site officiel / domaine :\n- Mon rôle dans l'organisation :\n- E-mail de l'organisation (veuillez répondre depuis cette adresse) :\n\nMerci !",
   "workspace.slugBrandApply.mailButton": "Postuler par e-mail",
   "workspace.slugBrandApply.mailSubject": "Demande d'URL de marque pour l'espace de travail : {{slug}}",
   "workspace.slugBrandApply.modalCreateTip": "Vous pouvez également créer votre espace de travail avec une autre URL maintenant et nous envoyer un e-mail à {{email}} depuis votre e-mail d'organisation pour demander celle-ci plus tard.",

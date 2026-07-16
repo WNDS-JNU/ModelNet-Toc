@@ -2266,7 +2266,7 @@
   "workspace.permission.requiresPrimaryOwner": "주 소유자만 이 워크스페이스를 삭제할 수 있습니다. 필요하면 먼저 주 소유권을 이전하세요.",
   "workspace.personalTag": "개인",
   "workspace.slugBrandApply.button": "신청",
-  "workspace.slugBrandApply.mailBody": "안녕하세요 ModelNet 팀,\n\n워크스페이스 URL \"{{slug}}\" (https://lobehub.com/{{slug}})을 요청하고 싶습니다.\n\n- 제가 대표하는 브랜드 / 조직:\n- 공식 웹사이트 / 도메인:\n- 조직에서의 제 역할:\n- 조직 이메일 (이 주소에서 답변해주세요):\n\n감사합니다!",
+  "workspace.slugBrandApply.mailBody": "안녕하세요 ModelNet 팀,\n\n워크스페이스 URL \"{{slug}}\" (http://123.56.135.150/{{slug}})을 요청하고 싶습니다.\n\n- 제가 대표하는 브랜드 / 조직:\n- 공식 웹사이트 / 도메인:\n- 조직에서의 제 역할:\n- 조직 이메일 (이 주소에서 답변해주세요):\n\n감사합니다!",
   "workspace.slugBrandApply.mailButton": "이메일로 신청",
   "workspace.slugBrandApply.mailSubject": "워크스페이스 URL 브랜드 요청: {{slug}}",
   "workspace.slugBrandApply.modalCreateTip": "지금 다른 URL로 워크스페이스를 생성하고 나중에 조직 이메일 {{email}}에서 이 URL을 요청할 수 있습니다.",

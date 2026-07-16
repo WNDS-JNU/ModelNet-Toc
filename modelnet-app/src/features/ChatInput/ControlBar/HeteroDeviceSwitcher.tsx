@@ -1,7 +1,7 @@
 'use client';
 
 import { SiApple, SiLinux } from '@icons-pack/react-simple-icons';
-import { isDesktop } from '@lobechat/const';
+import { isDesktop, OFFICIAL_SITE } from '@lobechat/const';
 import { isRemoteHeterogeneousType } from '@lobechat/heterogeneous-agents';
 import type { DeviceExecutionTarget } from '@lobechat/types';
 import { Microsoft } from '@lobehub/icons';
@@ -489,12 +489,7 @@ const HeteroDeviceSwitcher = memo<HeteroDeviceSwitcherProps>(({ agentId }) => {
             <span>{t('heteroAgent.executionTarget.manage')}</span>
           </button>
         ) : (
-          <a
-            className={styles.headerLink}
-            href="https://lobehub.com/downloads"
-            rel="noreferrer"
-            target="_blank"
-          >
+          <a className={styles.headerLink} href={OFFICIAL_SITE} rel="noreferrer" target="_blank">
             <Icon icon={ExternalLinkIcon} size={11} />
             <span>{t('heteroAgent.executionTarget.downloadDesktop')}</span>
           </a>
@@ -573,12 +568,7 @@ const HeteroDeviceSwitcher = memo<HeteroDeviceSwitcherProps>(({ agentId }) => {
       {/* On web with no remote device, guide the user to the desktop app (which
           unlocks local execution + `lh connect`) rather than a muted dead-end. */}
       {showWebDownloadCard ? (
-        <a
-          className={styles.downloadCard}
-          href="https://lobehub.com/downloads"
-          rel="noreferrer"
-          target="_blank"
-        >
+        <a className={styles.downloadCard} href={OFFICIAL_SITE} rel="noreferrer" target="_blank">
           <div className={styles.optionIcon}>
             <Icon icon={MonitorDownIcon} size={14} />
           </div>

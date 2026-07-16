@@ -17,20 +17,20 @@ only when the criterion is actually about rendered UI.
    for short output, or `--file` for a larger dump.
 
 ```bash
-# CHECK_ITEM_ID is the criterion's plan item id (from `lh verify plan state`).
+# CHECK_ITEM_ID is the criterion's plan item id (from `modelnet verify plan state`).
 # short result → inline
-lh verify submit --operation "$LOBE_OPERATION_ID" --item "$CHECK_ITEM_ID" --type text \
+modelnet verify submit --operation "$LOBE_OPERATION_ID" --item "$CHECK_ITEM_ID" --type text \
   --content "$(your-cli command --json)" \
   --by cli --desc "command reports the new field after the change"
 
 # larger output (test log, full dump) → file
 your-cli command --json > ./proof/result.json
-lh verify submit --operation "$LOBE_OPERATION_ID" --item "$CHECK_ITEM_ID" --type text \
+modelnet verify submit --operation "$LOBE_OPERATION_ID" --item "$CHECK_ITEM_ID" --type text \
   --file ./proof/result.json --by cli --desc "full result set"
 
 # a test run is itself proof
 your-test-runner path/to/spec > ./proof/test.log 2>&1
-lh verify submit --operation "$LOBE_OPERATION_ID" --item "$CHECK_ITEM_ID" --type text \
+modelnet verify submit --operation "$LOBE_OPERATION_ID" --item "$CHECK_ITEM_ID" --type text \
   --file ./proof/test.log --by program --desc "regression spec passes"
 ```
 
@@ -39,7 +39,7 @@ Provenance: `cli` for command stdout, `program` for a script/test you ran. See
 
 ## Auth
 
-The `lh` CLI you upload with is already authed. A _different_ product CLI under
+The `modelnet` CLI you upload with is already authed. A _different_ product CLI under
 test carries its own auth (API key or stored login) — configure it before
 capturing its output. See [../references/auth.md](../references/auth.md#cli--backend-surface).
 

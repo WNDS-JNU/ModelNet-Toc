@@ -1,5 +1,6 @@
 'use client';
 
+import { OFFICIAL_SITE } from '@lobechat/const';
 import { Button, Flexbox } from '@lobehub/ui';
 import { createStaticStyles, cx, responsive } from 'antd-style';
 import { memo } from 'react';
@@ -96,7 +97,7 @@ const CreatorRewardBanner = memo(() => {
           {t('home.creatorReward.subtitle')}
         </p>
         <div style={{ marginBlockStart: 4 }}>
-          <a href={'https://lobehub.com/creator?utm_source=lobehub'} rel={'noopener noreferrer'} target={'_blank'}>
+          <a href={OFFICIAL_SITE} rel={'noopener noreferrer'} target={'_blank'}>
             <Button type={'primary'}>{t('home.creatorReward.action')}</Button>
           </a>
         </div>

@@ -12,7 +12,7 @@ export const ORG_NAME = '暨南大学 WNDS 实验室';
 export const BRANDING_URL = {
   help: undefined,
   privacy: undefined,
-  subscription: 'https://app.lobehub.com/settings/plans',
+  subscription: undefined,
   support: undefined,
   terms: undefined,
 };

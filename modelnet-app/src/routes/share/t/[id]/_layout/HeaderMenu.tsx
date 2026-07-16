@@ -7,9 +7,7 @@ import { ExternalLink, Flag, LinkIcon, MoreHorizontal } from 'lucide-react';
 import { memo, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { mailTo, OFFICIAL_SITE } from '@/const/url';
-
-const REPORT_EMAIL = 'hi@lobehub.com';
+import { OFFICIAL_SITE } from '@/const/url';
 
 const HeaderMenu = memo(() => {
   const { t } = useTranslation('chat');
@@ -40,7 +38,11 @@ const HeaderMenu = memo(() => {
       {
         icon: <Flag size={16} />,
         key: 'report',
-        label: <a href={mailTo(REPORT_EMAIL)}>{t('sharePage.menu.report')}</a>,
+        label: (
+          <a href={OFFICIAL_SITE} rel="noopener noreferrer" target="_blank">
+            {t('sharePage.menu.report')}
+          </a>
+        ),
       },
     ],
     [t, handleCopyLink],

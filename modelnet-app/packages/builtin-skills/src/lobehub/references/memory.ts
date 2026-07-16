@@ -1,16 +1,16 @@
-const content = `# lh memory - User Memory Management
+const content = `# modelnet memory - User Memory Management
 
 Manage user memories across five categories: identity, activity, context, experience, preference.
 
 ## Subcommands
 
-- \`lh memory list [category]\` - List memories by category
-- \`lh memory create --type <type> --role <role> -d <description>\` - Create identity memory
-- \`lh memory edit <category> <id> [options]\` - Update memory entry
-- \`lh memory delete <category> <id> [--yes]\` - Delete memory entry
-- \`lh memory persona\` - View memory persona summary
-- \`lh memory extract [--from <date>] [--to <date>]\` - Extract memories from chat history
-- \`lh memory extract-status --task-id <id>\` - Check extraction task status
+- \`modelnet memory list [category]\` - List memories by category
+- \`modelnet memory create --type <type> --role <role> -d <description>\` - Create identity memory
+- \`modelnet memory edit <category> <id> [options]\` - Update memory entry
+- \`modelnet memory delete <category> <id> [--yes]\` - Delete memory entry
+- \`modelnet memory persona\` - View memory persona summary
+- \`modelnet memory extract [--from <date>] [--to <date>]\` - Extract memories from chat history
+- \`modelnet memory extract-status --task-id <id>\` - Check extraction task status
 
 ## Memory Categories
 
@@ -22,7 +22,7 @@ Manage user memories across five categories: identity, activity, context, experi
 
 ## Tips
 
-- Use \`lh memory persona\` to get a comprehensive view of the user
+- Use \`modelnet memory persona\` to get a comprehensive view of the user
 - Memory extraction analyzes chat history to automatically create entries
 `;
 

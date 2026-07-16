@@ -48,7 +48,7 @@ const MetaData = memo(() => {
                   zIndex: 10,
                 }}
               >
-                lobehub.com
+                ModelNet
               </div>
               <Image
                 fill

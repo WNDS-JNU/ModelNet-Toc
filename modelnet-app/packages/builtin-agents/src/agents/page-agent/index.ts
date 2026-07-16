@@ -9,7 +9,7 @@ import { systemRoleTemplate } from './systemRole';
  * Page Agent - used for document editing assistance
  */
 export const PAGE_AGENT: BuiltinAgentDefinition = {
-  avatar: '/avatars/doc-copilot.png',
+  avatar: '/avatars/modelnet.png',
   // Persist config - stored in database
   persist: {
     model: DEFAULT_MODEL,

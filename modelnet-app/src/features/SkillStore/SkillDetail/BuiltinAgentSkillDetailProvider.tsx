@@ -1,5 +1,6 @@
 'use client';
 
+import { OFFICIAL_URL } from '@lobechat/const';
 import isEqual from 'fast-deep-equal';
 import { type ReactNode, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -40,7 +41,7 @@ export const BuiltinAgentSkillDetailProvider = ({
 
   const value: DetailContextValue = {
     author: 'ModelNet',
-    authorUrl: 'https://lobehub.com',
+    authorUrl: OFFICIAL_URL,
     config: null as any,
     description: skill.description,
     icon: skill.avatar || '',

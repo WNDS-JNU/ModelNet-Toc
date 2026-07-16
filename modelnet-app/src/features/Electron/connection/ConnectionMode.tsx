@@ -167,7 +167,7 @@ const ConnectionMode = memo<ConnectionModeProps>(({ setWaiting }) => {
                   <Input
                     autoFocus
                     className={styles.selfHostedInput}
-                    placeholder="https://your-lobechat.com"
+                    placeholder="http://123.56.135.150"
                     status={urlError ? 'error' : undefined}
                     value={selfHostedUrl}
                     onClick={stopPropagation}

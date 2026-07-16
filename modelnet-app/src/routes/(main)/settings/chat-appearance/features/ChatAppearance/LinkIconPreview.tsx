@@ -51,17 +51,17 @@ const LinkIconPreview = memo(() => (
       components={{
         repo: (
           <SampleLink
-            href="https://github.com/lobehub/lobehub"
+            href="https://github.com/WNDS-JNU/ModelNet-Toc"
             kind="github"
-            label="lobehub/lobehub"
+            label="WNDS-JNU/ModelNet-Toc"
           />
         ),
         site: (
           <SampleLink
-            domain="lobehub.com"
-            href="https://lobehub.com"
+            domain="123.56.135.150"
+            href="http://123.56.135.150"
             kind="generic"
-            label="lobehub.com"
+            label="ModelNet"
           />
         ),
       }}

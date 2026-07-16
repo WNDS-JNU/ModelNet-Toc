@@ -4,7 +4,8 @@ import { NextResponse } from 'next/server';
 import { getTrustedClientTokenForSession } from '@/libs/trusted-client';
 import { MarketService } from '@/server/services/market';
 
-const MARKET_BASE_URL = process.env.MARKET_BASE_URL || 'https://market.lobehub.com';
+const MARKET_BASE_URL =
+  process.env.MARKET_BASE_URL || process.env.APP_URL || 'http://123.56.135.150';
 
 type RouteContext = {
   params: Promise<{
@@ -103,8 +104,7 @@ const handleProxy = async (req: NextRequest, context: RouteContext) => {
         const form = new URLSearchParams(body);
 
         const grantType = (form.get('grant_type') || 'authorization_code') as
-          | 'authorization_code'
-          | 'refresh_token';
+          'authorization_code' | 'refresh_token';
 
         if (grantType === 'authorization_code') {
           const clientId = form.get('client_id');

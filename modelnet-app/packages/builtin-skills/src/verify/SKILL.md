@@ -5,7 +5,7 @@ description: >
   verify plan, this skill is the full operating manual: what to prove, which
   surface to prove it on (CLI / web / desktop), how to drive that surface with
   agent-browser, how to get past auth, and how to submit each artifact with
-  `lh verify submit` so the delivery is judged on real proof — not your
+  `modelnet verify submit` so the delivery is judged on real proof — not your
   word that it works. Triggers on 'verify the task', 'collect evidence', 'prove
   it works', 'upload evidence', 'verify plan', 'requiredEvidence', or any run
   that must self-certify its delivery.
@@ -25,13 +25,13 @@ So while you do the work, capture the proof and submit it. The loop:
 discover plan  →  pick the surface  →  capture evidence per criterion  →  submit each  →  self-check coverage
 ```
 
-Everything here is portable: the hard dependencies are the `lh` CLI (already
+Everything here is portable: the hard dependencies are the `modelnet` CLI (already
 authed in your environment) and, for UI proof, `agent-browser`. No repo scripts,
 no local report directory.
 
 ## Prerequisites
 
-- **`lh` is authed.** Confirm with `lh verify run list --json` (an empty `[]`
+- **`modelnet` is authed.** Confirm with `modelnet verify run list --json` (an empty `[]`
   means authed; an auth error means stop and surface it).
 - **You know your operation id.** It is provided as `$LOBE_OPERATION_ID` in the
   environment (or named in your task prompt). Every command below keys off it.
@@ -45,12 +45,12 @@ no local report directory.
 One read tells you what to prove:
 
 ```bash
-lh verify plan state "$LOBE_OPERATION_ID" --json
+modelnet verify plan state "$LOBE_OPERATION_ID" --json
 ```
 
 Each `verifyPlan[]` item carries `id` (the **checkItemId**), `title`, `required`,
 and `verifierConfig.requiredEvidence` (`[{ type, hint }]` — the artifacts you MUST
-capture). The `checkItemId` is the only handle you need: `lh verify submit` (Step 3)
+capture). The `checkItemId` is the only handle you need: `modelnet verify submit` (Step 3)
 keys off it plus your operation id and creates the result row for you, so you do
 **not** need a `checkResultId` up front. (Result rows generally don't exist yet at
 this point — that's expected.) Exact shapes:
@@ -91,19 +91,19 @@ Rules of thumb:
 
 Capture each required `type` (recipes per surface in
 [references/evidence.md](references/evidence.md)), then submit one artifact per
-call with the criterion's `checkItemId`. `lh verify submit` resolves your session
+call with the criterion's `checkItemId`. `modelnet verify submit` resolves your session
 from the operation id, lazily creates/updates the result row, and attaches the
 evidence — one call, no `checkResultId` needed:
 
 ```bash
 # CHECK_ITEM_ID is the plan item id for this criterion (from Step 1).
 # file artifact (screenshot / dom / video)
-lh verify submit --operation "$LOBE_OPERATION_ID" --item "$CHECK_ITEM_ID" \
+modelnet verify submit --operation "$LOBE_OPERATION_ID" --item "$CHECK_ITEM_ID" \
   --type screenshot --file ./proof/login.png --by agent-browser \
   --desc "Logged-in home renders the workspace switcher"
 
 # inline text artifact (stdout / computed value) — no file
-lh verify submit --operation "$LOBE_OPERATION_ID" --item "$CHECK_ITEM_ID" \
+modelnet verify submit --operation "$LOBE_OPERATION_ID" --item "$CHECK_ITEM_ID" \
   --type text --content "$(your-cli command --json)" --by cli \
   --desc "command reports success after the change"
 ```
@@ -122,8 +122,8 @@ is present. After submitting, the result rows exist, so map each `checkItemId` t
 its `checkResultId` and list that row's evidence:
 
 ```bash
-lh verify result list --operation "$LOBE_OPERATION_ID" --json # checkItemId → checkResultId
-lh verify evidence list "$CHECK_RESULT_ID" --json
+modelnet verify result list --operation "$LOBE_OPERATION_ID" --json # checkItemId → checkResultId
+modelnet verify evidence list "$CHECK_RESULT_ID" --json
 ```
 
 Coverage rule: for each required criterion, **every** `requiredEvidence[].type`
@@ -141,7 +141,7 @@ Plan item: _"Settings page shows the new 'Beta features' toggle"_,
 OP="$LOBE_OPERATION_ID"
 
 # 1. discover: find this item's checkItemId + required evidence
-lh verify plan state "$OP" --json # → item id vci_settings, requires screenshot
+modelnet verify plan state "$OP" --json # → item id vci_settings, requires screenshot
 
 # 2. 端 = web (frontend change). Auth the session if needed (see references/auth.md).
 agent-browser --session app open "http://localhost:3000/settings"
@@ -149,13 +149,13 @@ agent-browser --session app wait --text "Beta features"
 agent-browser --session app screenshot ./proof/settings-beta.png
 
 # 3. submit: creates the result row + attaches the screenshot in one call
-lh verify submit --operation "$OP" --item vci_settings --type screenshot \
+modelnet verify submit --operation "$OP" --item vci_settings --type screenshot \
   --file ./proof/settings-beta.png --by agent-browser \
   --desc "Settings page renders the new Beta features toggle"
 
 # 4. self-check
-lh verify result list --operation "$OP" --json # → { checkItemId: vci_settings, id: vcr_77 }
-lh verify evidence list vcr_77 --json          # → one screenshot present → 1/1 covered
+modelnet verify result list --operation "$OP" --json # → { checkItemId: vci_settings, id: vcr_77 }
+modelnet verify evidence list vcr_77 --json          # → one screenshot present → 1/1 covered
 ```
 
 ## Portability rules

@@ -4,7 +4,7 @@ import { type Header, type Redirect } from 'next/dist/lib/load-custom-routes';
 
 import { dockerCanvasTracingIncludes } from './dockerCanvasTracingIncludes';
 
-const LANDING_SITEMAP_URL = 'https://lobehub.com/sitemap.xml';
+const LANDING_SITEMAP_URL = 'http://123.56.135.150/sitemap.xml';
 
 interface CustomNextConfig {
   experimental?: NextConfig['experimental'];

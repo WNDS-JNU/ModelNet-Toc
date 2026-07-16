@@ -120,8 +120,8 @@ const DeviceConnectModal = memo<DeviceConnectModalProps>(({ onClose, open, initi
   }, [open, initialTab, isWorkspace]);
 
   const connectCommand = isWorkspace
-    ? `lh connect --workspace ${workspaceId ?? '<workspace-id>'} --daemon`
-    : 'lh connect --daemon';
+    ? `modelnet connect --workspace ${workspaceId ?? '<workspace-id>'} --daemon`
+    : 'modelnet connect --daemon';
 
   const cliSteps = (
     <Flexbox>
@@ -130,14 +130,14 @@ const DeviceConnectModal = memo<DeviceConnectModalProps>(({ onClose, open, initi
         index={1}
         title={t('devices.connectWizard.cli.installTitle')}
       >
-        <CommandLine command={'npm install -g @lobehub/cli'} />
+        <CommandLine command={'npm install -g @modelnet/cli'} />
       </Step>
       <Step
         desc={t('devices.connectWizard.cli.loginDesc')}
         index={2}
         title={t('devices.connectWizard.cli.loginTitle')}
       >
-        <CommandLine command={'lh login'} />
+        <CommandLine command={'modelnet login'} />
       </Step>
       <Step
         last

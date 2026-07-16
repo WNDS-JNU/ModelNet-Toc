@@ -2266,7 +2266,7 @@
   "workspace.permission.requiresPrimaryOwner": "Только основной владелец может удалить эту рабочую область. Сначала передайте основное владение, если это необходимо.",
   "workspace.personalTag": "Личное",
   "workspace.slugBrandApply.button": "Подать заявку",
-  "workspace.slugBrandApply.mailBody": "Здравствуйте, команда ModelNet,\n\nЯ хотел бы запросить URL рабочей области \"{{slug}}\" (https://lobehub.com/{{slug}}).\n\n- Бренд / организация, которую я представляю:\n- Официальный веб-сайт / домен:\n- Моя роль в организации:\n- Организационный email (пожалуйста, ответьте с этого адреса):\n\nСпасибо!",
+  "workspace.slugBrandApply.mailBody": "Здравствуйте, команда ModelNet,\n\nЯ хотел бы запросить URL рабочей области \"{{slug}}\" (http://123.56.135.150/{{slug}}).\n\n- Бренд / организация, которую я представляю:\n- Официальный веб-сайт / домен:\n- Моя роль в организации:\n- Организационный email (пожалуйста, ответьте с этого адреса):\n\nСпасибо!",
   "workspace.slugBrandApply.mailButton": "Подать заявку по email",
   "workspace.slugBrandApply.mailSubject": "Запрос URL бренда рабочей области: {{slug}}",
   "workspace.slugBrandApply.modalCreateTip": "Вы также можете создать свою рабочую область с другим URL сейчас и отправить нам email на {{email}} с вашего корпоративного email, чтобы запросить этот позже.",

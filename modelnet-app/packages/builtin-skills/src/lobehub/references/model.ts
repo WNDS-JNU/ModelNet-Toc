@@ -1,17 +1,17 @@
-const content = `# lh model - AI Model Management
+const content = `# modelnet model - AI Model Management
 
 Manage AI models for providers.
 
 ## Subcommands
 
-- \`lh model list <providerId> [--enabled] [--type <type>] [-L <limit>]\` - List models
-- \`lh model view <id>\` - View model details
-- \`lh model create --id <id> --provider <p> --display-name <name> [--type <type>]\` - Create model
-- \`lh model edit <id> [--provider <p>] [--display-name <name>]\` - Update model
-- \`lh model toggle <id> --provider <p> [--enable|--disable]\` - Enable/disable model
-- \`lh model delete <id> --provider <p> [--yes]\` - Delete model
-- \`lh model batch-toggle <ids...> --provider <p> [--enable|--disable]\` - Batch toggle
-- \`lh model clear --provider <p> [--remote] [--yes]\` - Clear all models for provider
+- \`modelnet model list <providerId> [--enabled] [--type <type>] [-L <limit>]\` - List models
+- \`modelnet model view <id>\` - View model details
+- \`modelnet model create --id <id> --provider <p> --display-name <name> [--type <type>]\` - Create model
+- \`modelnet model edit <id> [--provider <p>] [--display-name <name>]\` - Update model
+- \`modelnet model toggle <id> --provider <p> [--enable|--disable]\` - Enable/disable model
+- \`modelnet model delete <id> --provider <p> [--yes]\` - Delete model
+- \`modelnet model batch-toggle <ids...> --provider <p> [--enable|--disable]\` - Batch toggle
+- \`modelnet model clear --provider <p> [--remote] [--yes]\` - Clear all models for provider
 
 ## Model Types
 
@@ -31,7 +31,7 @@ The \`--type\` filter accepts the following values:
 ## Tips
 
 - Models belong to providers; always specify \`--provider\` when needed
-- \`lh model list\` without \`--type\` returns all model types; use \`--type video\` (or the relevant type) to narrow results when looking for non-chat models
+- \`modelnet model list\` without \`--type\` returns all model types; use \`--type video\` (or the relevant type) to narrow results when looking for non-chat models
 - Use \`--enabled\` to filter only active models
 `;
 

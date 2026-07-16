@@ -86,7 +86,7 @@ const HETERO_PROFILES: Record<HeteroType, HeteroTypeProfile> = {
 
 const EXECUTION_TARGET_DESCRIPTIONS: Record<DeviceExecutionTarget, string> = {
   auto: 'auto-selected online device (one is activated automatically; with several the agent picks one)',
-  device: 'a specific device connected via `lh connect`',
+  device: 'a specific device connected via `modelnet connect`',
   local: "in-process on the user's desktop",
   none: 'no execution environment (plain chat)',
   sandbox: 'a server-spawned cloud sandbox',

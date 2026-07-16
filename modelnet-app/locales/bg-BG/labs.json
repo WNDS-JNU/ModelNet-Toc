@@ -15,7 +15,7 @@
   "features.imessage.title": "Канал iMessage",
   "features.inputMarkdown.desc": "Реално време визуализация на Markdown в полето за въвеждане (удебелен текст, кодови блокове, таблици и др.).",
   "features.inputMarkdown.title": "Визуализация на Markdown при въвеждане",
-  "features.platformAgent.desc": "Показване на записа \"Свържи агент\" в менюто за създаване. Свързаните агенти (напр. OpenClaw, Hermes) работят на вашите устройства и комуникират обратно чрез lh connect.",
+  "features.platformAgent.desc": "Показване на записа \"Свържи агент\" в менюто за създаване. Свързаните агенти (напр. OpenClaw, Hermes) работят на вашите устройства и комуникират обратно чрез modelnet connect.",
   "features.platformAgent.title": "Свържи агент",
   "features.taskVerify.desc": "Добавете секция за приемане на доставка към детайлите на задачата: опишете приемането с едно изречение и оставете AI да генерира редактиращи критерии за проверка.",
   "features.taskVerify.title": "Приемане на доставка на задача",

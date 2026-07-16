@@ -38,17 +38,21 @@ interface PluginTagProps extends Pick<InstallPluginMeta, 'author' | 'type'> {
   showText?: boolean;
 }
 
+const isOfficialModelNetAuthor = (author?: string) =>
+  author === 'ModelNet' || author === 'LobeHub' || author === 'LobeHub Market';
+
 const PluginTag = memo<PluginTagProps>(({ showIcon = true, author, type, showText = true }) => {
   const { t } = useTranslation('plugin');
   const isCustom = type === 'customPlugin';
-  const isOfficial = author === 'LobeHub';
+  const isOfficial = isOfficialModelNetAuthor(author);
+  const displayAuthor = isOfficial ? 'ModelNet' : author;
 
   return (
     <Tag
       className={cx(isCustom ? styles.custom : isOfficial ? styles.official : styles.community)}
       icon={showIcon && <Icon icon={isCustom ? Package : isOfficial ? BadgeCheck : CircleUser} />}
     >
-      {showText && (author || t(isCustom ? 'store.customPlugin' : 'store.communityPlugin'))}
+      {showText && (displayAuthor || t(isCustom ? 'store.customPlugin' : 'store.communityPlugin'))}
     </Tag>
   );
 });

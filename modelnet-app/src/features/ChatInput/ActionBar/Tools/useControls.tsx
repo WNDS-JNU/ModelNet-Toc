@@ -71,6 +71,12 @@ const officialTag = (
   </Tooltip>
 );
 
+const isOfficialModelNetAuthor = (author?: string) =>
+  author === 'ModelNet' || author === 'LobeHub' || author === 'LobeHub Market';
+
+const getVisibleAuthor = (author?: string) =>
+  isOfficialModelNetAuthor(author) ? 'ModelNet' : author;
+
 type SkillPolicyMode = 'auto' | 'pinned';
 
 interface SkillDeleteConfig {
@@ -861,7 +867,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
               <ToolItemDetailPopover
                 icon={<ComposioSkillIcon icon={type.icon} label={type.label} size={36} />}
                 identifier={type.identifier}
-                sourceLabel={type.author}
+                sourceLabel={getVisibleAuthor(type.author)}
                 title={type.label}
                 description={t(`tools.composio.servers.${type.identifier}.description` as any, {
                   defaultValue: type.description,
@@ -876,7 +882,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
                   displayName: type.label,
                   onDelete: () => removeComposioServer(server.identifier),
                 },
-                extraTag: type.author === 'LobeHub' ? officialTag : undefined,
+                extraTag: isOfficialModelNetAuthor(type.author) ? officialTag : undefined,
                 icon,
                 id: server.identifier,
                 popoverContent,
@@ -976,7 +982,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
               <ToolItemDetailPopover
                 icon={<LobehubSkillIcon icon={provider.icon} label={provider.label} size={36} />}
                 identifier={provider.id}
-                sourceLabel={provider.author}
+                sourceLabel={getVisibleAuthor(provider.author)}
                 title={provider.label}
                 description={t(`tools.lobehubSkill.providers.${provider.id}.description` as any, {
                   defaultValue: provider.description,
@@ -987,7 +993,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
             if (server?.status === LobehubSkillStatus.CONNECTED || server?.isConnected) {
               return createManagedSkillItem({
                 badge: <Icon icon={McpIcon} size={12} />,
-                extraTag: provider.author === 'LobeHub' ? officialTag : undefined,
+                extraTag: isOfficialModelNetAuthor(provider.author) ? officialTag : undefined,
                 icon,
                 id: server.identifier,
                 popoverContent,
@@ -1382,7 +1388,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
         <Tag color={'warning'} icon={<Icon icon={Package} />} size={'small'}>
           {t('store.customPlugin', { ns: 'plugin' })}
         </Tag>
-      ) : item.author === 'LobeHub' ? (
+      ) : isOfficialModelNetAuthor(item.author) ? (
         officialTag
       ) : undefined,
       icon,

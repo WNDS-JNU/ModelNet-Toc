@@ -4,6 +4,7 @@ import {
   type ComposioAppType,
   getLobehubSkillProviderById,
   type LobehubSkillProviderType,
+  OFFICIAL_URL,
 } from '@lobechat/const';
 import { type DiscoverPluginDetail, type PluginSource } from '@lobechat/types';
 import { Avatar, Block, Flexbox, Icon, Image, Skeleton, Tag, Text } from '@lobehub/ui';
@@ -73,6 +74,9 @@ interface PluginItemProps {
   identifier: string;
 }
 
+const isOfficialModelNetAuthor = (author?: string) =>
+  author === 'ModelNet' || author === 'LobeHub' || author === 'LobeHub Market';
+
 const PluginItem = memo<PluginItemProps>(({ identifier }) => {
   const { t } = useTranslation('discover');
   const usePluginDetail = useDiscoverStore((s) => s.usePluginDetail);
@@ -95,7 +99,15 @@ const PluginItem = memo<PluginItemProps>(({ identifier }) => {
 
   // Convert built-in tools to plugin detail format
   const data: DiscoverPluginDetail | undefined = useMemo(() => {
-    if (apiData) return apiData;
+    if (apiData) {
+      const isOfficial = isOfficialModelNetAuthor(apiData.author);
+
+      return {
+        ...apiData,
+        author: isOfficial ? 'ModelNet' : apiData.author,
+        homepage: isOfficial ? OFFICIAL_URL : apiData.homepage,
+      };
+    }
 
     // Check Composio tools
     if (composioTool) {
@@ -124,7 +136,7 @@ const PluginItem = memo<PluginItemProps>(({ identifier }) => {
         category: undefined,
         createdAt: '',
         description: lobehubSkill.description,
-        homepage: lobehubSkill.authorUrl || 'https://lobehub.com',
+        homepage: lobehubSkill.authorUrl || OFFICIAL_URL,
         identifier: lobehubSkill.id,
         manifest: undefined,
         related: [],
@@ -143,7 +155,7 @@ const PluginItem = memo<PluginItemProps>(({ identifier }) => {
         category: undefined,
         createdAt: '',
         description: builtinTool.description || '',
-        homepage: 'https://lobehub.com',
+        homepage: OFFICIAL_URL,
         identifier: builtinTool.identifier,
         manifest: undefined,
         related: [],

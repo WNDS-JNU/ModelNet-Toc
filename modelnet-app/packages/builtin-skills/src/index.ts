@@ -12,7 +12,7 @@ export { TaskIdentifier } from './task';
 
 /**
  * The portable verify skill is distributed to external builders (Claude Code /
- * Codex) by pulling it to disk (`lh verify init`), NOT by loading it into the
+ * Codex) by pulling it to disk (`modelnet verify init`), NOT by loading it into the
  * homogeneous agent runtime. So it is exported as a named skill for the pull
  * endpoint to import directly, but deliberately left OUT of `builtinSkills`
  * below — keeping it out of every app-layer consumer of that array (server

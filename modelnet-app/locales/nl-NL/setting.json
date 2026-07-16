@@ -2266,7 +2266,7 @@
   "workspace.permission.requiresPrimaryOwner": "Alleen de primaire eigenaar kan deze werkruimte verwijderen. Draag eerst het primaire eigenaarschap over indien nodig.",
   "workspace.personalTag": "Persoonlijk",
   "workspace.slugBrandApply.button": "Aanvragen",
-  "workspace.slugBrandApply.mailBody": "Hallo ModelNet-team,\n\nIk wil graag de werkruimte-URL \"{{slug}}\" aanvragen (https://lobehub.com/{{slug}}).\n\n- Merk/organisatie die ik vertegenwoordig:\n- Officiële website/domein:\n- Mijn rol in de organisatie:\n- Organisatie-e-mailadres (antwoord vanaf dit adres):\n\nBedankt!",
+  "workspace.slugBrandApply.mailBody": "Hallo ModelNet-team,\n\nIk wil graag de werkruimte-URL \"{{slug}}\" aanvragen (http://123.56.135.150/{{slug}}).\n\n- Merk/organisatie die ik vertegenwoordig:\n- Officiële website/domein:\n- Mijn rol in de organisatie:\n- Organisatie-e-mailadres (antwoord vanaf dit adres):\n\nBedankt!",
   "workspace.slugBrandApply.mailButton": "Aanvragen via e-mail",
   "workspace.slugBrandApply.mailSubject": "Werkruimte-URL merkverzoek: {{slug}}",
   "workspace.slugBrandApply.modalCreateTip": "Je kunt nu ook je werkruimte maken met een andere URL en ons later e-mailen op {{email}} vanaf je organisatie-e-mailadres om deze aan te vragen.",

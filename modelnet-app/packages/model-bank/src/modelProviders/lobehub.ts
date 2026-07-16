@@ -3,18 +3,18 @@ import type { ModelProviderCard } from '@/types/llm';
 const LobeHub: ModelProviderCard = {
   chatModels: [],
   description:
-    'LobeHub Cloud uses official APIs to access AI models and measures usage with Credits tied to model tokens.',
+    'ModelNet Cloud routes requests across the ModelNet model network through the TOC gateway.',
   enabled: true,
   id: 'lobehub',
-  modelsUrl: 'https://lobehub.com/zh/docs/usage/subscription/model-pricing',
-  name: 'LobeHub',
+  modelsUrl: 'http://123.56.135.150',
+  name: 'ModelNet Cloud',
   settings: {
     modelEditable: false,
     showAddNewModel: false,
     showModelFetcher: false,
   },
   showConfig: false,
-  url: 'https://lobehub.com',
+  url: 'http://123.56.135.150',
 };
 
 export default LobeHub;

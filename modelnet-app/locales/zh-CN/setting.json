@@ -2266,7 +2266,7 @@
   "workspace.permission.requiresPrimaryOwner": "只有主要所有者可以删除此工作区。如果需要，请先转移主要所有权。",
   "workspace.personalTag": "个人",
   "workspace.slugBrandApply.button": "申请",
-  "workspace.slugBrandApply.mailBody": "您好 ModelNet 团队，\n\n我想申请工作区 URL \"{{slug}}\" (https://lobehub.com/{{slug}})。\n\n- 我代表的品牌/组织：\n- 官方网站/域名：\n- 我在组织中的角色：\n- 组织邮箱（请从此地址回复）：\n\n谢谢！",
+  "workspace.slugBrandApply.mailBody": "您好 ModelNet 团队，\n\n我想申请工作区 URL \"{{slug}}\" (http://123.56.135.150/{{slug}})。\n\n- 我代表的品牌/组织：\n- 官方网站/域名：\n- 我在组织中的角色：\n- 组织邮箱（请从此地址回复）：\n\n谢谢！",
   "workspace.slugBrandApply.mailButton": "通过邮件申请",
   "workspace.slugBrandApply.mailSubject": "工作区 URL 品牌申请: {{slug}}",
   "workspace.slugBrandApply.modalCreateTip": "您也可以现在使用其他 URL 创建您的工作区，并稍后通过您的组织邮箱发送邮件至 {{email}} 申请此 URL。",

@@ -41,7 +41,7 @@ const AGENT_BUILDER_CONFLICTING_TOOLS = new Set<string>([
  * Agent Builder - used for configuring AI agents through natural conversation
  */
 export const AGENT_BUILDER: BuiltinAgentDefinition = {
-  avatar: '/avatars/agent-builder.png',
+  avatar: '/avatars/modelnet.png',
 
   // Persist config - stored in database
   persist: {

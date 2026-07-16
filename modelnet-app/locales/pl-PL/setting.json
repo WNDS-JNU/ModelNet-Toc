@@ -2266,7 +2266,7 @@
   "workspace.permission.requiresPrimaryOwner": "Tylko główny właściciel może usunąć to miejsce pracy. Najpierw przenieś główne uprawnienia właściciela, jeśli to konieczne.",
   "workspace.personalTag": "Osobiste",
   "workspace.slugBrandApply.button": "Zastosuj",
-  "workspace.slugBrandApply.mailBody": "Cześć zespole ModelNet,\n\nChciałbym poprosić o URL miejsca pracy \"{{slug}}\" (https://lobehub.com/{{slug}}).\n\n- Marka/organizacja, którą reprezentuję:\n- Oficjalna strona internetowa/domena:\n- Moja rola w organizacji:\n- E-mail organizacji (proszę odpowiedzieć z tego adresu):\n\nDziękuję!",
+  "workspace.slugBrandApply.mailBody": "Cześć zespole ModelNet,\n\nChciałbym poprosić o URL miejsca pracy \"{{slug}}\" (http://123.56.135.150/{{slug}}).\n\n- Marka/organizacja, którą reprezentuję:\n- Oficjalna strona internetowa/domena:\n- Moja rola w organizacji:\n- E-mail organizacji (proszę odpowiedzieć z tego adresu):\n\nDziękuję!",
   "workspace.slugBrandApply.mailButton": "Złóż wniosek przez e-mail",
   "workspace.slugBrandApply.mailSubject": "Prośba o URL marki miejsca pracy: {{slug}}",
   "workspace.slugBrandApply.modalCreateTip": "Możesz również teraz utworzyć swoje miejsce pracy z innym URL-em i wysłać do nas e-mail na {{email}} z adresu e-mail organizacji, aby później poprosić o ten.",

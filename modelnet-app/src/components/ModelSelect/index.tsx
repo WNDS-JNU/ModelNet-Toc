@@ -1,6 +1,7 @@
+import { BRANDING_NAME } from '@lobechat/business-const';
 import { type ChatModelCard } from '@lobechat/types';
 import { type IconAvatarProps } from '@lobehub/icons';
-import { LobeHub, ModelIcon, ProviderIcon } from '@lobehub/icons';
+import { ModelIcon, ProviderIcon } from '@lobehub/icons';
 import { type FlexboxProps } from '@lobehub/ui';
 import { Avatar, Flexbox, Icon, Tag, Text, Tooltip } from '@lobehub/ui';
 import { createStaticStyles, useResponsive } from 'antd-style';
@@ -19,6 +20,7 @@ import { type CSSProperties, type FC } from 'react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { ProductLogo } from '@/components/Branding/ProductLogo';
 import { type AiProviderSourceType } from '@/types/aiProvider';
 import { formatTokenNumber } from '@/utils/format';
 
@@ -342,6 +344,10 @@ interface ProviderItemRenderProps {
 export const ProviderItemRender = memo<ProviderItemRenderProps>(
   ({ provider, name, source, logo, type = 'mono', size = 16 }) => {
     const isMono = type === 'mono';
+    const isModelNetProvider =
+      source !== 'custom' && (provider === 'lobehub' || provider === 'modelnet');
+    const displayName = isModelNetProvider ? BRANDING_NAME : name;
+
     return (
       <Flexbox
         horizontal
@@ -358,15 +364,15 @@ export const ProviderItemRender = memo<ProviderItemRenderProps>(
             shape={'circle'}
             size={size}
             style={isMono ? { filter: 'grayscale(1)' } : {}}
-            title={name}
+            title={displayName}
           />
-        ) : provider === 'lobehub' ? (
-          <LobeHub.Morden size={size} />
+        ) : isModelNetProvider ? (
+          <ProductLogo size={size} type={isMono ? 'mono' : 'flat'} />
         ) : (
           <ProviderIcon provider={provider} size={size} type={type} />
         )}
         <Text ellipsis color={'inherit'}>
-          {name}
+          {displayName}
         </Text>
       </Flexbox>
     );

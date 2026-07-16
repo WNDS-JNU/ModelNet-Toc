@@ -87,7 +87,7 @@ Once connected over CDP, verify auth by reading the app's own signed-in state
 ## CLI / backend surface
 
 For text evidence from a CLI, the CLI carries its own auth (an API key or a stored
-login). The `lh` CLI you use to upload evidence is already authed; a different
+login). The `modelnet` CLI you use to upload evidence is already authed; a different
 product CLI under test uses its own mechanism — ensure it's configured before
 capturing its output.
 

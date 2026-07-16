@@ -2266,7 +2266,7 @@
   "workspace.permission.requiresPrimaryOwner": "Chỉ chủ sở hữu chính mới có thể xóa không gian làm việc này. Hãy chuyển quyền sở hữu chính trước nếu cần.",
   "workspace.personalTag": "Cá nhân",
   "workspace.slugBrandApply.button": "Áp dụng",
-  "workspace.slugBrandApply.mailBody": "Xin chào đội ngũ ModelNet,\n\nTôi muốn yêu cầu URL không gian làm việc \"{{slug}}\" (https://lobehub.com/{{slug}}).\n\n- Thương hiệu / tổ chức tôi đại diện:\n- Trang web / tên miền chính thức:\n- Vai trò của tôi trong tổ chức:\n- Email tổ chức (vui lòng trả lời từ địa chỉ này):\n\nCảm ơn!",
+  "workspace.slugBrandApply.mailBody": "Xin chào đội ngũ ModelNet,\n\nTôi muốn yêu cầu URL không gian làm việc \"{{slug}}\" (http://123.56.135.150/{{slug}}).\n\n- Thương hiệu / tổ chức tôi đại diện:\n- Trang web / tên miền chính thức:\n- Vai trò của tôi trong tổ chức:\n- Email tổ chức (vui lòng trả lời từ địa chỉ này):\n\nCảm ơn!",
   "workspace.slugBrandApply.mailButton": "Áp dụng qua email",
   "workspace.slugBrandApply.mailSubject": "Yêu cầu URL thương hiệu không gian làm việc: {{slug}}",
   "workspace.slugBrandApply.modalCreateTip": "Bạn cũng có thể tạo không gian làm việc của mình với một URL khác ngay bây giờ và gửi email cho chúng tôi tại {{email}} từ email tổ chức của bạn để yêu cầu URL này sau.",

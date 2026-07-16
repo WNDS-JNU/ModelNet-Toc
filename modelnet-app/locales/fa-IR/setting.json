@@ -2266,7 +2266,7 @@
   "workspace.permission.requiresPrimaryOwner": "فقط مالک اصلی می‌تواند این فضای کاری را حذف کند. در صورت نیاز ابتدا مالکیت اصلی را منتقل کنید.",
   "workspace.personalTag": "شخصی",
   "workspace.slugBrandApply.button": "درخواست",
-  "workspace.slugBrandApply.mailBody": "سلام تیم ModelNet،\n\nمن می‌خواهم درخواست کنم که URL فضای کاری \"{{slug}}\" (https://lobehub.com/{{slug}}) به من اختصاص داده شود.\n\n- برند / سازمانی که نمایندگی می‌کنم:\n- وب‌سایت / دامنه رسمی:\n- نقش من در سازمان:\n- ایمیل سازمانی (لطفاً از این آدرس پاسخ دهید):\n\nمتشکرم!",
+  "workspace.slugBrandApply.mailBody": "سلام تیم ModelNet،\n\nمن می‌خواهم درخواست کنم که URL فضای کاری \"{{slug}}\" (http://123.56.135.150/{{slug}}) به من اختصاص داده شود.\n\n- برند / سازمانی که نمایندگی می‌کنم:\n- وب‌سایت / دامنه رسمی:\n- نقش من در سازمان:\n- ایمیل سازمانی (لطفاً از این آدرس پاسخ دهید):\n\nمتشکرم!",
   "workspace.slugBrandApply.mailButton": "درخواست از طریق ایمیل",
   "workspace.slugBrandApply.mailSubject": "درخواست URL برند فضای کاری: {{slug}}",
   "workspace.slugBrandApply.modalCreateTip": "همچنین می‌توانید اکنون فضای کاری خود را با یک URL دیگر ایجاد کنید و بعداً از طریق ایمیل {{email}} از ایمیل سازمانی خود این URL را درخواست کنید.",

@@ -2,7 +2,7 @@ const content = `# WeChat Bot Setup Guide
 
 Connect a WeChat bot to your agent via iLink API.
 
-**Setup Guide:** https://lobehub.com/docs/usage/channels/wechat
+**Setup Guide:** http://123.56.135.150/docs/usage/channels/wechat
 
 ## Credentials
 
@@ -22,7 +22,7 @@ WeChat requires a QR code scan to link your account, which is only supported thr
 4. A QR code is displayed — scan it with WeChat to authenticate
 5. Once scanned, credentials are saved automatically and the bot connects
 
-> WeChat cannot be set up via CLI. The \`lh bot connect\` command only starts an already-configured provider and does not perform the QR authentication flow.
+> WeChat cannot be set up via CLI. The \`modelnet bot connect\` command only starts an already-configured provider and does not perform the QR authentication flow.
 
 ## After Web UI Setup: CLI Operations
 
@@ -30,13 +30,13 @@ Once the bot is configured via Web UI, you can use CLI to manage and monitor it:
 
 \`\`\`bash
 # Check bot status
-lh bot list -a <agentId>
+modelnet bot list -a <agentId>
 
 # Reconnect if disconnected
-lh bot connect <botId>
+modelnet bot connect <botId>
 
 # Send a message
-lh bot message send <botId> --target <conversationId> --message "Hello"
+modelnet bot message send <botId> --target <conversationId> --message "Hello"
 \`\`\`
 
 ## Limitations

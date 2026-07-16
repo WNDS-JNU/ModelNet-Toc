@@ -1,3 +1,4 @@
+import { OFFICIAL_SITE } from '@lobechat/const';
 import { type FormItemProps } from '@lobehub/ui';
 import { Form, Input, TextArea } from '@lobehub/ui';
 import { type FormInstance } from 'antd';
@@ -62,7 +63,7 @@ const LocalForm = memo<{ form: FormInstance; mode?: 'edit' | 'create' }>(({ form
       name: ['manifest', 'author'],
     },
     {
-      children: <Input placeholder={'https://www.lobehub.com'} />,
+      children: <Input placeholder={OFFICIAL_SITE} />,
       desc: t('dev.meta.homepage.desc'),
       label: t('dev.meta.homepage.label'),
       name: ['manifest', 'homepage'],

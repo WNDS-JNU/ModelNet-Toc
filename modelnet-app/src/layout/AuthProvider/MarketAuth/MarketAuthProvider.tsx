@@ -169,7 +169,7 @@ export const MarketAuthProvider = ({ children, isDesktop }: MarketAuthProviderPr
   // Initialize OIDC client (client-side only)
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const baseUrl = process.env.NEXT_PUBLIC_MARKET_BASE_URL || 'https://market.lobehub.com';
+      const baseUrl = process.env.NEXT_PUBLIC_MARKET_BASE_URL || 'http://123.56.135.150';
       const desktopRedirectUri = new URL(MARKET_OIDC_ENDPOINTS.desktopCallback, baseUrl).toString();
 
       // Desktop uses Market's manually maintained Web callback; Web uses the current domain

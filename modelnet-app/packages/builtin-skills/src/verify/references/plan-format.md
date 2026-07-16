@@ -1,12 +1,12 @@
 # Verify plan — machine-readable format
 
 The plan is the contract between the task config and you, the builder. It is
-exposed through `lh verify plan state` keyed off your operation id. This file
+exposed through `modelnet verify plan state` keyed off your operation id. This file
 documents its shape and how to turn it into a per-criterion worklist. You submit
 each criterion's evidence by its `checkItemId` — no separate upload handle to
 resolve.
 
-## (a) `lh verify plan state $LOBE_OPERATION_ID --json`
+## (a) `modelnet verify plan state $LOBE_OPERATION_ID --json`
 
 Returns the run's verify state plus the **frozen plan** (immutable once
 confirmed):
@@ -52,11 +52,11 @@ The plan (a) is all you need. For each `verifyPlan[]` item with non-empty
 
 ```bash
 OP="$LOBE_OPERATION_ID"
-lh verify submit --operation "$OP" --item vci_a1b2c3 --type screenshot \
+modelnet verify submit --operation "$OP" --item vci_a1b2c3 --type screenshot \
   --file ./proof/home.png --by agent-browser --desc "…"
 ```
 
-`lh verify submit` resolves the session from the operation id and **creates the
+`modelnet verify submit` resolves the session from the operation id and **creates the
 check-result row for you** (idempotent on `checkItemId`), then attaches the
 evidence — there is no `checkResultId` to look up first.
 
@@ -66,7 +66,7 @@ Once you've submitted, the result rows exist. To confirm coverage, read them bac
 and list each row's evidence:
 
 ```jsonc
-// lh verify result list --operation "$OP" --json
+// modelnet verify result list --operation "$OP" --json
 [
   {
     "id": "vcr_x9y8z7", // checkResultId (created by submit)
@@ -77,5 +77,5 @@ and list each row's evidence:
 ```
 
 ```bash
-lh verify evidence list "$CHECK_RESULT_ID" --json # confirm each required type is present
+modelnet verify evidence list "$CHECK_RESULT_ID" --json # confirm each required type is present
 ```

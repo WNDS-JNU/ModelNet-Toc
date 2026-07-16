@@ -42,20 +42,20 @@ Alternatively, send \`/mybots\` to @BotFather → select your bot → **API Toke
 ### Step 4: Connect via CLI
 
 \`\`\`bash
-lh bot add -a <agentId> \\
+modelnet bot add -a <agentId> \\
   --platform telegram \\
   --app-id <numericBotId> \\
   --bot-token <botToken>
 
-lh bot test <botId>
-lh bot connect <botId>
+modelnet bot test <botId>
+modelnet bot connect <botId>
 \`\`\`
 
 ## Notes
 
 - **App ID** is the numeric bot ID extracted from the token prefix (e.g. token \`987654321:XYZ...\` → app-id \`987654321\`)
 - **Secret Token** (optional): a custom string you define; ModelNet includes it in webhook requests so you can verify they genuinely come from ModelNet — leave blank unless you have a security requirement
-- Telegram does not have native message search; use \`lh bot message read\` with pagination instead
+- Telegram does not have native message search; use \`modelnet bot message read\` with pagination instead
 - If you lose the token, retrieve it by sending \`/token\` (then select your bot) to @BotFather
 `;
 

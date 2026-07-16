@@ -5,4 +5,4 @@ export const MODELNET_GITHUB_REPOSITORY = 'https://github.com/WNDS-JNU/ModelNet-
 export const MODELNET_GITHUB_ISSUES = `${MODELNET_GITHUB_REPOSITORY}/issues/new/choose`;
 
 export const MODELNET_CLI_COMMAND = 'modelnet';
-export const MODELNET_CLI_COMPATIBILITY_ALIASES = ['lobehub', 'lobe', 'lh'] as const;
+export const MODELNET_CLI_COMPATIBILITY_ALIASES = [] as const;

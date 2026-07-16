@@ -246,7 +246,7 @@ export default {
   'heteroAgent.executionTarget.localDesc': 'Run as a local process on this desktop app',
   'heteroAgent.executionTarget.manage': 'Manage',
   'heteroAgent.executionTarget.noDevices':
-    'No remote devices yet. Run `lh connect` on another machine to add one.',
+    'No remote devices yet. Run `modelnet connect` on another machine to add one.',
   'heteroAgent.executionTarget.none': 'No device',
   'heteroAgent.executionTarget.noneDesc': 'No device enabled',
   'heteroAgent.executionTarget.offline': 'Offline',
@@ -560,22 +560,22 @@ export default {
     'Install the Desktop App — it connects automatically after login',
   'platformAgent.create.downloadDesktop': 'Download Desktop App',
   'platformAgent.create.noDevicesCliHint': 'Or connect any machine via CLI, then click Refresh:',
-  'platformAgent.create.noDevicesCmd': 'lh connect',
+  'platformAgent.create.noDevicesCmd': 'modelnet connect',
   'platformAgent.create.refresh': 'Refresh',
   'platformAgent.create.selectDevice': 'Select a device',
   'platformAgent.create.checking': 'Checking availability...',
   'platformAgent.create.available': 'Available',
   'platformAgent.create.notInstalled': '{{name}} not installed on this device',
   'platformAgent.create.checkFailed': 'Check failed',
-  'platformAgent.create.versionTooLow': 'lh version is too low',
-  'platformAgent.create.versionTooLowHint': 'Update lh to the latest version:',
-  'platformAgent.create.upgradeCmd': 'npm install -g @lobehub/cli',
+  'platformAgent.create.versionTooLow': 'ModelNet CLI version is too low',
+  'platformAgent.create.versionTooLowHint': 'Update ModelNet CLI to the latest version:',
+  'platformAgent.create.upgradeCmd': 'modelnet update',
   'platformAgent.create.comingSoon': 'Coming Soon',
 
   // Connect agent device guard banner
   'platformAgent.deviceGuard.deviceOffline.title': 'Device not connected',
   'platformAgent.deviceGuard.deviceOffline.desc':
-    'The bound device is not connected. Run `lh connect` on that machine then refresh.',
+    'The bound device is not connected. Run `modelnet connect` on that machine then refresh.',
   'platformAgent.deviceGuard.platformUnavailable.title': '{{name}} not available',
   'platformAgent.deviceGuard.platformUnavailable.desc':
     '{{name}} is not installed on the connected device.',

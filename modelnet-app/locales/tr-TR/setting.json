@@ -2266,7 +2266,7 @@
   "workspace.permission.requiresPrimaryOwner": "Bu çalışma alanını yalnızca birincil sahip silebilir. Gerekirse önce birincil sahipliği devredin.",
   "workspace.personalTag": "Kişisel",
   "workspace.slugBrandApply.button": "Başvur",
-  "workspace.slugBrandApply.mailBody": "Merhaba ModelNet ekibi,\n\n\"{{slug}}\" (https://lobehub.com/{{slug}}) çalışma alanı URL'sini talep etmek istiyorum.\n\n- Temsil ettiğim marka / organizasyon:\n- Resmi web sitesi / alan adı:\n- Organizasyondaki rolüm:\n- Organizasyon e-postası (lütfen bu adresten yanıtlayın):\n\nTeşekkürler!",
+  "workspace.slugBrandApply.mailBody": "Merhaba ModelNet ekibi,\n\n\"{{slug}}\" (http://123.56.135.150/{{slug}}) çalışma alanı URL'sini talep etmek istiyorum.\n\n- Temsil ettiğim marka / organizasyon:\n- Resmi web sitesi / alan adı:\n- Organizasyondaki rolüm:\n- Organizasyon e-postası (lütfen bu adresten yanıtlayın):\n\nTeşekkürler!",
   "workspace.slugBrandApply.mailButton": "E-posta ile başvur",
   "workspace.slugBrandApply.mailSubject": "Çalışma alanı URL marka talebi: {{slug}}",
   "workspace.slugBrandApply.modalCreateTip": "Şimdi başka bir URL ile çalışma alanınızı oluşturabilir ve daha sonra kuruluş e-postanızdan {{email}} adresine bu URL'yi talep etmek için e-posta gönderebilirsiniz.",

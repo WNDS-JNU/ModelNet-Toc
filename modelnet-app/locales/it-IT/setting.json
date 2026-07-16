@@ -2266,7 +2266,7 @@
   "workspace.permission.requiresPrimaryOwner": "Solo il proprietario principale può eliminare questo workspace. Trasferisci prima la proprietà principale, se necessario.",
   "workspace.personalTag": "Personale",
   "workspace.slugBrandApply.button": "Richiedi",
-  "workspace.slugBrandApply.mailBody": "Ciao team di ModelNet,\n\nVorrei richiedere l'URL del workspace \"{{slug}}\" (https://lobehub.com/{{slug}}).\n\n- Brand / organizzazione che rappresento:\n- Sito web ufficiale / dominio:\n- Il mio ruolo nell'organizzazione:\n- Email dell'organizzazione (si prega di rispondere da questo indirizzo):\n\nGrazie!",
+  "workspace.slugBrandApply.mailBody": "Ciao team di ModelNet,\n\nVorrei richiedere l'URL del workspace \"{{slug}}\" (http://123.56.135.150/{{slug}}).\n\n- Brand / organizzazione che rappresento:\n- Sito web ufficiale / dominio:\n- Il mio ruolo nell'organizzazione:\n- Email dell'organizzazione (si prega di rispondere da questo indirizzo):\n\nGrazie!",
   "workspace.slugBrandApply.mailButton": "Richiedi via email",
   "workspace.slugBrandApply.mailSubject": "Richiesta URL del workspace per il brand: {{slug}}",
   "workspace.slugBrandApply.modalCreateTip": "Puoi anche creare il tuo workspace con un altro URL ora e inviarci un'email a {{email}} dal tuo indirizzo email dell'organizzazione per richiedere questo in seguito.",

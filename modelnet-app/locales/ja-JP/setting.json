@@ -2266,7 +2266,7 @@
   "workspace.permission.requiresPrimaryOwner": "プライマリオーナーのみがこのワークスペースを削除できます。必要に応じてプライマリオーナーシップを移譲してください。",
   "workspace.personalTag": "個人用",
   "workspace.slugBrandApply.button": "申請",
-  "workspace.slugBrandApply.mailBody": "ModelNetチームの皆様\n\nワークスペースURL「{{slug}}」(https://lobehub.com/{{slug}})をリクエストしたいです。\n\n- 代表するブランド/組織:\n- 公式ウェブサイト/ドメイン:\n- 組織内での役割:\n- 組織のメールアドレス（このアドレスから返信してください）:\n\nよろしくお願いします！",
+  "workspace.slugBrandApply.mailBody": "ModelNetチームの皆様\n\nワークスペースURL「{{slug}}」(http://123.56.135.150/{{slug}})をリクエストしたいです。\n\n- 代表するブランド/組織:\n- 公式ウェブサイト/ドメイン:\n- 組織内での役割:\n- 組織のメールアドレス（このアドレスから返信してください）:\n\nよろしくお願いします！",
   "workspace.slugBrandApply.mailButton": "メールで申請",
   "workspace.slugBrandApply.mailSubject": "ワークスペースURLブランドリクエスト: {{slug}}",
   "workspace.slugBrandApply.modalCreateTip": "別のURLでワークスペースを作成し、後で組織のメールアドレスから{{email}}にメールを送信してこのURLをリクエストすることもできます。",

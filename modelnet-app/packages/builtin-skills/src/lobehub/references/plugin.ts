@@ -1,13 +1,13 @@
-const content = `# lh plugin - Plugin Management
+const content = `# modelnet plugin - Plugin Management
 
 Manage installed plugins (external tool integrations).
 
 ## Subcommands
 
-- \`lh plugin list\` - List installed plugins
-- \`lh plugin install -i <identifier> [--manifest <url>] [--type <type>] [--settings <json>]\` - Install plugin
-- \`lh plugin uninstall <id> [--yes]\` - Uninstall plugin
-- \`lh plugin update <id> [--manifest <url>] [--settings <json>]\` - Update plugin
+- \`modelnet plugin list\` - List installed plugins
+- \`modelnet plugin install -i <identifier> [--manifest <url>] [--type <type>] [--settings <json>]\` - Install plugin
+- \`modelnet plugin uninstall <id> [--yes]\` - Uninstall plugin
+- \`modelnet plugin update <id> [--manifest <url>] [--settings <json>]\` - Update plugin
 
 ## Tips
 

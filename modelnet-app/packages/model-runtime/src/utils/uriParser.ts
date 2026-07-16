@@ -152,7 +152,7 @@ export const validateExternalUrl = async (url: string): Promise<ExternalUrlValid
       url,
       {
         headers: {
-          'User-Agent': 'ModelNet/1.0 (https://lobehub.com)',
+          'User-Agent': 'ModelNet/1.0 (http://123.56.135.150)',
         },
         method: 'HEAD',
       },

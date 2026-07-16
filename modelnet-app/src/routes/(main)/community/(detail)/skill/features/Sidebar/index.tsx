@@ -1,5 +1,6 @@
 'use client';
 
+import { OFFICIAL_URL } from '@lobechat/const';
 import { Flexbox, ScrollShadow } from '@lobehub/ui';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -27,7 +28,7 @@ const Sidebar = memo<{ activeTab?: SkillNavKey; mobile?: boolean }>(
           desc: description,
           hashtags: tags,
           title: name,
-          url: urlJoin('https://lobehub.com/skills', identifier || ''),
+          url: urlJoin(OFFICIAL_URL, 'skills', identifier || ''),
         }}
       >
         {t('share')}

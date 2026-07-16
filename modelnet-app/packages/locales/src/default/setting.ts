@@ -2176,7 +2176,7 @@ When I am ___, I need ___
   'workspace.general.url.title': 'Workspace URL',
   'workspace.slugBrandApply.button': 'Apply',
   'workspace.slugBrandApply.mailBody':
-    'Hi ModelNet team,\n\nI would like to request the workspace URL "{{slug}}" (https://lobehub.com/{{slug}}).\n\n- Brand / organization I represent:\n- Official website / domain:\n- My role in the organization:\n- Organization email (please reply from this address):\n\nThanks!',
+    'Hi ModelNet team,\n\nI would like to request the workspace URL "{{slug}}" (http://123.56.135.150/{{slug}}).\n\n- Brand / organization I represent:\n- Official website / domain:\n- My role in the organization:\n- Organization email (please reply from this address):\n\nThanks!',
   'workspace.slugBrandApply.mailButton': 'Apply via email',
   'workspace.slugBrandApply.mailSubject': 'Workspace URL brand request: {{slug}}',
   'workspace.slugBrandApply.modalCreateTip':

@@ -29,17 +29,17 @@ export const systemPrompt = `You have access to a Tools Activator that allows yo
 - User mentions: "SKILL.md", "ModelNet Skills", "skill store", "install skill", "search skill"
 - User provides a GitHub link to install a skill (e.g., github.com/xxx/xxx containing SKILL.md)
 - User mentions installing from ModelNet marketplace
-- User provides ModelNet skill URLs like: \`https://lobehub.com/skills/{identifier}/skill.md\` → extract identifier and use \`importFromMarket\`
-- User provides instructions like: "curl https://lobehub.com/skills/..." → extract identifier from URL, use \`importFromMarket\`
+- User provides ModelNet skill URLs like: \`http://123.56.135.150/skills/{identifier}/skill.md\` → extract identifier and use \`importFromMarket\`
+- User provides instructions like: "curl http://123.56.135.150/skills/..." → extract identifier from URL, use \`importFromMarket\`
 - User asks to "follow instructions to set up/install a skill"
 - User's task involves a specialized domain (e.g., creating presentations/PPT, generating PDFs, charts, diagrams) and no matching tool exists
 
 **Decision flow:**
 1. **If ANY trigger condition above is met** → Immediately activate \`lobe-skill-store\`
-2. **For ModelNet skill URLs** (e.g., \`https://lobehub.com/skills/{identifier}/skill.md\`):
+2. **For ModelNet skill URLs** (e.g., \`http://123.56.135.150/skills/{identifier}/skill.md\`):
    - Extract the identifier from the URL path (the part between \`/skills/\` and \`/skill.md\`)
    - Use \`importFromMarket\` with that identifier directly (NOT \`importSkill\`)
-   - Example: \`lobehub.com/skills/openclaw-openclaw-github/skill.md\` → identifier is \`openclaw-openclaw-github\`
+   - Example: \`123.56.135.150/skills/openclaw-openclaw-github/skill.md\` → identifier is \`openclaw-openclaw-github\`
 3. For GitHub repository URLs → use \`importSkill\` with type "url"
 4. For marketplace searches → use \`searchSkill\` then \`importFromMarket\`
 5. Check \`<available_tools>\` for other relevant tools → if found, use \`activateTools\`
@@ -47,8 +47,8 @@ export const systemPrompt = `You have access to a Tools Activator that allows yo
 
 **Important:**
 - Do NOT manually curl/fetch SKILL.md files or try to parse them yourself
-- For \`lobehub.com/skills/xxx/skill.md\` URLs, ALWAYS extract the identifier and use \`importFromMarket\`, NOT \`importSkill\`
-- \`importSkill\` is only for GitHub repository URLs or ZIP packages, not for lobehub.com skill URLs
+- For \`123.56.135.150/skills/xxx/skill.md\` URLs, ALWAYS extract the identifier and use \`importFromMarket\`, NOT \`importSkill\`
+- \`importSkill\` is only for GitHub repository URLs or ZIP packages, not for ModelNet marketplace skill URLs
 </skill_store_discovery>
 
 <credentials_management>

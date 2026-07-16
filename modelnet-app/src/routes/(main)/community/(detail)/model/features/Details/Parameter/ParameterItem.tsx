@@ -1,3 +1,4 @@
+import { OFFICIAL_SITE } from '@lobechat/const';
 import { Flexbox } from '@lobehub/ui';
 import { Divider } from 'antd';
 import { cssVar } from 'antd-style';
@@ -6,7 +7,7 @@ import { useTranslation } from 'react-i18next';
 
 import Statistic from '../../../../../components/Statistic';
 
-const DEFAULT_DOC_URL = 'https://lobehub.com/docs/usage/agents/model';
+const DEFAULT_DOC_URL = OFFICIAL_SITE;
 
 export interface ParameterItemProps {
   defaultValue: string | number;
