@@ -2,6 +2,8 @@ import { AUTH_REQUIRED_HEADER } from '@lobechat/desktop-bridge';
 import { BrowserWindow, session as electronSession } from 'electron';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { isBackendPath } from '@/const/protocol';
+
 import { BackendProxyProtocolManager } from '../BackendProxyProtocolManager';
 
 interface RequestInitWithDuplex extends RequestInit {
@@ -403,6 +405,64 @@ describe('BackendProxyProtocolManager', () => {
       expect(res).not.toBeNull();
       expect(res!.status).toBe(502);
       expect(await res!.text()).toBe('Backend Proxy Unavailable');
+    });
+  });
+  describe('ModelNet leaderboard route', () => {
+    it('recognizes only the leaderboard endpoint from its API namespace', () => {
+      expect(isBackendPath('/api/modelnet/leaderboard')).toBe(true);
+      expect(isBackendPath('/api/modelnet/leaderboard/daily')).toBe(true);
+      expect(isBackendPath('/api/modelnet')).toBe(false);
+      expect(isBackendPath('/api/modelnet/agents')).toBe(false);
+    });
+
+    it('returns 502 instead of falling back to the SPA when the proxy context is absent', async () => {
+      const manager = new BackendProxyProtocolManager();
+      const interceptor = manager.createAppRequestInterceptor();
+
+      const res = await interceptor({
+        headers: new Headers(),
+        method: 'GET',
+        url: 'app://renderer/api/modelnet/leaderboard',
+      } as any);
+
+      expect(res).not.toBeNull();
+      expect(res!.status).toBe(502);
+      expect(await res!.text()).toBe('Backend Proxy Unavailable');
+    });
+
+    it('proxies the leaderboard as JSON with authentication and query parameters intact', async () => {
+      const fetchMock = vi.fn<FetchMock>(
+        async () =>
+          new Response(JSON.stringify({ data: [{ id: 'modelnet-auto' }] }), {
+            headers: { 'Content-Type': 'application/json' },
+            status: 200,
+          }),
+      );
+      vi.stubGlobal('fetch', fetchMock as any);
+
+      const manager = new BackendProxyProtocolManager();
+      manager.registerWithRemoteBaseUrl(electronSession.defaultSession as any, {
+        getAccessToken: async () => 'desktop-token',
+        getRemoteBaseUrl: async () => 'https://remote.example.com',
+      });
+
+      const interceptor = manager.createAppRequestInterceptor();
+      const res = await interceptor({
+        headers: new Headers({ Origin: 'app://renderer' }),
+        method: 'GET',
+        url: 'app://renderer/api/modelnet/leaderboard?period=monthly',
+      } as any);
+
+      expect(res).not.toBeNull();
+      expect(res!.status).toBe(200);
+      expect(await res!.json()).toEqual({ data: [{ id: 'modelnet-auto' }] });
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://remote.example.com/api/modelnet/leaderboard?period=monthly',
+        expect.objectContaining({ method: 'GET' }),
+      );
+
+      const [, init] = fetchMock.mock.calls[0]!;
+      expect((init!.headers as Headers).get('Oidc-Auth')).toBe('desktop-token');
     });
   });
 });
