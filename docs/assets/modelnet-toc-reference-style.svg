@@ -1,0 +1,217 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="900" viewBox="0 0 2400 900" role="img" aria-labelledby="title desc" font-family="Noto Sans CJK SC">
+  <title id="title">ModelNet ToC 多模型协同架构</title>
+  <desc id="desc">用户通过 ModelNet ToC 创建任务，ToC 直接调用 ModelNet Router，由 Router 选择并编排 Kubernetes 集群中的 vLLM 和 llama.cpp 模型服务，结果流式返回。</desc>
+
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#183A70" flood-opacity="0.12"/>
+    </filter>
+    <marker id="blueArrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" orient="auto-start-reverse">
+      <path d="M0 0L12 6L0 12Z" fill="#3F72C6"/>
+    </marker>
+    <marker id="cyanArrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="11" markerHeight="11" orient="auto-start-reverse">
+      <path d="M0 0L12 6L0 12Z" fill="#1597A5"/>
+    </marker>
+    <marker id="redArrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M0 0L12 6L0 12Z" fill="#D71920"/>
+    </marker>
+    <marker id="purpleArrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="11" markerHeight="11" orient="auto-start-reverse">
+      <path d="M0 0L12 6L0 12Z" fill="#6B43B5"/>
+    </marker>
+    <style>
+      text { font-family: "Noto Sans CJK SC"; fill: #152238; }
+      .main-title { font-size: 38px; font-weight: 850; }
+      .section-title { font-size: 31px; font-weight: 850; }
+      .card-title { font-size: 25px; font-weight: 800; }
+      .label { font-size: 20px; font-weight: 700; }
+      .small { font-size: 17px; font-weight: 650; fill: #66758A; }
+      .micro { font-size: 15px; font-weight: 650; fill: #69788E; }
+      .panel { fill: #FFFFFF; stroke: #183A70; stroke-width: 3; stroke-dasharray: 11 8; }
+      .request { fill: none; stroke: #3F72C6; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#blueArrow); }
+      .response { fill: none; stroke: #1597A5; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#cyanArrow); }
+      .sync { fill: none; stroke: #D71920; stroke-width: 3; stroke-dasharray: 9 7; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#redArrow); }
+      .schedule { fill: none; stroke: #6B43B5; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#purpleArrow); }
+    </style>
+  </defs>
+
+  <rect width="2400" height="900" fill="#FFFFFF"/>
+  <text x="42" y="53" class="main-title">ModelNet ToC 多模型协同架构</text>
+
+  <!-- Main responsibility boundaries -->
+  <rect x="205" y="75" width="1100" height="750" rx="22" class="panel"/>
+  <rect x="1350" y="75" width="1000" height="750" rx="22" class="panel"/>
+
+  <!-- External user -->
+  <g filter="url(#shadow)">
+    <circle cx="88" cy="370" r="55" fill="#E7F0FA" stroke="#8DB0E0" stroke-width="2"/>
+    <circle cx="88" cy="350" r="15" fill="none" stroke="#3F72C6" stroke-width="5"/>
+    <path d="M58 401c7-30 53-30 60 0" fill="none" stroke="#3F72C6" stroke-width="5" stroke-linecap="round"/>
+    <rect x="30" y="446" width="116" height="56" rx="16" fill="#F2F6FB" stroke="#B8C9DD"/>
+    <text x="88" y="481" class="card-title" text-anchor="middle">用户</text>
+  </g>
+
+  <!-- ToC platform -->
+  <g>
+    <rect x="207" y="77" width="1096" height="70" rx="20" fill="#E7F0FA"/>
+    <text x="245" y="122" class="section-title">ModelNet ToC 应用与编排平台</text>
+
+    <!-- Capability library -->
+    <rect x="255" y="166" width="760" height="112" rx="20" fill="#DCEBFA" stroke="#AFC8E6" stroke-width="1.8"/>
+    <text x="285" y="207" class="card-title">模型能力库</text>
+
+    <circle cx="590" cy="222" r="32" fill="#BFD7FF"/>
+    <text x="590" y="231" font-size="24" font-weight="850" text-anchor="middle" fill="#315EB0">Q</text>
+    <text x="590" y="266" class="micro" text-anchor="middle">Qwen</text>
+
+    <circle cx="696" cy="222" r="32" fill="#D8D2FF"/>
+    <path d="M682 235c0-22 28-22 28 0M686 214c5-13 15-13 20 0" fill="none" stroke="#624BB4" stroke-width="4" stroke-linecap="round"/>
+    <text x="696" y="266" class="micro" text-anchor="middle">Llama</text>
+
+    <circle cx="802" cy="222" r="32" fill="#CBEFE6"/>
+    <text x="802" y="231" font-size="24" font-weight="850" text-anchor="middle" fill="#287A66">G</text>
+    <text x="802" y="266" class="micro" text-anchor="middle">GLM</text>
+
+    <circle cx="908" cy="222" r="32" fill="#FFE1B8"/>
+    <path d="M908 202l19 20-19 20-19-20Z" fill="none" stroke="#C47A18" stroke-width="4"/>
+    <text x="908" y="266" class="micro" text-anchor="middle">更多模型</text>
+
+    <!-- Task/session pool -->
+    <rect x="255" y="315" width="760" height="315" rx="25" fill="#ECEDEF" stroke="#D1D4D9" stroke-width="1.8"/>
+    <text x="285" y="360" class="section-title">任务 / 会话池</text>
+
+    <rect x="295" y="390" width="200" height="190" rx="22" fill="#FFFFFF" stroke="#D3D8E0" stroke-width="1.5" filter="url(#shadow)"/>
+    <circle cx="395" cy="450" r="36" fill="#DDEBFF"/>
+    <path d="M374 435h42a12 12 0 0 1 12 12v12a12 12 0 0 1-12 12h-16l-14 11 3-11h-15a12 12 0 0 1-12-12v-12a12 12 0 0 1 12-12Z" fill="none" stroke="#3F72C6" stroke-width="4"/>
+    <text x="395" y="526" class="card-title" text-anchor="middle">智能问答</text>
+    <text x="395" y="558" class="small" text-anchor="middle">单模型 / 工具</text>
+
+    <rect x="525" y="390" width="200" height="190" rx="22" fill="#FFFFFF" stroke="#D3D8E0" stroke-width="1.5" filter="url(#shadow)"/>
+    <circle cx="625" cy="450" r="36" fill="#E3DDFB"/>
+    <circle cx="625" cy="432" r="8" fill="#6B43B5"/>
+    <circle cx="606" cy="465" r="8" fill="#6B43B5"/>
+    <circle cx="644" cy="465" r="8" fill="#6B43B5"/>
+    <path d="M621 439l-12 18M629 439l12 18M614 465h22" stroke="#6B43B5" stroke-width="4" stroke-linecap="round"/>
+    <text x="625" y="526" class="card-title" text-anchor="middle">自动组网</text>
+    <text x="625" y="558" class="small" text-anchor="middle">modelnet-auto</text>
+
+    <rect x="755" y="390" width="200" height="190" rx="22" fill="#FFFFFF" stroke="#D3D8E0" stroke-width="1.5" filter="url(#shadow)"/>
+    <circle cx="835" cy="447" r="21" fill="#CBEFE6"/>
+    <circle cx="875" cy="447" r="21" fill="#DDEBFF"/>
+    <circle cx="855" cy="475" r="21" fill="#FFE1B8"/>
+    <text x="855" y="526" class="card-title" text-anchor="middle">多模型协同</text>
+    <text x="855" y="558" class="small" text-anchor="middle">并联 / 串联</text>
+
+    <!-- Product service strip -->
+    <rect x="255" y="676" width="760" height="96" rx="20" fill="#D7E5F7" stroke="#AEC5E3" stroke-width="1.8"/>
+    <text x="285" y="734" class="card-title">应用能力</text>
+    <rect x="620" y="700" width="110" height="48" rx="15" fill="#FFFFFF" stroke="#B8C9DD"/>
+    <rect x="748" y="700" width="110" height="48" rx="15" fill="#FFFFFF" stroke="#B8C9DD"/>
+    <rect x="876" y="700" width="110" height="48" rx="15" fill="#FFFFFF" stroke="#B8C9DD"/>
+    <text x="675" y="732" class="label" text-anchor="middle">对话</text>
+    <text x="803" y="732" class="label" text-anchor="middle">Agent</text>
+    <text x="931" y="732" class="label" text-anchor="middle">模型选择</text>
+  </g>
+
+  <!-- User and ToC bidirectional flow -->
+  <path d="M146 420H255" class="request"/>
+  <path d="M255 478H146" class="response"/>
+  <text x="192" y="404" class="small" text-anchor="middle">访问 · 创建任务</text>
+  <text x="192" y="505" class="small" text-anchor="middle">流式结果</text>
+
+  <!-- Central Router -->
+  <g filter="url(#shadow)">
+    <rect x="1098" y="284" width="194" height="382" rx="18" fill="#FFFFFF" stroke="#111827" stroke-width="2.6"/>
+    <rect x="1112" y="300" width="166" height="66" rx="15" fill="#E8E1FA"/>
+    <circle cx="1142" cy="333" r="20" fill="#CFC0F2"/>
+    <circle cx="1142" cy="323" r="5" fill="#6843AF"/>
+    <circle cx="1133" cy="340" r="5" fill="#6843AF"/>
+    <circle cx="1151" cy="340" r="5" fill="#6843AF"/>
+    <path d="M1139 328l-4 7M1145 328l4 7M1138 340h8" stroke="#6843AF" stroke-width="2"/>
+    <text x="1168" y="326" class="label">ModelNet</text>
+    <text x="1168" y="350" class="label">Router</text>
+
+    <rect x="1118" y="386" width="154" height="55" rx="13" fill="#FFF0B8" stroke="#E6C864"/>
+    <rect x="1118" y="455" width="154" height="55" rx="13" fill="#FFF0B8" stroke="#E6C864"/>
+    <rect x="1118" y="524" width="154" height="55" rx="13" fill="#FFF0B8" stroke="#E6C864"/>
+    <rect x="1118" y="593" width="154" height="55" rx="13" fill="#FFF0B8" stroke="#E6C864"/>
+    <text x="1195" y="421" class="label" text-anchor="middle">请求解析</text>
+    <text x="1195" y="490" class="label" text-anchor="middle">模型选择</text>
+    <text x="1195" y="559" class="label" text-anchor="middle">编排执行</text>
+    <text x="1195" y="628" class="label" text-anchor="middle">结果聚合</text>
+  </g>
+
+  <!-- ToC to Router -->
+  <path d="M1015 438H1098" class="request"/>
+  <path d="M1098 500H1015" class="response"/>
+  <text x="1057" y="420" class="small" text-anchor="middle">模型调用</text>
+
+  <!-- Capability library sync -->
+  <path d="M1015 222H1195V284" class="sync"/>
+  <text x="1085" y="208" class="small" fill="#B31A20">能力同步</text>
+
+  <!-- Kubernetes cluster -->
+  <g transform="translate(130 0)">
+    <rect x="1287" y="77" width="861" height="70" rx="20" fill="#E5F1FA"/>
+    <path d="M1320 86l28-16 28 16v32l-28 16-28-16Z" fill="#4A86D8"/>
+    <text x="1348" y="109" font-size="19" font-weight="850" text-anchor="middle" fill="#FFFFFF">K8s</text>
+    <text x="1392" y="122" class="section-title">Kubernetes 模型服务集群</text>
+
+    <!-- Model service pool -->
+    <rect x="1332" y="177" width="772" height="270" rx="24" fill="#E7F0FA" stroke="#AFC8E3" stroke-width="1.8"/>
+    <text x="1364" y="220" class="section-title">模型服务池</text>
+
+    <rect x="1370" y="248" width="210" height="155" rx="21" fill="#FFFFFF" stroke="#AAC5E1" stroke-width="1.7" filter="url(#shadow)"/>
+    <circle cx="1475" cy="292" r="33" fill="#CFE7FA"/>
+    <text x="1475" y="301" font-size="21" font-weight="850" text-anchor="middle" fill="#2D6DAF">vLLM</text>
+    <text x="1475" y="354" class="card-title" text-anchor="middle">vLLM 服务</text>
+    <text x="1475" y="383" class="small" text-anchor="middle">OpenAI Chat</text>
+
+    <rect x="1613" y="248" width="210" height="155" rx="21" fill="#FFFFFF" stroke="#AAC5E1" stroke-width="1.7" filter="url(#shadow)"/>
+    <circle cx="1718" cy="292" r="33" fill="#DDE8F5"/>
+    <path d="M1697 306c0-25 42-25 42 0M1705 278c6-14 20-14 26 0" fill="none" stroke="#456F98" stroke-width="4" stroke-linecap="round"/>
+    <text x="1718" y="354" class="card-title" text-anchor="middle">llama.cpp 服务</text>
+    <text x="1718" y="383" class="small" text-anchor="middle">GGUF 推理</text>
+
+    <rect x="1856" y="248" width="210" height="155" rx="21" fill="#FFFFFF" stroke="#AAC5E1" stroke-width="1.7" filter="url(#shadow)"/>
+    <text x="1961" y="315" font-size="48" font-weight="800" text-anchor="middle" fill="#6B7C92">···</text>
+    <text x="1961" y="354" class="card-title" text-anchor="middle">更多服务</text>
+    <text x="1961" y="383" class="small" text-anchor="middle">按能力扩展</text>
+
+    <!-- Heterogeneous node pool -->
+    <rect x="1332" y="510" width="772" height="262" rx="24" fill="#E8F4DC" stroke="#B7D39B" stroke-width="1.8"/>
+    <text x="1364" y="553" class="section-title">异构节点池</text>
+    <text x="2038" y="550" class="small" text-anchor="end">K8s 按节点能力调度</text>
+
+    <rect x="1370" y="582" width="220" height="145" rx="21" fill="#FFFFFF" stroke="#BBD4A4" stroke-width="1.7"/>
+    <rect x="1394" y="610" width="65" height="52" rx="7" fill="#CFE5F1" stroke="#43809B" stroke-width="3"/>
+    <path d="M1404 620h45v30h-45ZM1418 672h18" fill="none" stroke="#43809B" stroke-width="3"/>
+    <text x="1480" y="624" class="card-title">GPU 节点</text>
+    <text x="1480" y="658" class="small">PC / 服务器</text>
+    <text x="1480" y="688" class="small">3090 · 4090 · 5090</text>
+
+    <rect x="1610" y="582" width="220" height="145" rx="21" fill="#FFFFFF" stroke="#BBD4A4" stroke-width="1.7"/>
+    <rect x="1634" y="606" width="64" height="64" rx="8" fill="#CDE8DB" stroke="#3E8766" stroke-width="3"/>
+    <circle cx="1649" cy="622" r="5" fill="#3E8766"/>
+    <circle cx="1683" cy="622" r="5" fill="#3E8766"/>
+    <path d="M1646 639h40M1646 652h40" stroke="#3E8766" stroke-width="3"/>
+    <text x="1715" y="624" class="card-title">Jetson 节点</text>
+    <text x="1715" y="658" class="small">边缘计算设备</text>
+    <text x="1715" y="688" class="small">8GB · 16GB · 64GB</text>
+
+    <rect x="1850" y="582" width="216" height="145" rx="21" fill="#FFFFFF" stroke="#BBD4A4" stroke-width="1.7"/>
+    <circle cx="1910" cy="638" r="35" fill="#DDEBD0"/>
+    <text x="1910" y="648" font-size="36" font-weight="850" text-anchor="middle" fill="#63834A">+</text>
+    <text x="1982" y="624" class="card-title" text-anchor="middle">更多节点</text>
+    <text x="1982" y="658" class="small" text-anchor="middle">按需纳管</text>
+    <text x="1982" y="688" class="small" text-anchor="middle">横向扩展</text>
+  </g>
+
+  <!-- Router and model service flow -->
+  <path d="M1292 420H1475V330H1500" class="schedule"/>
+  <path d="M1500 395H1455V500H1292" class="response"/>
+  <text x="1395" y="400" class="small" text-anchor="middle" fill="#5D3C9B">调度调用</text>
+
+  <!-- K8s service placement -->
+  <path d="M1848 447V500" class="schedule"/>
+  <text x="1872" y="482" class="small" fill="#5D3C9B">Pod 调度</text>
+</svg>
