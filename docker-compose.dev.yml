@@ -1,11 +1,11 @@
-name: lobehub-toc-dev
+name: modelnet-toc-dev
 
 services:
-  lobe:
-    image: ${DEV_LOBE_IMAGE:-lobehub-toc-dev-lobe}
-    container_name: lobehub-toc-dev-lobe
+  modelnet-app:
+    image: ${DEV_MODELNET_APP_IMAGE:-${DEV_LOBE_IMAGE:-modelnet-toc-dev-app}}
+    container_name: modelnet-toc-dev-app
     build:
-      context: ${LOBEHUB_TOC_SRC:-./lobehub}
+      context: ${MODELNET_APP_SRC:-${LOBEHUB_TOC_SRC:-./modelnet-app}}
     restart: unless-stopped
     expose:
       - "3210"
@@ -20,6 +20,8 @@ services:
         condition: service_completed_successfully
       modelnet-router:
         condition: service_healthy
+      device-gateway:
+        condition: service_healthy
     env_file:
       - .env
       - .env.modelnet
@@ -29,13 +31,17 @@ services:
     environment:
       APP_URL: ${DEV_APP_URL:-http://127.0.0.1:3181}
       INTERNAL_APP_URL: http://localhost:3210
-      LOBE_DB_NAME: ${DEV_LOBE_DB_NAME:-lobechat_dev}
-      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgresql:5432/${DEV_LOBE_DB_NAME:-lobechat_dev}
+      LOBE_DB_NAME: ${DEV_MODELNET_DB_NAME:-${DEV_LOBE_DB_NAME:-modelnet_dev}}
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgresql:5432/${DEV_MODELNET_DB_NAME:-${DEV_LOBE_DB_NAME:-modelnet_dev}}
+      DEVICE_GATEWAY_URL: http://device-gateway:3000
+      DEVICE_GATEWAY_SERVICE_TOKEN: ${DEVICE_GATEWAY_SERVICE_TOKEN}
       MODELNET_LEADERBOARD_DATA_DIR: /app/leaderboard/data
       MODELNET_PROXY_URL: http://modelnet-router:8000/v1
       MODELNET_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
+      OPENAI_PROXY_URL: http://modelnet-router:8000/v1
+      OPENAI_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
       S3_ENDPOINT: http://rustfs:9000
-      S3_BUCKET: ${RUSTFS_LOBE_BUCKET}
+      S3_BUCKET: ${MODELNET_STORAGE_BUCKET:-${RUSTFS_LOBE_BUCKET}}
       S3_ENABLE_PATH_STYLE: "1"
       S3_ACCESS_KEY: ${RUSTFS_ACCESS_KEY}
       S3_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY}
@@ -44,33 +50,67 @@ services:
       LLM_VISION_IMAGE_USE_BASE64: "1"
       SEARXNG_URL: http://searxng:8080
       REDIS_URL: redis://redis:6379
-      REDIS_PREFIX: lobehub-toc-dev
+      REDIS_PREFIX: modelnet-toc-dev
       REDIS_TLS: "0"
     networks:
-      - lobe-dev-network
+      - modelnet-dev-network
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3210/signin').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://localhost:3210/signin'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
       interval: 10s
       timeout: 5s
       retries: 12
       start_period: 20s
 
+  device-gateway:
+    image: ${DEV_MODELNET_DEVICE_GATEWAY_IMAGE:-modelnet-device-gateway-dev:local}
+    container_name: modelnet-device-gateway-dev
+    build:
+      context: ./modelnet-app
+      dockerfile: apps/device-gateway/Dockerfile
+    restart: unless-stopped
+    environment:
+      DEVICE_GATEWAY_ALLOWED_SERVER_ORIGINS: ${DEV_APP_URL:-http://127.0.0.1:3181}
+      DEVICE_GATEWAY_INTERNAL_APP_URL: http://modelnet-app:3210
+      DEVICE_GATEWAY_OIDC_JWKS_URL: http://modelnet-app:3210/oidc/jwks
+      DEVICE_GATEWAY_SERVICE_TOKEN: ${DEVICE_GATEWAY_SERVICE_TOKEN}
+      PORT: "3000"
+    expose:
+      - "3000"
+    ports:
+      - "${DEV_MODELNET_DEVICE_GATEWAY_HOST:-127.0.0.1}:${DEV_MODELNET_DEVICE_GATEWAY_PORT:-3193}:3000"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://127.0.0.1:3000/healthz'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - modelnet-dev-network
+
   toc-lb:
     image: haproxy:2.9-alpine
-    container_name: lobehub-toc-dev-lb
+    container_name: modelnet-toc-dev-lb
     restart: unless-stopped
     depends_on:
-      lobe:
+      modelnet-app:
         condition: service_healthy
     ports:
-      - "127.0.0.1:${DEV_LOBE_PORT:-3181}:80"
+      - "127.0.0.1:${DEV_MODELNET_APP_PORT:-${DEV_LOBE_PORT:-3181}}:80"
     volumes:
       - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     networks:
-      - lobe-dev-network
+      - modelnet-dev-network
 
   modelnet-router:
-    image: ${DEV_ROUTER_IMAGE:-lobehub-toc-dev-modelnet-router}
+    image: ${DEV_ROUTER_IMAGE:-modelnet-toc-dev-modelnet-router}
     container_name: modelnet-router-dev
     build:
       context: ./modelnet_router
@@ -117,16 +157,20 @@ services:
     ports:
       - "127.0.0.1:${DEV_MODELNET_GATEWAY_PORT:-3192}:8000"
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()\""]
+      test:
+        [
+          "CMD-SHELL",
+          'python -c "import urllib.request; urllib.request.urlopen(''http://127.0.0.1:8000/healthz'', timeout=20).read()"',
+        ]
       interval: 10s
-      timeout: 6s
+      timeout: 22s
       retries: 12
       start_period: 15s
     networks:
-      - lobe-dev-network
+      - modelnet-dev-network
 
   litellm:
-    image: ${DEV_LITELLM_IMAGE:-lobehub-toc-litellm-modelnet}
+    image: ${DEV_LITELLM_IMAGE:-modelnet-toc-litellm-modelnet}
     container_name: modelnet-litellm-dev
     restart: unless-stopped
     depends_on:
@@ -145,16 +189,17 @@ services:
       - "127.0.0.1:${DEV_LITELLM_PORT:-3190}:8000"
     expose:
       - "8000"
-    command: ["--config", "/app/config.yaml", "--port", "8000", "--num_workers", "4"]
+    command:
+      ["--config", "/app/config.yaml", "--port", "8000", "--num_workers", "4"]
     networks:
-      - lobe-dev-network
+      - modelnet-dev-network
 
   postgresql:
     image: paradedb/paradedb:latest-pg17
-    container_name: lobehub-toc-dev-postgres
+    container_name: modelnet-toc-dev-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${DEV_LOBE_DB_NAME:-lobechat_dev}
+      POSTGRES_DB: ${DEV_MODELNET_DB_NAME:-${DEV_LOBE_DB_NAME:-modelnet_dev}}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_dev_data:/var/lib/postgresql/data
@@ -164,11 +209,11 @@ services:
       timeout: 5s
       retries: 10
     networks:
-      - lobe-dev-network
+      - modelnet-dev-network
 
   redis:
     image: redis:7-alpine
-    container_name: lobehub-toc-dev-redis
+    container_name: modelnet-toc-dev-redis
     restart: unless-stopped
     command: redis-server --save 60 1000 --appendonly yes
     volumes:
@@ -179,11 +224,11 @@ services:
       timeout: 3s
       retries: 10
     networks:
-      - lobe-dev-network
+      - modelnet-dev-network
 
   rustfs:
     image: rustfs/rustfs:latest
-    container_name: lobehub-toc-dev-rustfs
+    container_name: modelnet-toc-dev-rustfs
     restart: unless-stopped
     ports:
       - "127.0.0.1:${DEV_RUSTFS_PORT:-9180}:9000"
@@ -194,18 +239,29 @@ services:
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY}
     volumes:
       - rustfs_dev_data:/data
-    command: ["--access-key", "${RUSTFS_ACCESS_KEY}", "--secret-key", "${RUSTFS_SECRET_KEY}", "/data"]
+    command:
+      [
+        "--access-key",
+        "${RUSTFS_ACCESS_KEY}",
+        "--secret-key",
+        "${RUSTFS_SECRET_KEY}",
+        "/data",
+      ]
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:9000/health >/dev/null 2>&1 || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:9000/health >/dev/null 2>&1 || exit 1",
+        ]
       interval: 5s
       timeout: 3s
       retries: 30
     networks:
-      - lobe-dev-network
+      - modelnet-dev-network
 
   rustfs-init:
     image: minio/mc:latest
-    container_name: lobehub-toc-dev-rustfs-init
+    container_name: modelnet-toc-dev-rustfs-init
     depends_on:
       rustfs:
         condition: service_healthy
@@ -217,32 +273,39 @@ services:
       - |
         set -eux
         mc alias set rustfs "http://rustfs:9000" "${RUSTFS_ACCESS_KEY}" "${RUSTFS_SECRET_KEY}"
-        mc mb "rustfs/${RUSTFS_LOBE_BUCKET}" --ignore-existing
-        mc anonymous set-json "/bucket.config.json" "rustfs/${RUSTFS_LOBE_BUCKET}"
+        mc mb "rustfs/${MODELNET_STORAGE_BUCKET:-${RUSTFS_LOBE_BUCKET}}" --ignore-existing
+        mc anonymous set-json "/bucket.config.json" "rustfs/${MODELNET_STORAGE_BUCKET:-${RUSTFS_LOBE_BUCKET}}"
     env_file:
       - .env
       - .env.dev
     restart: "no"
     networks:
-      - lobe-dev-network
+      - modelnet-dev-network
 
   searxng:
     image: searxng/searxng:latest
-    container_name: lobehub-toc-dev-searxng
+    container_name: modelnet-toc-dev-searxng
     restart: unless-stopped
     volumes:
       - ./searxng-settings.yml:/etc/searxng/settings.yml:ro
     environment:
       SEARXNG_SETTINGS_FILE: /etc/searxng/settings.yml
     networks:
-      - lobe-dev-network
+      - modelnet-dev-network
 
 networks:
-  lobe-dev-network:
+  modelnet-dev-network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.2.0/24
 
 volumes:
   modelnet_dev_claims:
+    name: modelnet-toc-dev_claims
   postgres_dev_data:
+    name: modelnet-toc-dev_postgres
   redis_dev_data:
+    name: modelnet-toc-dev_redis
   rustfs_dev_data:
+    name: modelnet-toc-dev_rustfs

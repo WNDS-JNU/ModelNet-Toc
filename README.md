@@ -1,25 +1,25 @@
 # ModelNet ToC
 
-Self-hosted LobeHub ToC deployment for ModelNet, with:
+Self-hosted ModelNet ToC deployment for ModelNet, with:
 
-- LobeHub as the consumer-facing UI
+- ModelNet as the consumer-facing UI
 - HAProxy entry load balancing on `:3081`
 - A login-protected ModelNet capability leaderboard embedded at `/leaderboard`
-- PostgreSQL, Redis, RustFS/S3, and Searxng for the full LobeHub stack
-- A ModelNet-owned OpenAI-compatible gateway: LobeHub -> LiteLLM -> `modelnet-router` for aggregate/auto aliases, or directly to generated K8S backend endpoints for concrete model IDs
+- PostgreSQL, Redis, RustFS/S3, and Searxng for the full ModelNet stack
+- A ModelNet-owned OpenAI-compatible gateway: ModelNet -> `modelnet-router` -> registry-backed K8S backend endpoints
 
 ## Runtime Layout
 
 - Public ToC entry: `http://<server>:3081/`
 - Embedded leaderboard: `http://<server>:3081/leaderboard`
 - HAProxy service: `toc-lb`
-- LobeHub app service: `lobe`, pinned to a single container
-- Leaderboard API: `GET /api/modelnet/leaderboard`, served by the custom LobeHub image
-- Model gateway services: `modelnet-litellm` and `modelnet-router`, owned by this compose project
-- The public automatic networking model is `modelnet-auto`; concrete backend model IDs remain LiteLLM entries generated from the ModelNet registry.
+- ModelNet app service: `modelnet-app`, pinned to a single container
+- Leaderboard API: `GET /api/modelnet/leaderboard`, served by the custom ModelNet image
+- Model gateway service: `modelnet-router`, owned by this compose project
+- The public automatic networking model is `modelnet-auto`; Router discovers concrete backend model IDs from the ModelNet registry.
 
-The stack builds the custom LobeHub image from the vendored source tree at `./lobehub` by default.
-Override it with `LOBEHUB_TOC_SRC=/path/to/lobehub-source` only when testing another checkout.
+The stack builds the custom ModelNet image from the vendored source tree at `./modelnet-app` by default.
+Override it with `MODELNET_APP_SRC=/path/to/modelnet-app-source` only when testing another checkout.
 
 ## Bootstrap
 
@@ -35,20 +35,19 @@ Fill `.env` with generated secrets and the server IP. Do not commit `.env` or `.
 Generate the ModelNet model list from the Dify registry:
 
 ```bash
-python3 scripts/sync_modelnet_litellm.py
-python3 scripts/sync_modelnet_lobehub.py
+python3 scripts/sync_modelnet_app.py
 python3 scripts/sync_opencompass_leaderboard.py
 ```
 
 Start the stack:
 
 ```bash
-docker compose build lobe
-docker compose up -d --scale lobe=1
+docker compose build modelnet-app
+docker compose up -d --scale modelnet-app=1
 ```
 
-`docker-compose.yml` tags the custom image as `modelnet/lobehub-toc:2.2.0-modelnet` by
-default. Override the tag with `LOBE_IMAGE=...` if you publish it to a registry.
+`docker-compose.yml` tags the custom image as `modelnet/modelnet-toc:2.2.0-modelnet` by
+default. Override the tag with `MODELNET_APP_IMAGE=...` if you publish it to a registry.
 
 ## Local Benchmarks
 
@@ -121,15 +120,15 @@ After Dify refreshes `api/configs/model_net.yaml`, run:
 scripts/reload_modelnet.sh
 ```
 
-This regenerates LiteLLM config, `.env.modelnet`, and `leaderboard/data/opencompass-leaderboard.json`,
-then recreates `modelnet-router`, `modelnet-litellm`, and the single LobeHub container behind HAProxy.
+This regenerates `.env.modelnet` and `leaderboard/data/opencompass-leaderboard.json`,
+then rebuilds and recreates `modelnet-router` and the single ModelNet app container behind HAProxy.
 
 ## Verify
 
 ```bash
 docker compose ps
-curl -s -o /tmp/modelnet-models.json -w "%{http_code}\n" http://127.0.0.1:3090/v1/models
-curl -s -L -o /tmp/lobehub.html -w "%{http_code}\n" http://<server>:3081/
+curl -s -o /tmp/modelnet-health.json -w "%{http_code}\n" http://127.0.0.1:3092/healthz
+curl -s -L -o /tmp/modelnet.html -w "%{http_code}\n" http://<server>:3081/
 curl -s -L -o /tmp/leaderboard.html -w "%{http_code}\n" http://<server>:3081/leaderboard
 curl -s -o /tmp/leaderboard.json -w "%{http_code}\n" http://<server>:3081/api/modelnet/leaderboard
 curl -s -o /tmp/rustfs-health.txt -w "%{http_code}\n" http://<server>:9100/health
@@ -138,8 +137,8 @@ curl -s -o /tmp/rustfs-health.txt -w "%{http_code}\n" http://<server>:9100/healt
 Expected:
 
 - `toc-lb` is running
-- one `lobe` container is healthy
-- `modelnet-router` is healthy and `modelnet-litellm` is running
+- one `modelnet-app` container is healthy
+- `modelnet-router` is healthy
 - ToC entry returns `200`
 - leaderboard HTML and JSON return `200` for a logged-in session
 - RustFS health returns `200`

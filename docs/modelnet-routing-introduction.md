@@ -21,7 +21,7 @@
 ```mermaid
 flowchart LR
     User["用户 / 业务应用"]
-    Lobe["LobeHub"]
+    ModelNetApp["ModelNet"]
     Lite["LiteLLM"]
     Router["modelnet-router"]
     Registry["model_net.yaml\n模型注册表"]
@@ -30,8 +30,8 @@ flowchart LR
     K8s["K8s / Prometheus\n健康与负载"]
     Backend["vLLM / llama.cpp /\nOpenAI-compatible / Ollama"]
 
-    User --> Lobe
-    Lobe --> Lite
+    User --> ModelNetApp
+    ModelNetApp --> Lite
     Lite --> AutoAlias
     Lite --> Concrete
     AutoAlias --> Router

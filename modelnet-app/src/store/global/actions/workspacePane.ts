@@ -1,0 +1,173 @@
+import { AGENT_CHAT_URL } from '@lobechat/const';
+import { produce } from 'immer';
+
+import { getActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
+import { INBOX_SESSION_ID } from '@/const/session';
+import type { GlobalStore } from '@/store/global';
+import type { ModelDetailPanelExpandedKey, WorkingSidebarTab } from '@/store/global/initialState';
+import { readOverridableField } from '@/store/global/selectors/systemStatus';
+import type { StoreSetter } from '@/store/types';
+import { getStableNavigate } from '@/utils/stableNavigate';
+import { setNamespace } from '@/utils/storeDebug';
+
+const n = setNamespace('w');
+
+type Setter = StoreSetter<GlobalStore>;
+export const globalWorkspaceSlice = (set: Setter, get: () => GlobalStore, _api?: unknown) =>
+  new GlobalWorkspacePaneActionImpl(set, get, _api);
+
+export class GlobalWorkspacePaneActionImpl {
+  readonly #get: () => GlobalStore;
+
+  constructor(set: Setter, get: () => GlobalStore, _api?: unknown) {
+    void _api;
+    void set;
+    this.#get = get;
+  }
+
+  switchBackToChat = (sessionId?: string): void => {
+    const target = AGENT_CHAT_URL(sessionId || INBOX_SESSION_ID, this.#get().isMobile);
+    getStableNavigate()?.(target);
+  };
+
+  toggleAgentSystemRoleExpand = (agentId: string, expanded?: boolean): void => {
+    const { status } = this.#get();
+    const systemRoleExpandedMap = status.systemRoleExpandedMap || {};
+    const nextExpanded = typeof expanded === 'boolean' ? expanded : !systemRoleExpandedMap[agentId];
+
+    this.#get().updateSystemStatus(
+      {
+        systemRoleExpandedMap: {
+          ...systemRoleExpandedMap,
+          [agentId]: nextExpanded,
+        },
+      },
+      n('toggleAgentSystemRoleExpand', { agentId, expanded: nextExpanded }),
+    );
+  };
+
+  toggleCommandMenu = (visible?: boolean): void => {
+    const currentVisible = this.#get().status.showCommandMenu;
+    this.#get().updateSystemStatus({
+      showCommandMenu: typeof visible === 'boolean' ? visible : !currentVisible,
+    });
+  };
+
+  toggleExpandInputActionbar = (newValue?: boolean): void => {
+    const expandInputActionbar =
+      typeof newValue === 'boolean' ? newValue : !this.#get().status.expandInputActionbar;
+
+    this.#get().updateSystemStatus(
+      { expandInputActionbar },
+      n('toggleExpandInputActionbar', newValue),
+    );
+  };
+
+  toggleExpandSessionGroup = (id: string, expand: boolean): void => {
+    const { status } = this.#get();
+    // Read the effective (overlay-aware) value so workspace-mode toggles compose
+    // off the workspace list, not the personal one underneath it.
+    const currentKeys =
+      readOverridableField(status, 'expandSessionGroupKeys', getActiveWorkspaceId()) ?? [];
+    const nextExpandSessionGroup = produce(currentKeys, (draft: string[]) => {
+      if (expand) {
+        if (draft.includes(id)) return;
+        draft.push(id);
+      } else {
+        const index = draft.indexOf(id);
+        if (index !== -1) draft.splice(index, 1);
+      }
+    });
+    this.#get().updateSystemStatus({ expandSessionGroupKeys: nextExpandSessionGroup });
+  };
+
+  toggleLeftPanel = (newValue?: boolean): void => {
+    const showLeftPanel =
+      typeof newValue === 'boolean' ? newValue : !this.#get().status.showLeftPanel;
+    this.#get().updateSystemStatus({ showLeftPanel }, n('toggleLeftPanel', newValue));
+  };
+
+  toggleAgentBuilderPanel = (newValue?: boolean): void => {
+    const showAgentBuilderPanel =
+      typeof newValue === 'boolean' ? newValue : !this.#get().status.showAgentBuilderPanel;
+
+    this.#get().updateSystemStatus(
+      { showAgentBuilderPanel },
+      n('toggleAgentBuilderPanel', newValue),
+    );
+  };
+
+  togglePageAgentPanel = (newValue?: boolean): void => {
+    const showPageAgentPanel =
+      typeof newValue === 'boolean' ? newValue : !this.#get().status.showPageAgentPanel;
+
+    this.#get().updateSystemStatus({ showPageAgentPanel }, n('togglePageAgentPanel', newValue));
+  };
+
+  toggleTaskAgentPanel = (newValue?: boolean): void => {
+    const showTaskAgentPanel =
+      typeof newValue === 'boolean' ? newValue : !this.#get().status.showTaskAgentPanel;
+
+    this.#get().updateSystemStatus({ showTaskAgentPanel }, n('toggleTaskAgentPanel', newValue));
+  };
+
+  toggleMobilePortal = (newValue?: boolean): void => {
+    const mobileShowPortal =
+      typeof newValue === 'boolean' ? newValue : !this.#get().status.mobileShowPortal;
+
+    this.#get().updateSystemStatus({ mobileShowPortal }, n('toggleMobilePortal', newValue));
+  };
+
+  toggleMobileTopic = (newValue?: boolean): void => {
+    const mobileShowTopic =
+      typeof newValue === 'boolean' ? newValue : !this.#get().status.mobileShowTopic;
+
+    this.#get().updateSystemStatus({ mobileShowTopic }, n('toggleMobileTopic', newValue));
+  };
+
+  toggleRightPanel = (newValue?: boolean): void => {
+    const showRightPanel =
+      typeof newValue === 'boolean' ? newValue : !this.#get().status.showRightPanel;
+
+    this.#get().updateSystemStatus({ showRightPanel }, n('toggleRightPanel', newValue));
+  };
+
+  toggleSystemRole = (newValue?: boolean): void => {
+    const showSystemRole =
+      typeof newValue === 'boolean' ? newValue : !this.#get().status.mobileShowTopic;
+
+    this.#get().updateSystemStatus({ showSystemRole }, n('toggleMobileTopic', newValue));
+  };
+
+  setWorkingSidebarTab = (tab: WorkingSidebarTab): void => {
+    if (this.#get().status.workingSidebarTab === tab) return;
+    this.#get().updateSystemStatus({ workingSidebarTab: tab }, n('setWorkingSidebarTab', tab));
+  };
+
+  revealInFilesTab = (relativePath: string): void => {
+    this.#get().setWorkingSidebarTab('files');
+    this.#get().updateSystemStatus(
+      { workingSidebarRevealRequest: { nonce: Date.now(), path: relativePath } },
+      n('revealInFilesTab'),
+    );
+  };
+
+  toggleWideScreen = (newValue?: boolean): void => {
+    const noWideScreen =
+      typeof newValue === 'boolean' ? !newValue : !this.#get().status.noWideScreen;
+
+    this.#get().updateSystemStatus({ noWideScreen }, n('toggleWideScreen', newValue));
+  };
+
+  updateModelDetailPanelExpandedKeys = (keys: ModelDetailPanelExpandedKey[]): void => {
+    this.#get().updateSystemStatus(
+      { modelDetailPanelExpandedKeys: keys },
+      n('updateModelDetailPanelExpandedKeys', keys),
+    );
+  };
+}
+
+export type GlobalWorkspacePaneAction = Pick<
+  GlobalWorkspacePaneActionImpl,
+  keyof GlobalWorkspacePaneActionImpl
+>;

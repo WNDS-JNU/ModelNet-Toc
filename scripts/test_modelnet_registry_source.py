@@ -50,6 +50,15 @@ def ingress() -> dict:
     }
 
 
+def disabled_ingress() -> dict:
+    route = ingress()
+    route["metadata"]["name"] = "gemma-3-4b-it-int4-awq"
+    path = route["spec"]["rules"][0]["http"]["paths"][0]
+    path["path"] = "/gaunernst/gemma-3-4b-it-int4-awq"
+    path["backend"]["service"]["name"] = "gemma-3-4b-it-int4-awq"
+    return route
+
+
 def nodeport_service() -> dict:
     return {
         "metadata": {"name": "deploy-jetson-16g-1-meta-llama-31-8b-instruct-q80"},
@@ -134,6 +143,35 @@ class ModelNetRegistrySourceTest(unittest.TestCase):
         self.assertEqual(result["models"][0]["backend"], "vllm_chat")
         self.assertEqual(result["models"][1]["backend"], "llama_cpp")
 
+    def test_discover_model_registry_filters_default_disabled_model_ids(self) -> None:
+        settings = modelnet_registry_source.K8sDiscoverySettings(namespaces=("inference",))
+
+        def probe(base_url: str, timeout: float) -> str:
+            del timeout
+            if "gemma-3-4b" in base_url:
+                return "gaunernst/gemma-3-4b-it-int4-awq"
+            return "Qwen/Qwen3-4B-AWQ"
+
+        result = modelnet_registry_source.discover_model_registry(
+            settings,
+            client=FakeK8sClient([ingress(), disabled_ingress()]),
+            probe_func=probe,
+        )
+        ids = {model["id"] for model in result["models"]}
+
+        self.assertIn("inference-qwen-qwen3-4b-awq", ids)
+        self.assertNotIn("inference-gaunernst-gemma-3-4b-it-int4-awq", ids)
+        self.assertEqual(
+            result["disabled_models"],
+            [
+                {
+                    "id": "inference-gaunernst-gemma-3-4b-it-int4-awq",
+                    "model_name": "gaunernst/gemma-3-4b-it-int4-awq",
+                    "reason": "disabled_model_id",
+                }
+            ],
+        )
+
     def test_discover_model_registry_includes_default_siliconflow_models(self) -> None:
         settings = modelnet_registry_source.K8sDiscoverySettings(namespaces=())
 
@@ -173,6 +211,7 @@ class ModelNetRegistrySourceTest(unittest.TestCase):
             self.assertIn("chat.general", payload["capabilities"])
             self.assertEqual(payload["models"][0]["id"], "inference-qwen-qwen3-4b-awq")
             self.assertEqual(json.loads(status_output.read_text(encoding="utf-8"))["model_count"], 3)
+            self.assertEqual(status["disabled_model_count"], 0)
 
     def test_dry_run_does_not_write_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

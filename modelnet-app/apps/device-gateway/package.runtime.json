@@ -1,0 +1,13 @@
+{
+  "dependencies": {
+    "@hono/node-server": "^1.19.14",
+    "hono": "^4.12.27",
+    "jose": "^6.2.3",
+    "ws": "^8.21.0",
+    "zod": "^3.25.76"
+  },
+  "name": "@modelnet/device-gateway-runtime",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0"
+}

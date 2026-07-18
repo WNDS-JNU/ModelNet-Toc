@@ -1,5 +1,7 @@
 services:
-  lobe:
+  modelnet-app:
     environment:
       MODELNET_PROXY_URL: http://modelnet-router:8000/v1
       MODELNET_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
+      OPENAI_PROXY_URL: http://modelnet-router:8000/v1
+      OPENAI_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}

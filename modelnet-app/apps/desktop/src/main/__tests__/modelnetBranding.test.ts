@@ -1,0 +1,73 @@
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { dirname, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { describe, expect, it } from 'vitest';
+
+const desktopRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+const repoRoot = resolve(desktopRoot, '../..');
+
+const desktopOnboardingLocaleSurfaces = readdirSync(resolve(repoRoot, 'locales'), {
+  withFileTypes: true,
+})
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => resolve(repoRoot, 'locales', entry.name, 'desktop-onboarding.json'))
+  .filter(existsSync);
+
+const desktopLocaleCommonSurfaces = readdirSync(resolve(desktopRoot, 'resources/locales'), {
+  withFileTypes: true,
+})
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => resolve(desktopRoot, 'resources/locales', entry.name, 'common.json'));
+
+const brandingSurfaces = [
+  resolve(repoRoot, 'packages/locales/src/default/desktop-onboarding.ts'),
+  ...desktopOnboardingLocaleSurfaces,
+  resolve(repoRoot, 'src/routes/(desktop)/desktop-onboarding/_layout/index.tsx'),
+  resolve(desktopRoot, 'index.html'),
+  resolve(desktopRoot, 'popup.html'),
+  resolve(desktopRoot, 'resources/splash.html'),
+  resolve(desktopRoot, 'resources/error.html'),
+  resolve(desktopRoot, 'src/main/locales/default/common.ts'),
+  ...desktopLocaleCommonSurfaces,
+  resolve(desktopRoot, 'stubs/business-const/src/index.ts'),
+];
+
+const readSurface = (file: string) => readFileSync(file, 'utf8');
+
+const displayPath = (file: string) => relative(repoRoot, file);
+
+describe('ModelNet desktop branding', () => {
+  it('does not show LobeHub on desktop auth and startup surfaces', () => {
+    const offenders = brandingSurfaces.flatMap((file) =>
+      readSurface(file)
+        .split(/\r?\n/)
+        .flatMap((line, index) =>
+          line.includes('LobeHub') ? [`${displayPath(file)}:${index + 1}: ${line.trim()}`] : [],
+        ),
+    );
+
+    expect(offenders).toEqual([]);
+  });
+
+  it('does not embed the retired Lobe wordmark in the splash screen', () => {
+    const splash = readSurface(resolve(desktopRoot, 'resources/splash.html'));
+
+    expect(splash).not.toMatch(/lobe-brand-loading|viewBox="0 0 940 320"/i);
+  });
+
+  it('keeps desktop auth and startup surfaces branded as ModelNet', () => {
+    const missing = brandingSurfaces
+      .filter((file) => !readSurface(file).includes('ModelNet'))
+      .map(displayPath);
+
+    expect(missing).toEqual([]);
+  });
+  it('uses the ModelNet dev identity and keeps the legacy user-data override', () => {
+    const preAppInit = readSurface(resolve(desktopRoot, 'src/main/pre-app-init.ts'));
+
+    expect(preAppInit).toContain("app.setName('modelnet-desktop-dev')");
+    expect(preAppInit).toContain('process.env.MODELNET_DESKTOP_USER_DATA_DIR');
+    expect(preAppInit).toContain('process.env.LOBE_DESKTOP_USER_DATA_DIR');
+  });
+});

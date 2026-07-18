@@ -4,13 +4,13 @@
 
 工作目录：`/home/duxianghe/ModelNet-toc`
 
-本文档基于当前 4A100 工作树、Docker Compose 配置、LiteLLM 配置、`modelnet-router` 代码和现有设计文档整理。重点描述 TOC/LobeHub 通过 LiteLLM 接入 ModelNet Gateway，再由 Gateway 调度 Kubernetes 上异构模型后端的真实架构、请求链路、能力边界和运维注意事项。
+本文档基于当前 4A100 工作树、Docker Compose 配置、LiteLLM 配置、`modelnet-router` 代码和现有设计文档整理。重点描述 TOC/ModelNet app 通过 LiteLLM 接入 ModelNet Gateway，再由 Gateway 调度 Kubernetes 上异构模型后端的真实架构、请求链路、能力边界和运维注意事项。
 
 ## 1. 执行摘要
 
 当前系统采用三层 LLM 接入架构：
 
-1. **TOC/LobeHub 应用层**
+1. **TOC/ModelNet app 应用层**
    - 面向用户提供聊天 UI、模型选择、ModelNet 并联/串联/自动组网入口。
    - 通过 OpenAI-compatible 协议访问内部 LiteLLM。
    - 在请求体中注入 `modelnet` 扩展字段，用于告诉 Gateway 使用何种 runner、aggregator、候选模型和 trace 选项。
@@ -41,18 +41,18 @@
 
 | 组件 | 容器名 | 端口/网络 | 当前职责 |
 | --- | --- | --- | --- |
-| TOC/LobeHub | `lobehub-toc-lobe` | container `3210` | 用户应用、聊天请求构造、ModelNet UI |
+| TOC/ModelNet app | `modelnet-toc-app` | container `3210` | 用户应用、聊天请求构造、ModelNet UI |
 | HAProxy | `lobehub-toc-lb` | host `0.0.0.0:3081 -> 80` | TOC HTTP 入口 |
 | LiteLLM | `modelnet-litellm` | host `127.0.0.1:3090 -> 8000`，compose 内 `litellm:8000` | OpenAI-compatible 代理 |
 | ModelNet Gateway | `modelnet-router` | host `127.0.0.1:3092 -> 8000`，alias `modelnet-gateway` | 自动路由、协作执行、K8S backend 调度 |
-| Postgres | `lobehub-toc-postgres` | compose 内 `5432` | LobeHub 数据库 |
-| Redis | `lobehub-toc-redis` | compose 内 `6379` | LobeHub 缓存/队列 |
+| Postgres | `lobehub-toc-postgres` | compose 内 `5432` | ModelNet 数据库 |
+| Redis | `lobehub-toc-redis` | compose 内 `6379` | ModelNet 缓存/队列 |
 | RustFS | `lobehub-toc-rustfs` | host `9100/9101` | S3-compatible 文件存储 |
 | searxng | `lobehub-toc-searxng` | compose 内 `8080` | 搜索服务 |
 
 当前生产状态检查显示：
 
-- `lobehub-toc-lobe` healthy。
+- `modelnet-toc-app` healthy。
 - `modelnet-router` healthy。
 - LiteLLM 容器运行中。
 - Gateway 只绑定本机 `127.0.0.1:3092`，不直接公网暴露。
@@ -67,15 +67,15 @@ flowchart LR
     Aliyun["Aliyun Nginx\n123.56.135.150"]
     Tailscale["Tailscale\nAliyun -> 4A100"]
     Haproxy["lobehub-toc-lb\n:3081 -> lobe:3210"]
-    Lobe["lobehub-toc-lobe\nTOC/LobeHub"]
+    ModelNetApp["modelnet-toc-app\nTOC/ModelNet app"]
     LiteLLM["modelnet-litellm\nlitellm:8000\nhost 127.0.0.1:3090"]
     Gateway["modelnet-router\nmodelnet-router:8000\nhost 127.0.0.1:3092"]
     Registry["/app/model_net.yaml\nbind from Dify registry"]
     K8S["Kubernetes inference backends\nvLLM / llama.cpp"]
     Dify["Dify docker_default network\noptional serial workflow runtime"]
 
-    Public --> Aliyun --> Tailscale --> Haproxy --> Lobe
-    Lobe --> LiteLLM
+    Public --> Aliyun --> Tailscale --> Haproxy --> ModelNetApp
+    ModelNetApp --> LiteLLM
     LiteLLM -->|modelnet/modelnet-auto| Gateway
     LiteLLM -->|concrete model aliases| K8S
     Gateway --> Registry
@@ -91,7 +91,7 @@ flowchart LR
 
 | 组件 | 容器名 | 端口/网络 | 当前职责 |
 | --- | --- | --- | --- |
-| Dev TOC/LobeHub | `lobehub-toc-dev-lobe` | container `3210` | 开发版 TOC |
+| Dev TOC/ModelNet app | `lobehub-toc-dev-lobe` | container `3210` | 开发版 TOC |
 | Dev HAProxy | `lobehub-toc-dev-lb` | host `127.0.0.1:3181 -> 80` | 本机开发入口 |
 | Dev LiteLLM | `modelnet-litellm-dev` | host `127.0.0.1:3190 -> 8000` | 开发版 OpenAI proxy |
 | Dev Gateway | `modelnet-router-dev` | host `127.0.0.1:3192 -> 8000` | 开发版 Gateway |
@@ -116,7 +116,7 @@ flowchart LR
 
 LiteLLM 在当前架构中不是模型智能调度器，而是一个 **OpenAI-compatible 协议网关与模型别名解析层**：
 
-- 对 TOC/LobeHub 提供 OpenAI-compatible endpoint。
+- 对 TOC/ModelNet app 提供 OpenAI-compatible endpoint。
 - 通过 master key 保护入口。
 - 根据 `litellm/modelnet-config.yaml` 将模型名映射到：
   - ModelNet Gateway 聚合入口：`modelnet`、`modelnet-auto`。
@@ -363,7 +363,7 @@ Gateway 使用两级内部结构：
 
 ```mermaid
 sequenceDiagram
-    participant UI as TOC/LobeHub
+    participant UI as TOC/ModelNet app
     participant LL as LiteLLM
     participant BE as Concrete Backend
 
@@ -386,7 +386,7 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant UI as TOC/LobeHub
+    participant UI as TOC/ModelNet app
     participant LL as LiteLLM
     participant GW as ModelNet Gateway
     participant K8S as K8S Backends
@@ -1216,6 +1216,6 @@ vLLM 如果缺少 device metrics，Gateway 会更多依赖 K8S ready、endpoint 
 - **LiteLLM** 是轻量、通用、OpenAI-compatible 的代理和模型别名层。它负责让 TOC 能用统一协议访问聚合入口和具体模型，并通过补丁保证 ModelNet 扩展参数不会丢失。
 - **ModelNet Gateway** 是 ModelNet 的智能控制与执行核心。它负责理解 `modelnet` 扩展语义、维护后端拓扑、做租户/能力/健康/负载约束、选择模型、执行多模型协作、合成结果、输出 trace 和 usage metadata。
 - **Kubernetes 后端池** 是真实推理能力来源。Gateway 通过 registry、K8S API 和 Prometheus 把后端运行状态纳入路由决策。
-- **TOC/LobeHub** 是用户体验和请求编排入口。它把“自动组网 / 并联 / 串联”等产品概念转换成 Gateway 可执行的 `collaboration_plan`。
+- **TOC/ModelNet app** 是用户体验和请求编排入口。它把“自动组网 / 并联 / 串联”等产品概念转换成 Gateway 可执行的 `collaboration_plan`。
 
 最重要的操作原则是：**不要把 LiteLLM 暴露公网来解决 ModelNet 错误，也不要把 backend 404 简单归因于公网链路。** 当前公开错误更常见的根因在请求是否正确进入 Gateway、LiteLLM 是否保留 `modelnet` 参数、Responses API 是否被错误转发到不兼容后端，以及 `modelnet` / `modelnet-auto` alias 是否选对。

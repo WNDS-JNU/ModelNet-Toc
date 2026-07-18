@@ -1,0 +1,47 @@
+# Package an already-built ModelNet standalone bundle without rebuilding in Docker.
+#
+# This is intentionally based on a known-good runtime image: it provides the
+# distroless Node runtime and the extra pg/drizzle dependencies used by the
+# database launcher. Build the Next/Vite bundle on the trusted build host first.
+ARG BASE_IMAGE=modelnet/modelnet-toc:cycle-fix-20260712
+FROM ${BASE_IMAGE} AS previous_runtime
+
+# The base image contains an older /app tree. Reusing it directly makes Docker
+# merge the two pnpm layouts, which is unsafe when a package changes from a
+# symlink to a directory. Start with the same distroless runtime files but add
+# a fresh /app bundle.
+FROM scratch
+
+COPY --from=previous_runtime /bin /bin
+COPY --from=previous_runtime /etc /etc
+COPY --from=previous_runtime /lib /lib
+COPY --from=previous_runtime /lib64 /lib64
+COPY --from=previous_runtime /usr /usr
+COPY --from=previous_runtime /var /var
+COPY --from=previous_runtime /tmp /tmp
+COPY --from=previous_runtime /home /home
+
+# The database launcher intentionally keeps these runtime-only dependencies
+# outside Next's output tracing, matching the regular production Dockerfile.
+COPY --from=previous_runtime /app/node_modules/.pnpm /app/node_modules/.pnpm
+COPY --from=previous_runtime /app/node_modules/drizzle-orm /app/node_modules/drizzle-orm
+
+COPY --chown=1001:1001 .next/standalone /app/
+COPY --chown=1001:1001 .next/static /app/.next/static
+COPY --chown=1001:1001 public/_spa /app/public/_spa
+COPY --chown=1001:1001 packages/database/migrations /app/migrations
+COPY --chown=1001:1001 scripts/migrateServerDB/docker.cjs /app/docker.cjs
+ENV NODE_ENV="production" \
+    NODE_OPTIONS="--dns-result-order=ipv4first --use-openssl-ca" \
+    SSL_CERT_FILE="/etc/ssl/certs/ca-certificates.crt" \
+    MIDDLEWARE_REWRITE_THROUGH_LOCAL="1" \
+    HOSTNAME="0.0.0.0" \
+    PORT="3210" \
+    DATABASE_DRIVER="node"
+
+USER nextjs
+ENTRYPOINT ["/bin/node"]
+CMD ["/app/startServer.js"]
+COPY --chown=1001:1001 scripts/migrateServerDB/errorHint.js /app/errorHint.js
+COPY --chown=1001:1001 scripts/serverLauncher/startServer.js /app/startServer.js
+COPY --chown=1001:1001 scripts/_shared /app/scripts/_shared

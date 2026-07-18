@@ -10,14 +10,14 @@
 2. `ModelNet 并联`：用户选 2-16 个模型并行回答，再合成。
 3. `ModelNet 串联`：用户选 2-8 个模型按顺序改写/审阅。
 
-核心原则很简单：**用户选择信息不是 LiteLLM 决策出来的，而是 TOC/LobeHub 写进请求体 `modelnet.collaboration_plan`，LiteLLM 原样透传，ModelNet Gateway 解析后执行。**
+核心原则很简单：**用户选择信息不是 LiteLLM 决策出来的，而是 TOC/ModelNet 写进请求体 `modelnet.collaboration_plan`，LiteLLM 原样透传，ModelNet Gateway 解析后执行。**
 
 ## 0. 公共链路
 
 生产链路：
 
 ```text
-TOC/LobeHub
+TOC/ModelNet
   -> modelnet-litellm:8000 /v1/chat/completions
   -> modelnet-router:8000 /v1/chat/completions
   -> K8S backend models
@@ -75,7 +75,7 @@ allowed_openai_params:
 
 ### UI 做法
 
-在 TOC/LobeHub 里选择 OpenAI provider 下的：
+在 TOC/ModelNet 里选择 OpenAI provider 下的：
 
 ```text
 modelnet-auto
@@ -236,7 +236,7 @@ curl -sS http://127.0.0.1:3190/v1/chat/completions \
 
 ### UI 做法
 
-在 TOC/LobeHub 中选择：
+在 TOC/ModelNet 中选择：
 
 ```text
 ModelNet 并联
@@ -448,7 +448,7 @@ curl -sS http://127.0.0.1:3190/v1/chat/completions \
 
 ### UI 做法
 
-在 TOC/LobeHub 中选择：
+在 TOC/ModelNet 中选择：
 
 ```text
 ModelNet 串联

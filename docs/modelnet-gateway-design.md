@@ -14,7 +14,7 @@
 
 ```mermaid
 flowchart TB
-    Client["Client / App\nLobeHub, LiteLLM, SDK, custom apps"]
+    Client["Client / App\nModelNet, LiteLLM, SDK, custom apps"]
 
     subgraph Northbound["Northbound API Adapters"]
         OpenAI["OpenAI-compatible\n/v1/chat/completions\n/v1/models"]

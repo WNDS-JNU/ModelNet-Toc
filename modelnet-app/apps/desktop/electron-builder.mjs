@@ -1,0 +1,334 @@
+import { execSync } from 'node:child_process';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import dotenv from 'dotenv';
+
+import {
+  copyExternalRuntimeModulesToSource,
+  getExternalRuntimeModulesFilesConfig,
+} from './external-runtime-deps.config.mjs';
+import {
+  copyNativeModules,
+  copyNativeModulesToSource,
+  getAsarUnpackPatterns,
+  getNativeModulesFilesConfig,
+} from './native-deps.config.mjs';
+
+dotenv.config();
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const packageJSON = JSON.parse(await fs.readFile(path.join(__dirname, 'package.json'), 'utf8'));
+const desktopProductName = 'ModelNet Desktop';
+const linuxExecutableName = 'modelnet-desktop';
+const appId = 'cn.edu.jnu.wnds.modelnet-desktop';
+const protocolScheme = 'modelnet';
+
+const channel = process.env.UPDATE_CHANNEL;
+const arch = os.arch();
+const hasAppleCertificate = Boolean(process.env.CSC_LINK);
+
+// 自定义更新服务器 URL (用于 stable 频道)
+const updateServerUrl = process.env.UPDATE_SERVER_URL;
+
+console.info(`🚄 Build Version ${packageJSON.version}, Channel: ${channel}`);
+console.info(`🏗️ Building for architecture: ${arch}`);
+
+// Channel identity derived solely from UPDATE_CHANNEL env var.
+// Supported channels: stable, nightly, canary
+const isStable = !channel || channel === 'stable';
+const isNightly = channel === 'nightly';
+
+// Strip trailing channel path from URL for re-appending the correct channel
+// Handles both base URL (https://cdn.example.com) and legacy URL with channel (https://cdn.example.com/stable)
+const stripChannelSuffix = (url) => url.replace(/\/(stable|nightly|canary|beta)\/?$/, '');
+
+// 根据 channel 配置 publish provider
+// - 所有渠道 + UPDATE_SERVER_URL: 使用 generic (S3)
+// - 无 UPDATE_SERVER_URL: 禁用发布和更新元数据生成
+const getPublishConfig = () => {
+  const channelPath = isStable ? 'stable' : isNightly ? 'nightly' : channel || 'stable';
+
+  if (updateServerUrl) {
+    const baseUrl = stripChannelSuffix(updateServerUrl);
+    const fullUrl = `${baseUrl}/${channelPath}`;
+    console.info(`📦 ${channelPath} channel: Using generic provider (${fullUrl})`);
+    return [
+      {
+        provider: 'generic',
+        url: fullUrl,
+      },
+    ];
+  }
+
+  console.info(`📦 ${channelPath} channel: No UPDATE_SERVER_URL, publishing disabled`);
+  return null;
+};
+
+// Keep only these Electron Framework localization folders (*.lproj)
+// (aligned with previous Electron Forge build config)
+const keepLanguages = new Set(['en', 'en_GB', 'en-US', 'en_US']);
+
+// https://www.electron.build/code-signing-mac#how-to-disable-code-signing-during-the-build-process-on-macos
+if (!hasAppleCertificate) {
+  // Disable auto discovery to keep electron-builder from searching unavailable signing identities
+  process.env.CSC_IDENTITY_AUTO_DISCOVERY = 'false';
+  console.info('⚠️ Apple certificate link not found, macOS artifacts will be unsigned.');
+}
+
+/**
+ * @type {import('electron-builder').Configuration}
+ * @see https://www.electron.build/configuration
+ */
+const config = {
+  /**
+   * BeforePack hook to resolve pnpm symlinks for native modules.
+   * This ensures native modules are properly included in the asar archive.
+   */
+  beforePack: async () => {
+    await copyNativeModulesToSource();
+    await copyExternalRuntimeModulesToSource();
+
+    // agent-browser is no longer bundled in the installer — BinaryManager
+    // lazily downloads it on first use into the per-user cache dir. See
+    // apps/desktop/src/main/modules/binaries/agentBrowserBinaries.ts.
+
+    // Build and copy CLI bundle for embedding
+    console.info('📦 Building CLI for embedding...');
+    execSync('npm run build:cli', { stdio: 'inherit', cwd: __dirname });
+    const cliSrc = path.resolve(__dirname, '../cli/dist/index.js');
+    const legacyCliDest = path.resolve(__dirname, 'resources/bin/lobe-cli.js');
+    const cliDest = path.resolve(__dirname, 'resources/bin/modelnet-cli.js');
+    await fs.mkdir(path.dirname(cliDest), { recursive: true });
+    await fs.rm(legacyCliDest, { force: true });
+    await fs.copyFile(cliSrc, cliDest);
+
+    // Write a minimal package.json next to the CLI bundle so that
+    // createRequire('../package.json') resolves correctly in the packaged app.
+    // The CLI script lives at Resources/bin/modelnet-cli.js, so '../package.json'
+    // resolves to Resources/package.json.
+    const cliPkg = JSON.parse(
+      await fs.readFile(path.resolve(__dirname, '../cli/package.json'), 'utf8'),
+    );
+    await fs.writeFile(
+      path.resolve(__dirname, 'resources/cli-package.json'),
+      JSON.stringify({ name: '@modelnet/cli', type: 'module', version: cliPkg.version }),
+    );
+    console.info('✅ CLI bundle copied to resources/bin/modelnet-cli.js');
+  },
+  /**
+   * AfterPack hook for post-processing:
+   * 1. Copy native modules to asar.unpacked (resolving pnpm symlinks)
+   * 2. Remove unused Electron Framework localizations
+   *
+   * @see https://github.com/electron-userland/electron-builder/issues/9254
+   * @see https://github.com/MultiboxLabs/flow-browser/pull/159
+   * @see https://github.com/electron/packager/pull/1806
+   */
+  afterPack: async (context) => {
+    const isMac = ['darwin', 'mas'].includes(context.electronPlatformName);
+
+    // Determine resources path based on platform
+    let resourcesPath;
+    if (isMac) {
+      resourcesPath = path.join(
+        context.appOutDir,
+        `${context.packager.appInfo.productFilename}.app`,
+        'Contents',
+        'Resources',
+      );
+    } else {
+      // Windows and Linux: resources is directly in appOutDir
+      resourcesPath = path.join(context.appOutDir, 'resources');
+    }
+
+    // Copy native modules to asar.unpacked, resolving pnpm symlinks
+    const unpackedNodeModules = path.join(resourcesPath, 'app.asar.unpacked', 'node_modules');
+    await copyNativeModules(unpackedNodeModules);
+
+    // macOS-specific post-processing
+    if (!isMac) {
+      return;
+    }
+
+    // Remove unused Electron Framework localizations to reduce app size
+    const frameworkResourcePath = path.join(
+      context.appOutDir,
+      `${context.packager.appInfo.productFilename}.app`,
+      'Contents',
+      'Frameworks',
+      'Electron Framework.framework',
+      'Versions',
+      'A',
+      'Resources',
+    );
+
+    try {
+      const entries = await fs.readdir(frameworkResourcePath);
+      await Promise.all(
+        entries.map(async (file) => {
+          if (!file.endsWith('.lproj')) return;
+
+          const lang = file.split('.')[0];
+          if (keepLanguages.has(lang)) return;
+
+          await fs.rm(path.join(frameworkResourcePath, file), { force: true, recursive: true });
+        }),
+      );
+    } catch {
+      // Non-critical: folder may not exist depending on packaging details
+    }
+  },
+  appId,
+  productName: desktopProductName,
+  extraMetadata: {
+    // Keep author structured: electron-builder reads author.name for the
+    // Windows CompanyName version resource. A string leaves Electron's
+    // upstream "GitHub, Inc." value untouched.
+    author: { name: 'ModelNet' },
+    description: 'ModelNet Desktop Application',
+    homepage: 'http://123.56.135.150',
+    name: 'modelnet-desktop',
+    productName: desktopProductName,
+    repository: {
+      type: 'git',
+      url: 'https://github.com/WNDS-JNU/ModelNet-Toc.git',
+    },
+  },
+  appImage: {
+    artifactName: '${productName}-${version}.${ext}',
+  },
+
+  // Native modules must be unpacked from asar to work correctly
+  asarUnpack: getAsarUnpackPatterns(),
+
+  detectUpdateChannel: true,
+
+  directories: {
+    buildResources: 'build',
+    output: 'release',
+  },
+
+  dmg: {
+    artifactName: '${productName}-${version}-${arch}.${ext}',
+    background: 'resources/modelnet-dmg.png',
+    contents: [
+      { type: 'file', x: 150, y: 240 },
+      { type: 'link', path: '/Applications', x: 450, y: 240 },
+    ],
+    iconSize: 80,
+    window: {
+      height: 400,
+      width: 600,
+    },
+  },
+
+  electronDownload: {
+    mirror: 'https://npmmirror.com/mirrors/electron/',
+  },
+
+  files: [
+    'dist',
+    'resources',
+    'dist/renderer/**/*',
+    '!dist/renderer/_spa/**',
+    '!dist/renderer/_spa-auth/**',
+    '!dist/renderer/screenshots/**',
+    '!dist/renderer/avatars/lobe-ai.png',
+    '!dist/renderer/avatars/agent-builder.png',
+    '!dist/renderer/avatars/agent-default.png',
+    '!dist/renderer/avatars/doc-copilot.png',
+    '!resources/locales',
+    '!resources/modelnet-dmg.png',
+    // Exclude all node_modules first
+    '!node_modules',
+    // Then explicitly include native modules using object form (handles pnpm symlinks)
+    ...getNativeModulesFilesConfig(),
+    // Include non-native runtime modules that are intentionally externalized from Vite.
+    ...getExternalRuntimeModulesFilesConfig(),
+  ],
+  generateUpdatesFilesForAllChannels: true,
+  linux: {
+    category: 'Utility',
+    executableName: linuxExecutableName,
+    icon: 'build/modelnet-icon.png',
+    maintainer: 'ModelNet',
+    target: ['AppImage', 'snap', 'deb', 'rpm', 'tar.gz'],
+  },
+  mac: {
+    icon: 'build/modelnet-icon.icns',
+    compression: 'maximum',
+    entitlementsInherit: 'build/entitlements.mac.plist',
+    extendInfo: {
+      CFBundleIconName: 'AppIcon',
+      CFBundleURLTypes: [
+        {
+          CFBundleURLName: 'ModelNet Protocol',
+          CFBundleURLSchemes: [protocolScheme],
+        },
+      ],
+      NSAppleEventsUsageDescription:
+        'Application needs to control System Settings to help you grant Full Disk Access automatically.',
+      NSCameraUsageDescription: "Application requests access to the device's camera.",
+      NSDocumentsFolderUsageDescription:
+        "Application requests access to the user's Documents folder.",
+      NSDownloadsFolderUsageDescription:
+        "Application requests access to the user's Downloads folder.",
+      NSMicrophoneUsageDescription: "Application requests access to the device's microphone.",
+      NSScreenCaptureUsageDescription:
+        'Application requests access to record and analyze screen content for AI assistance.',
+    },
+    gatekeeperAssess: false,
+    hardenedRuntime: hasAppleCertificate,
+    notarize: hasAppleCertificate,
+    ...(hasAppleCertificate ? {} : { identity: null }),
+    target: [
+      { arch: [arch === 'arm64' ? 'arm64' : 'x64'], target: 'dmg' },
+      { arch: [arch === 'arm64' ? 'arm64' : 'x64'], target: 'zip' },
+    ],
+  },
+  npmRebuild: true,
+  nsis: {
+    allowToChangeInstallationDirectory: true,
+    artifactName: '${productName}-${version}-setup.${ext}',
+    createDesktopShortcut: 'always',
+    installerHeader: './build/modelnet-nsis-header.bmp',
+    installerHeaderIcon: './build/modelnet-icon.ico',
+    installerIcon: './build/modelnet-icon.ico',
+    installerSidebar: './build/modelnet-nsis-sidebar.bmp',
+    oneClick: false,
+    shortcutName: '${productName}',
+    uninstallDisplayName: '${productName}',
+    uninstallerIcon: './build/modelnet-icon.ico',
+    uninstallerSidebar: './build/modelnet-nsis-sidebar.bmp',
+  },
+  protocols: [
+    {
+      name: 'ModelNet Protocol',
+      schemes: [protocolScheme],
+    },
+  ],
+  publish: getPublishConfig(),
+
+  // Release notes 配置
+  // 可以通过环境变量 RELEASE_NOTES 传入，或从文件读取
+  // 这会被写入 latest-mac.yml / latest.yml 中，供 generic provider 使用
+  releaseInfo: {
+    releaseNotes: process.env.RELEASE_NOTES || undefined,
+  },
+
+  extraResources: [
+    { from: 'resources/bin', to: 'bin' },
+    { from: 'resources/cli-package.json', to: 'package.json' },
+  ],
+
+  win: {
+    executableName: desktopProductName,
+    icon: 'build/modelnet-icon.ico',
+  },
+};
+
+export default config;
