@@ -110,7 +110,7 @@ services:
       - modelnet-dev-network
 
   modelnet-router:
-    image: ${DEV_ROUTER_IMAGE:-modelnet-toc-dev-modelnet-router}
+    image: modelnet-toc-modelnet-router:parallel-visible-recovery-20260722
     container_name: modelnet-router-dev
     build:
       context: ./modelnet_router

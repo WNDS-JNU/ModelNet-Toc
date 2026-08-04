@@ -11,6 +11,7 @@ lobehub/src/features/Conversation/store/slices/data/*~lobehub_canary
 !lobehub/packages/builtin-tool-web-onboarding/src/agentMarketplace/data/*.ts
 *.bak*
 *.log
+runtime-backups/
 __pycache__/
 *.pyc
 .codex-run/

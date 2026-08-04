@@ -107,6 +107,7 @@ services:
       - modelnet-network
 
   modelnet-router:
+    image: modelnet-toc-modelnet-router:parallel-visible-recovery-20260722
     container_name: modelnet-router
     build:
       context: ./modelnet_router

@@ -7471,6 +7471,7 @@ async def stream_response_source(
     tenant: GatewayTenant,
     source: EnsembleSource,
     *,
+    request: EnsembleRequest,
     prefer_model_max_tokens: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
     candidate: Candidate | None = None
@@ -7591,6 +7592,79 @@ async def stream_response_source(
         text, removed_hidden_reasoning = strip_response_hidden_reasoning(text)
         if removed_hidden_reasoning:
             metadata["source_hidden_reasoning_removed"] = True
+        first_latency_ms = int((time.perf_counter() - started) * 1000)
+        reasoning_text = str(metadata.get("reasoning_content") or "").strip()
+        if not text and reasoning_text:
+            metadata["source_hidden_reasoning_removed"] = True
+        call_ledger = [
+            build_call_ledger_entry(
+                stage="source.generate",
+                source_id=source.source_id,
+                backend=backend,
+                metadata=metadata,
+                prompt_text=prompt_text,
+                completion_text=text or reasoning_text,
+                status="hidden_reasoning" if not text and reasoning_text else "ok",
+                latency_ms=first_latency_ms,
+            )
+        ]
+
+        if not text and reasoning_text:
+            recovery_source = visible_answer_recovery_source(
+                source,
+                request,
+                reasoning_text=reasoning_text,
+            )
+            recovery_started = time.perf_counter()
+            recovery_error: str | None = None
+            recovery_metadata: dict[str, Any] = {}
+            recovery_text = ""
+            try:
+                recovery_result = await generate_text(
+                    candidate,
+                    recovery_source,
+                    prefer_model_max_tokens=prefer_model_max_tokens,
+                )
+                recovery_metadata = dict(recovery_result.get("metadata") or {})
+                recovery_raw_text = str(recovery_result.get("text") or "")
+                recovery_text, recovery_removed = strip_response_hidden_reasoning(recovery_raw_text)
+                if recovery_removed:
+                    metadata["source_hidden_reasoning_removed"] = True
+                if recovery_text.strip():
+                    text = recovery_text.strip()
+                    yield {
+                        "event": "delta",
+                        "source_id": source.source_id,
+                        "backend": backend,
+                        "model": model,
+                        "delta": text,
+                        "text": text,
+                    }
+            except Exception as exc:  # noqa: BLE001 - source recovery may degrade independently
+                recovery_error = str(exc)
+
+            recovery_latency_ms = int((time.perf_counter() - recovery_started) * 1000)
+            metadata["response_source_visible_answer_recovery"] = {
+                "method": "visible_answer_recovery",
+                "reason": "hidden_reasoning_only",
+                "source_id": recovery_source.source_id,
+                "recovered": bool(recovery_text.strip()),
+            }
+            if recovery_error:
+                metadata["response_source_visible_answer_recovery"]["error"] = recovery_error[:300]
+            call_ledger.append(
+                build_call_ledger_entry(
+                    stage="source.recovery",
+                    source_id=recovery_source.source_id,
+                    backend=backend,
+                    metadata=recovery_metadata,
+                    prompt_text=recovery_source.prompt,
+                    completion_text=recovery_text,
+                    status="ok" if recovery_error is None and recovery_text.strip() else "error",
+                    latency_ms=recovery_latency_ms,
+                    error=recovery_error,
+                )
+            )
         latency_ms = int((time.perf_counter() - started) * 1000)
         result = {
             "source_id": source.source_id,
@@ -7600,18 +7674,7 @@ async def stream_response_source(
             "weight": source.weight,
             "error": None,
             "latency_ms": latency_ms,
-            "call_ledger": [
-                build_call_ledger_entry(
-                    stage="source.generate",
-                    source_id=source.source_id,
-                    backend=backend,
-                    metadata=metadata,
-                    prompt_text=prompt_text,
-                    completion_text=text,
-                    status="ok",
-                    latency_ms=latency_ms,
-                )
-            ],
+            "call_ledger": call_ledger,
         }
         yield {
             "event": "completed",
@@ -8635,7 +8698,7 @@ async def run_token_step_ensemble(request: EnsembleRequest, tenant: GatewayTenan
             await release_candidate(candidate)
 
 
-def route_visible_answer_recovery_source(
+def visible_answer_recovery_source(
     source: EnsembleSource,
     request: EnsembleRequest,
     *,
@@ -8644,7 +8707,7 @@ def route_visible_answer_recovery_source(
     original_prompt = source.prompt or text_from_messages(message_list(source))
     prompt = "\n".join(
         [
-            "The previous route.once attempt produced only hidden reasoning or planning text.",
+            "The previous model attempt produced only hidden reasoning or planning text.",
             "Original user request:",
             original_prompt,
             "",
@@ -8708,7 +8771,7 @@ async def run_route_ensemble(request: EnsembleRequest, tenant: GatewayTenant) ->
         ]
 
         if not text.strip() and removed_hidden_reasoning and raw_text.strip():
-            recovery_source = route_visible_answer_recovery_source(
+            recovery_source = visible_answer_recovery_source(
                 source,
                 request,
                 reasoning_text=raw_text,
@@ -8830,7 +8893,12 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
 
         async def pump_source(source: EnsembleSource) -> None:
             try:
-                async for item in stream_response_source(tenant, source, prefer_model_max_tokens=True):
+                async for item in stream_response_source(
+                    tenant,
+                    source,
+                    request=request,
+                    prefer_model_max_tokens=True,
+                ):
                     await source_queue.put(item)
             except Exception as exc:  # noqa: BLE001 - defensive; stream_response_source normally contains errors
                 await source_queue.put(
@@ -8977,12 +9045,66 @@ async def run_response_aggregate_ensemble(request: EnsembleRequest, tenant: Gate
             failed_result["error"] = "empty source response"
             failed.append(failed_result)
 
-        if len(successful) < 2:
+        if not successful:
             yield sse(
                 "error",
                 {
-                    "error": "response_aggregate needs at least two successful source responses",
+                    "error": "response_aggregate has no successful source responses",
                     "source_errors": {item["source_id"]: item.get("error") for item in failed},
+                },
+            )
+            return
+
+        if len(successful) == 1:
+            fallback = successful[0]
+            text = str(fallback.get("text") or "").strip()
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            if emit_flow:
+                yield sse(
+                    "trace_step",
+                    {
+                        "stage": "synthesis.degraded",
+                        "reason": "single_successful_source",
+                        "source_id": fallback.get("source_id"),
+                        "failed_source_count": len(failed),
+                    },
+                )
+            yield sse("token", {"delta": text, "text": text})
+            yield sse(
+                "done",
+                {
+                    "text": text,
+                    "metadata": {
+                        "runner": request.runner,
+                        "aggregator": request.aggregator,
+                        "elapsed_ms": elapsed_ms,
+                        "source_count": 1,
+                        "failed_source_count": len(failed),
+                        "source_errors": {
+                            item["source_id"]: item.get("error") for item in failed
+                        },
+                        "contributions": {
+                            str(fallback.get("source_id") or "source-1"): text
+                        },
+                        "weights": {
+                            str(fallback.get("source_id") or "source-1"): fallback.get(
+                                "weight", 1.0
+                            )
+                        },
+                        "response_aggregator": {
+                            "backend": fallback.get("backend"),
+                            "degraded": True,
+                            "fallback_reason": "single_successful_source",
+                        },
+                        "trace_summary": {
+                            "tokens_count": len(text),
+                            "elapsed_ms": elapsed_ms,
+                            "source_count": 1,
+                            "failed_source_count": len(failed),
+                            "stopped_by": "single_source_fallback",
+                        },
+                        **call_ledger_metadata(call_ledger),
+                    },
                 },
             )
             return

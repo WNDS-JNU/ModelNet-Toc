@@ -1346,6 +1346,52 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(done["text"], "combined answer")
         self.assert_call_ledger(done["metadata"], {"response.parallel", "optional.synthesizer.final"})
 
+    async def test_response_aggregate_falls_back_to_only_visible_source(self) -> None:
+        async def fake_stream(_tenant, source, **_kwargs):
+            text = "visible answer" if source.source_id == "source-2" else ""
+            result = {
+                "source_id": source.source_id,
+                "backend": {"id": source.model_alias or source.source_id},
+                "text": text,
+                "metadata": {
+                    "source_hidden_reasoning_removed": source.source_id == "source-1"
+                },
+                "weight": source.weight,
+                "error": None,
+                "latency_ms": 1,
+            }
+            async for item in fake_stream_response_source_from_result(source, result):
+                yield item
+
+        async def unexpected_synthesis(*_args, **_kwargs):
+            self.fail("single-source fallback must not invoke synthesis")
+            yield
+
+        router.stream_response_source = fake_stream
+        router.stream_response_synthesis = unexpected_synthesis
+        req = router.EnsembleRequest(
+            request_id="response-aggregate-single-visible-source",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            sources=[
+                router.EnsembleSource(source_id="source-1", model_alias="qwen-4b", prompt="Question?"),
+                router.EnsembleSource(source_id="source-2", model_alias="qwen-35b", prompt="Question?"),
+            ],
+        )
+
+        events = await collect_events(router.run_response_aggregate_ensemble(req, self.tenant))
+        done = done_payload(events)
+
+        self.assertFalse(any(event == "error" for event, _data in events))
+        self.assertEqual(done["text"], "visible answer")
+        self.assertTrue(done["metadata"]["response_aggregator"]["degraded"])
+        self.assertEqual(
+            done["metadata"]["response_aggregator"]["fallback_reason"],
+            "single_successful_source",
+        )
+        self.assertEqual(done["metadata"]["trace_summary"]["stopped_by"], "single_source_fallback")
+        self.assertEqual(done["metadata"]["source_errors"], {"source-1": "empty source response"})
+
     def test_response_aggregate_default_prompts_avoid_control_leakage(self) -> None:
         req = router.EnsembleRequest(
             request_id="response-aggregate-prompts",
@@ -3261,6 +3307,60 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["text"], "visible")
         self.assertTrue(result["metadata"]["source_hidden_reasoning_removed"])
+
+    async def test_stream_response_source_recovers_hidden_reasoning_only(self) -> None:
+        async def fake_pick(_tenant, _source, required_capabilities=None):
+            self.assertIsNone(required_capabilities)
+            return candidate("qwen-think"), 10.0, "ready"
+
+        async def fake_backend_stream_chat(_candidate, _body, *, http_client, headers):
+            yield (
+                "data: "
+                + json.dumps({"choices": [{"delta": {"reasoning_content": "private analysis"}}]})
+                + "\n\n"
+            ).encode()
+            yield (
+                "data: "
+                + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+                + "\n\n"
+            ).encode()
+            yield b"data: [DONE]\n\n"
+
+        async def fake_generate_text(_candidate, source, **_kwargs):
+            self.assertEqual(source.source_id, "source-1__visible_recovery")
+            self.assertEqual(source.extra["chat_template_kwargs"], {"enable_thinking": False})
+            return {"text": "visible recovered answer", "metadata": {"finish_reason": "stop"}}
+
+        router.pick_source_candidate = fake_pick
+        router.backend_stream_chat = fake_backend_stream_chat
+        router.generate_text = fake_generate_text
+        router.http_client = object()
+        source = router.EnsembleSource(source_id="source-1", model_alias="qwen-think", prompt="Question?")
+        req = router.EnsembleRequest(
+            request_id="response-source-visible-recovery",
+            runner="response_aggregate",
+            aggregator="synthesize",
+            sources=[source, router.EnsembleSource(source_id="source-2", prompt="Question?")],
+        )
+
+        events = [
+            event
+            async for event in router.stream_response_source(
+                self.tenant,
+                source,
+                request=req,
+                prefer_model_max_tokens=True,
+            )
+        ]
+
+        completed = [event for event in events if event.get("event") == "completed"][0]["result"]
+        self.assertEqual(completed["text"], "visible recovered answer")
+        self.assertTrue(completed["metadata"]["source_hidden_reasoning_removed"])
+        self.assertTrue(completed["metadata"]["response_source_visible_answer_recovery"]["recovered"])
+        self.assertEqual(
+            [entry["stage"] for entry in completed["call_ledger"]],
+            ["source.generate", "source.recovery"],
+        )
 
     def test_openai_parallel_flow_delta_explains_empty_source_completion(self) -> None:
         delta = router.openai_parallel_flow_delta(
