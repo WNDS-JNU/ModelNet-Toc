@@ -1,3 +1,5 @@
+import { getEmailSupportHtml } from '@/libs/email/support';
+
 /**
  * Change email verification template
  * Sent to users when they request to change their email address
@@ -94,6 +96,9 @@ export const getChangeEmailVerificationTemplate = (params: {
 
     <!-- Footer -->
     <div style="text-align: center; margin-top: 32px;">
+      <p style="font-size: 13px; margin: 0 0 8px 0;">
+        ${getEmailSupportHtml()}
+      </p>
       <p style="color: #a1a1aa; font-size: 13px; margin: 0;">
         © 2026 ModelNet. All rights reserved.
       </p>

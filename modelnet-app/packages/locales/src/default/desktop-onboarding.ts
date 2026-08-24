@@ -99,7 +99,16 @@ export default {
   'screen5.methods.selfhost.name': 'Self-hosted Instance',
   'screen5.navigation.next': 'Get Started',
   'screen5.selfhost.endpointPlaceholder': 'Enter your server URL (e.g., https://your-server.com)',
+  'screen5.status.cloud.title': 'Connected to LobeHub Cloud',
+  'screen5.status.description':
+    'Agents, Groups, settings, and Context are syncing across all your devices.',
+  'screen5.status.selfhost.description':
+    'Syncing Agents, Groups, settings, and Context with {{url}}.',
+  'screen5.status.selfhost.title': 'Connected to your own server',
   'screen5.title': 'Sign in to sync across devices',
   'screen5.title2': 'Keep your data synchronized everywhere',
   'screen5.title3': 'Your data stays in your control',
+
+  // ModelNet local keys preserved across the ModelNet vendor sync.
+  "screen5.actions.done": "Done",
 };

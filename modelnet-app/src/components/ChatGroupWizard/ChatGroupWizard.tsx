@@ -2,7 +2,6 @@
 
 import {
   Avatar,
-  Checkbox,
   Collapse,
   Empty,
   Flexbox,
@@ -12,8 +11,7 @@ import {
   Text,
   Tooltip,
 } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
-import { Switch } from 'antd';
+import { Button, Checkbox, Switch } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar, cx } from 'antd-style';
 import { omit } from 'es-toolkit/compat';
 import { Users } from 'lucide-react';

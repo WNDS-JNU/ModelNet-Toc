@@ -4,13 +4,13 @@
 import { NextRequest } from 'next/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { defineConfig } from './define-config';
+
 const getSession = vi.hoisted(() => vi.fn().mockResolvedValue(null));
 
 vi.mock('@/auth', () => ({
   auth: { api: { getSession } },
 }));
-
-import { defineConfig } from './define-config';
 
 const { middleware } = defineConfig();
 

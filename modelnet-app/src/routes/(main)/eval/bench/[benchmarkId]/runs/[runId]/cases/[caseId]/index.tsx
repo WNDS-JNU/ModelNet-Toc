@@ -1,7 +1,8 @@
 'use client';
 
 import type { EvalThreadResult } from '@lobechat/types';
-import { Flexbox, Tabs } from '@lobehub/ui';
+import { Flexbox } from '@lobehub/ui';
+import { Tabs } from '@lobehub/ui/base-ui';
 import { cssVar } from 'antd-style';
 import { memo, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -107,9 +108,7 @@ const CaseDetail = memo(() => {
           <CaseHeader
             caseNumber={(caseResult.testCase?.sortOrder ?? 0) + 1}
             evalResult={displayEvalResult}
-            passed={displayPassed}
             runName={runDetail?.name || runId!.slice(0, 8)}
-            score={displayScore}
             onBack={() => navigate(`/eval/bench/${benchmarkId}/runs/${runId}`)}
             onNext={nextCaseId ? () => navigate(`${basePath}/${nextCaseId}`) : undefined}
             onPrev={prevCaseId ? () => navigate(`${basePath}/${prevCaseId}`) : undefined}

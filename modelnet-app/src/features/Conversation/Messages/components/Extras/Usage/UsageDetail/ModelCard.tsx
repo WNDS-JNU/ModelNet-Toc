@@ -1,6 +1,7 @@
 import { getCachedTextInputUnitRate, getWriteCacheInputUnitRate } from '@lobechat/utils';
 import { ModelIcon } from '@lobehub/icons';
-import { Flexbox, Icon, Tooltip, Tabs } from '@lobehub/ui';
+import { Flexbox, Icon, Tooltip } from '@lobehub/ui';
+import { Tabs } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
 import { ArrowDownToDot, ArrowUpFromDot, BookUp2Icon, CircleFadingArrowUp } from 'lucide-react';
 import { type LobeDefaultAiModelListItem } from 'model-bank';

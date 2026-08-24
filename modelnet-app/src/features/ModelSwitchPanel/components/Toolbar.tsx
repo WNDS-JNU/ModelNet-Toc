@@ -1,4 +1,5 @@
-import { Flexbox, Icon, SearchBar, stopPropagation, Tooltip, Tabs } from '@lobehub/ui';
+import { Flexbox, Icon, SearchBar, stopPropagation, Tooltip } from '@lobehub/ui';
+import { Tabs } from '@lobehub/ui/base-ui';
 import { ProviderIcon } from '@lobehub/ui/icons';
 import { Brain } from 'lucide-react';
 import { memo } from 'react';

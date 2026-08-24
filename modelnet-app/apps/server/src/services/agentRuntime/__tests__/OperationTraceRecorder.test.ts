@@ -76,6 +76,12 @@ describe('OperationTraceRecorder', () => {
         {
           finalState: {
             activatedStepTools: [{ id: 'kept' }],
+            expertise: {
+              contentHash: 'hash',
+              domains: [{ id: 'product-design', lessonIds: ['lesson-1'] }],
+              renderedContext: '<expertise>heavy learned context</expertise>',
+              schemaVersion: 1,
+            },
             messages: ['heavy'],
             operationToolSet: { manifestMap: {} },
             otherStateField: 'kept',
@@ -108,6 +114,7 @@ describe('OperationTraceRecorder', () => {
       const doneEvent = step.events.find((e: any) => e.type === 'done');
       expect(doneEvent.finalState.activatedStepTools).toEqual([{ id: 'kept' }]);
       expect(doneEvent.finalState.otherStateField).toBe('kept');
+      expect(doneEvent.finalState.expertise).toBeUndefined();
       expect(doneEvent.finalState.messages).toBeUndefined();
       expect(doneEvent.finalState.operationToolSet).toBeUndefined();
       expect(doneEvent.finalState.toolManifestMap).toBeUndefined();
@@ -294,6 +301,49 @@ describe('OperationTraceRecorder', () => {
       });
       expect(saved.error).toMatchObject({ type: 'ConversationParentMissing' });
       expect(saved.completionReason).toBe('error');
+    });
+
+    it('preserves failed LLM step type and structured error body diagnostics', async () => {
+      store.loadPartial.mockResolvedValue({
+        startedAt: 1000,
+        steps: [{ stepIndex: 0, stepType: 'call_tool' }],
+      });
+
+      await recorder.finalize('op-empty-completion', {
+        completionReason: 'error',
+        error: {
+          body: {
+            diagnostics: {
+              attempt: 1,
+              maxAttempts: 1,
+              outputTokens: 25_617,
+            },
+          },
+          message: 'Model returned an empty completion',
+          retryable: false,
+          type: 'ModelEmptyCompletion',
+        },
+        failedStep: { startedAt: 5000, stepIndex: 1, stepType: 'call_llm' },
+        state: { metadata: {}, stepCount: 1 },
+      });
+
+      const saved = store.save.mock.calls[0][0];
+      const failed = saved.steps.find((s: any) => s.stepIndex === 1);
+      expect(failed.stepType).toBe('call_llm');
+      expect(failed.events?.[0]).toMatchObject({
+        error: {
+          body: {
+            diagnostics: {
+              attempt: 1,
+              maxAttempts: 1,
+              outputTokens: 25_617,
+            },
+          },
+          type: 'ModelEmptyCompletion',
+        },
+        type: 'error',
+      });
+      expect(saved.error.body.diagnostics).toMatchObject({ attempt: 1, maxAttempts: 1 });
     });
 
     it('merges the error event into an existing step when stepIndex collides (success-path append landed before later failure)', async () => {

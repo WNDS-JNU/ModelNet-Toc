@@ -13,7 +13,7 @@ describe('LobeAgentManifest', () => {
     );
   });
 
-  it('should describe visual analysis as a fallback tool', () => {
+  it('should describe multimodal analysis as a fallback tool', () => {
     const apiDescription = LobeAgentManifest.api[0].description;
 
     expect(apiDescription).toContain('native multimodal capability');
@@ -21,21 +21,22 @@ describe('LobeAgentManifest', () => {
     expect(apiDescription).toContain('Provide either refs or urls');
     expect(apiDescription).toContain('Prefer refs when stable refs are available');
     expect(apiDescription).toContain('msg_xxx.image_1');
+    expect(apiDescription).toContain('msg_xxx.audio_1');
     expect(apiDescription).toContain('use urls only for direct media URLs');
     expect(apiDescription).toContain('answer the user directly with the result');
   });
 
-  it('should instruct agents to prefer native multimodal access before visual analysis', () => {
-    expect(LobeAgentManifest.systemRole).toContain('`analyzeVisualMedia` is only a fallback');
+  it('should instruct agents to prefer native multimodal access before media analysis', () => {
+    expect(LobeAgentManifest.systemRole).toContain('`analyzeMedia` is only a fallback');
     expect(LobeAgentManifest.systemRole).toContain(
       'media is already visible in the current multimodal context',
     );
     expect(LobeAgentManifest.systemRole).toContain(
-      'active model lacks the needed image/video capability',
+      'active model lacks the needed audio/image/video capability',
     );
   });
 
-  it('should keep visual analysis parameters compatible with strict tool schema validators', () => {
+  it('should keep media analysis parameters compatible with strict tool schema validators', () => {
     const parameters = LobeAgentManifest.api[0].parameters;
 
     expect(parameters).not.toHaveProperty('oneOf');

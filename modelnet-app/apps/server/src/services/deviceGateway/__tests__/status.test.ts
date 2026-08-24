@@ -17,7 +17,7 @@ vi.mock('@lobechat/device-gateway-client', () => ({
   GatewayHttpClient: vi.fn(() => mockClient),
 }));
 
-import { DeviceGateway, DeviceGatewayQueryError } from '../index';
+import { DeviceGateway } from '../index';
 
 const configure = () => {
   mockEnv.DEVICE_GATEWAY_URL = 'http://device-gateway:3000';
@@ -100,7 +100,7 @@ describe('DeviceGateway status classification', () => {
 
   it('throws not_configured before an explicit gateway request', async () => {
     await expect(new DeviceGateway().queryDeviceListStrict('user-1')).rejects.toEqual(
-      expect.objectContaining<DeviceGatewayQueryError>({
+      expect.objectContaining({
         gatewayStatus: 'not_configured',
         message: 'Device Gateway is not configured',
       }),

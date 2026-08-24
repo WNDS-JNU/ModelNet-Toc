@@ -1,5 +1,6 @@
 import { TRPCError } from '@trpc/server';
 import debug from 'debug';
+import type { JWK } from 'jose';
 
 import { authEnv } from '@/envs/auth';
 
@@ -13,8 +14,7 @@ const getJwksKeyString = () => {
   return authEnv.JWKS_KEY;
 };
 
-type JWK = Record<string, unknown>;
-
+type JsonObject = Record<string, unknown>;
 export interface JWKS {
   keys: JWK[];
 }
@@ -24,7 +24,8 @@ const REQUIRED_RSA_PRIVATE_FIELDS = ['d', 'dp', 'dq', 'e', 'n', 'p', 'q', 'qi'] 
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === 'string' && value.length > 0;
 
-const isJwk = (value: unknown): value is JWK => typeof value === 'object' && value !== null;
+const isJsonObject = (value: unknown): value is JsonObject =>
+  typeof value === 'object' && value !== null;
 
 const getModulusLength = (modulus: string) => {
   const bytes = Buffer.from(modulus, 'base64url');
@@ -59,11 +60,11 @@ const validateRS256SigningKey = (key: JWK) => {
 };
 
 export const validateJWKS = (jwks: unknown): JWKS => {
-  if (!isJwk(jwks) || !Array.isArray(jwks.keys) || jwks.keys.length === 0) {
+  if (!isJsonObject(jwks) || !Array.isArray(jwks.keys) || jwks.keys.length === 0) {
     throw new Error('Invalid JWKS format: missing or empty keys array');
   }
 
-  const keys = jwks.keys.filter(isJwk);
+  const keys = jwks.keys.filter(isJsonObject) as JWK[];
   if (keys.length !== jwks.keys.length) {
     throw new Error('Invalid JWKS format: keys must be objects');
   }

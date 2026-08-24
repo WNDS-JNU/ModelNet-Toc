@@ -1,8 +1,9 @@
+import { KEY_ESCAPE_COMMAND } from 'lexical';
 import { type StateCreator } from 'zustand/vanilla';
 
 import { useAgentStore } from '@/store/agent';
 import { useUserStore } from '@/store/user';
-import { userProfileSelectors } from '@/store/user/selectors';
+import { systemAgentSelectors, userProfileSelectors } from '@/store/user/selectors';
 
 import { removeDraft } from '../draftStorage';
 import { addInputHistory } from '../inputHistoryStorage';
@@ -17,6 +18,7 @@ export interface Action {
   handleSendButton: () => void;
   handleStop: () => void;
   pauseInputCompletion: (error: State['inputCompletionError']) => void;
+  setActiveAudioInputMode: (mode?: State['activeAudioInputMode']) => void;
   setDocument: (type: string, content: any, options?: Record<string, unknown>) => void;
   setExpand: (expend: boolean) => void;
   setJSONState: (content: any) => void;
@@ -57,7 +59,21 @@ export const store: CreateStore = (publicState) => (set, get) => ({
   handleSendButton: () => {
     const editor = get().editor;
     if (!editor) return;
-    if (get().sendButtonProps?.disabled) return;
+
+    const { resolveSendBlocked, sendButtonProps } = get();
+    if (resolveSendBlocked ? resolveSendBlocked() : sendButtonProps?.disabled) return;
+
+    // Drop any pending AI input-completion ghost before serializing the message.
+    // The suggestion is materialized as real placeholder nodes inside the
+    // document, so sending without clearing would emit the ghost text too —
+    // Enter and the send button must submit only what the user actually typed.
+    // Escape is the plugin's reject path and clears those nodes synchronously.
+    const autoCompleteEnabled =
+      (get().feature?.inputCompletion ?? true) &&
+      systemAgentSelectors.inputCompletion(useUserStore.getState()).enabled;
+    if (autoCompleteEnabled) {
+      editor.dispatchCommand(KEY_ESCAPE_COMMAND, new KeyboardEvent('keydown', { key: 'Escape' }));
+    }
 
     const onSend = get().onSend;
     const historyEnabled = !!onSend && (get().feature?.inputHistory ?? true);
@@ -70,8 +86,17 @@ export const store: CreateStore = (publicState) => (set, get) => ({
         }
       : undefined;
 
+    // Tie the draft's fate to the composer actually being cleared: a host may
+    // decline the send after the fact (a rejected scheduled send keeps the text
+    // on screen), and the key is captured here because committing the send can
+    // move the conversation to a freshly created topic.
+    const sentDraftKey = get().draftKey;
+
     onSend?.({
-      clearContent: () => editor?.cleanDocument(),
+      clearContent: () => {
+        editor?.cleanDocument();
+        if (sentDraftKey) removeDraft(sentDraftKey);
+      },
       editor: editor!,
       getEditorData: get().getJSONState,
       getMarkdownContent: get().getMarkdownContent,
@@ -80,9 +105,6 @@ export const store: CreateStore = (publicState) => (set, get) => ({
     if (historySnapshot) {
       addInputHistory(historySnapshot);
     }
-
-    const { draftKey } = get();
-    if (draftKey) removeDraft(draftKey);
 
     if (get().expand) {
       set({ _savedEditorState: undefined, expand: false });
@@ -102,6 +124,10 @@ export const store: CreateStore = (publicState) => (set, get) => ({
 
   pauseInputCompletion: (inputCompletionError) => {
     set({ inputCompletionError, inputCompletionErrorDismissed: false });
+  },
+
+  setActiveAudioInputMode: (activeAudioInputMode) => {
+    set({ activeAudioInputMode });
   },
 
   setDocument: (type, content, options) => {

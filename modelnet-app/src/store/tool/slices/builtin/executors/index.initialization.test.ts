@@ -1,12 +1,12 @@
 import { AgentBuilderApiName, AgentBuilderIdentifier } from '@lobechat/builtin-tool-agent-builder';
 import {
-  GroupAgentBuilderApiName,
-  GroupAgentBuilderIdentifier,
-} from '@lobechat/builtin-tool-group-agent-builder';
-import {
   AgentManagementApiName,
   AgentManagementIdentifier,
 } from '@lobechat/builtin-tool-agent-management';
+import {
+  GroupAgentBuilderApiName,
+  GroupAgentBuilderIdentifier,
+} from '@lobechat/builtin-tool-group-agent-builder';
 import { describe, expect, it, vi } from 'vitest';
 
 import { invokeExecutor, registerBuiltinToolExecutors } from './index';

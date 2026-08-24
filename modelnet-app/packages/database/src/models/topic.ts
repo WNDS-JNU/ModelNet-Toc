@@ -4,6 +4,7 @@ import type {
   DBMessageItem,
   TopicQuerySortBy,
   TopicRankItem,
+  TopicScheduledRun,
 } from '@lobechat/types';
 import type { TimingSink } from '@lobechat/utils';
 import {
@@ -18,9 +19,11 @@ import {
   count,
   desc,
   eq,
+  getTableColumns,
   gt,
   gte,
   inArray,
+  isNotNull,
   isNull,
   lte,
   ne,
@@ -30,9 +33,19 @@ import {
 } from 'drizzle-orm';
 
 import type { TopicItem } from '../schemas';
-import { agents, messagePlugins, messages, threads, topicDocuments, topics } from '../schemas';
+import {
+  agentOperations,
+  agents,
+  messagePlugins,
+  messages,
+  threads,
+  topicDocuments,
+  topics,
+} from '../schemas';
 import type { LobeChatDatabase } from '../type';
 import { sanitizeBm25Query } from '../utils/bm25';
+import { COPIED_TOPIC_USAGE_RESET } from '../utils/copiedTranscript';
+import { markCopiedMessageMetadata } from '../utils/copyMessagesInDatabase';
 import { genEndDateWhere, genRangeWhere, genStartDateWhere, genWhere } from '../utils/genWhere';
 import { idGenerator } from '../utils/idGenerator';
 import { buildWorkspacePayload, buildWorkspaceWhere } from '../utils/workspace';
@@ -43,13 +56,69 @@ type TopicMetadataPatch = Omit<Partial<ChatTopicMetadata>, 'onboardingSession'> 
   onboardingSession?: OnboardingSessionMetadataPatch;
 };
 
+/**
+ * How much of the last assistant reply `queryTopics` ships to a list view. Long
+ * enough that a run summary arrives whole, short enough that 200 rows of raw
+ * markdown never do — anything past it is marked with an ellipsis, and the full
+ * text is one click away in the topic itself.
+ */
+const LAST_MESSAGE_PREVIEW_LENGTH = 2000;
+const TASK_CALLBACK_RESERVATION_TTL_MS = 5 * 60 * 1000;
+/**
+ * How long an operation that still claims `running` / `idle` may hold the topic
+ * against a background start before it is treated as abandoned.
+ *
+ * Only a backstop for the case the operation row cannot describe: a process
+ * killed mid-run leaves its row at `running` forever, and every marker clear
+ * site is best-effort (`ServerOperationStore.clearRunningMark` swallows
+ * failures; the gateway client clears it from `onSessionComplete`, which never
+ * runs if the tab closed). Runs parked on a human or an async tool are exempt —
+ * those legitimately last days — so this only has to be longer than a plausible
+ * uninterrupted generation. The real reaper remains the gateway watchdog's
+ * `finalize-abandoned` call.
+ */
+const ABANDONED_OPERATION_TTL_MS = 6 * 60 * 60 * 1000;
+/**
+ * Operation statuses that mean "this run is still the topic's owner". Parked
+ * states are included on purpose: a run waiting for approval is not stuck.
+ */
+const LIVE_OPERATION_STATUSES = new Set([
+  'idle',
+  'running',
+  'waiting_for_human',
+  'waiting_for_async_tool',
+]);
+/** Parked states are exempt from the abandoned-age backstop — see above. */
+const UNBOUNDED_OPERATION_STATUSES = new Set(['waiting_for_human', 'waiting_for_async_tool']);
+
+export interface TopicListItem extends TopicItem {
+  /** The topic's last non-empty assistant reply, truncated with a trailing `…`. Only set when `queryTopics` is called with `withLastMessage`. */
+  lastAssistantMessage?: string | null;
+  /**
+   * When the topic's current run started (`agent_operations.startedAt` of its
+   * latest top-level running operation). Only computed for `running` topics;
+   * null for everything else, and for runs that never wrote an operation row
+   * (e.g. client-mode runs) — callers must keep a fallback.
+   */
+  runStartedAt?: Date | null;
+}
+
 export interface CreateTopicParams {
   agentId?: string | null;
   favorite?: boolean;
   groupId?: string | null;
   messages?: string[];
   metadata?: ChatTopicMetadata;
+  /** Pinned model snapshot, persisted to the top-level `topics.model` column. */
+  model?: string | null;
+  provider?: string | null;
   sessionId?: string | null;
+  /**
+   * Initial status. Defaults to the column default (`active`). A topic created
+   * with `metadata.scheduledRun` must set `scheduled` here so the status and the
+   * payload land in the same insert — the dispatcher treats the pair as one fact.
+   */
+  status?: ChatTopicStatus;
   title?: string;
   trigger?: string | null;
 }
@@ -62,6 +131,19 @@ interface QueryTopicParams {
    */
   containerId?: string | null;
   current?: number;
+  /**
+   * Restrict an `agentId` query to the builder conversations that configured
+   * one specific target (`metadata.editingAgentId` / `metadata.editingGroupId`).
+   *
+   * Builder panels run on a single builtin agent shared by every target, whose
+   * topics deliberately carry no `groupId` / `sessionId` — those columns mark a
+   * topic as part of the target's own chat read path. The builder panel itself
+   * shows the unfiltered history on purpose; these exist so a caller that wants
+   * one target's builds can ask for them. Only meaningful alongside `agentId`;
+   * ignored by the group / container branches.
+   */
+  editingAgentId?: string | null;
+  editingGroupId?: string | null;
   /**
    * Exclude topics by status (e.g. ['completed'])
    */
@@ -144,11 +226,11 @@ const STATUS_SORT_RANK = sql`CASE ${topics.status}
   WHEN 'failed' THEN 1
   WHEN 'unread' THEN 2
   WHEN 'running' THEN 3
-  WHEN 'active' THEN 4
-  WHEN 'paused' THEN 5
+  WHEN 'scheduled' THEN 4
+  WHEN 'active' THEN 5
   WHEN 'completed' THEN 6
   WHEN 'archived' THEN 7
-  ELSE 4 END`;
+  ELSE 5 END`;
 
 // Favorites always float to the top; the rest are ordered by the requested
 // strategy. `status` adds the priority bucket before the recency tiebreaker.
@@ -157,6 +239,53 @@ const buildTopicOrderBy = (topicActivityAt: SQL, sortBy?: TopicQuerySortBy): SQL
     ? [desc(topics.favorite), asc(STATUS_SORT_RANK), desc(topicActivityAt)]
     : [desc(topics.favorite), desc(topicActivityAt)];
 
+/**
+ * NEVER null-test a jsonb arrow / path expression inside a WHERE clause:
+ *
+ * ```sql
+ * (metadata ->> 'cronJobId')          IS NULL          -- 💥
+ * (metadata #>> '{a,b}')              IS NOT NULL      -- 💥
+ * ```
+ *
+ * The crash is `pg_search`'s (ParadeDB BM25) planner hook, and it fires on any
+ * table carrying a `bm25` index: `rt_fetch used out-of-bounds`, SQLSTATE XX000.
+ * Drizzle reports it as a bare `Failed query:`, with the real cause only in the
+ * driver's `[cause]`. Four properties make it uniquely nasty:
+ *
+ * - It fires at PLAN time. `EXPLAIN` alone crashes, so a table with zero
+ *   matching rows crashes exactly like a full one.
+ * - Stock Postgres, PGlite, and any table *without* a bm25 index run these
+ *   predicates happily — no test we can write will ever catch it.
+ * - It has nothing to do with jsonb. `upper(col) IS NULL` and `(id + 1) IS NULL`
+ *   crash identically; the trigger is a null test over a *computed expression*
+ *   in a qual. A null test over a bare column is fine.
+ * - Only quals crash — WHERE, JOIN ON, HAVING, and the WHERE of a subquery, CTE,
+ *   UPDATE or DELETE. SELECT lists, ORDER BY and `UPDATE … SET` targets are safe.
+ *
+ * `topics` and `messages` carry bm25 indexes today, but so do `agents`, `files`,
+ * `documents`, `chat_groups`, `knowledge_bases` and every `user_memories*`
+ * table — and that list is one migration away from growing. A predicate written
+ * today outlives the index list, so the rule is table-independent: never write
+ * the shape.
+ *
+ * COALESCE the extracted value to a sentinel instead — same semantics, a shape
+ * the planner survives:
+ *
+ * ```sql
+ * COALESCE(metadata ->> 'cronJobId', '') = ''                     -- "is null"
+ * COALESCE((metadata #>> '{a,b}')::numeric, 0) <= $1              -- numeric gate
+ * COALESCE(metadata ->> 'status', '') <> 'done'                   -- IS DISTINCT FROM
+ * ```
+ *
+ * (`IS DISTINCT FROM` measured safe on pg_search 0.15.26, but the guard bans it
+ * anyway — it sits one planner-hook change from the crashing family and the
+ * COALESCE form costs nothing.)
+ *
+ * This has now bitten three times: #13040, `getLatestSpineMessageId` (#16693)
+ * and `getDueScheduledTopics` (#17077 — the scheduled-run cron crashed on every
+ * tick from the day it shipped, so rate-limit continuations never once resumed).
+ * `jsonbNullTest.test.ts` is the source-shape guard that holds the line.
+ */
 export class TopicModel {
   private userId: string;
   private db: LobeChatDatabase;
@@ -170,6 +299,15 @@ export class TopicModel {
 
   private ownership = () =>
     buildWorkspaceWhere({ userId: this.userId, workspaceId: this.workspaceId }, topics);
+
+  /**
+   * In workspace mode `ownership()` matches every member's topics, so a bulk
+   * "clear all" would wipe teammates' conversations. Destructive sweeps must
+   * additionally pin `user_id` to the caller (personal mode is unchanged —
+   * ownership already scopes to the user there).
+   */
+  private mine = () => and(this.ownership(), eq(topics.userId, this.userId));
+
   private messageOwnership = () =>
     buildWorkspaceWhere({ userId: this.userId, workspaceId: this.workspaceId }, messages);
   // **************** Query *************** //
@@ -178,6 +316,8 @@ export class TopicModel {
     agentId,
     containerId,
     current = 0,
+    editingAgentId,
+    editingGroupId,
     excludeStatuses,
     excludeTriggers,
     includeTriggers,
@@ -266,6 +406,14 @@ export class TopicModel {
             not(inArray(topics.status, excludeStatuses as ChatTopicStatus[])),
           )
         : undefined;
+    // Topics created before the marker existed carry neither key and therefore
+    // match no target — they cannot: what they configured was never recorded
+    // anywhere in the row. `topics_agent_id_idx` still drives the scan, so the
+    // unindexed JSONB comparison only runs over one agent's rows.
+    const editingTargetCondition = and(
+      editingAgentId ? sql`${topics.metadata}->>'editingAgentId' = ${editingAgentId}` : undefined,
+      editingGroupId ? sql`${topics.metadata}->>'editingGroupId' = ${editingGroupId}` : undefined,
+    );
 
     // If groupId is provided, query topics by groupId directly
     if (groupId) {
@@ -295,9 +443,23 @@ export class TopicModel {
                 historySummary: topics.historySummary,
                 id: topics.id,
                 metadata: topics.metadata,
+                model: topics.model,
+                provider: topics.provider,
                 status: topics.status,
                 title: topics.title,
                 updatedAt: topics.updatedAt,
+                // Sidebar sorts/groups topics client-side by this `sortUpdatedAt` — the
+                // same `topicActivityAt` the ORDER BY uses (latest message time, COALESCE
+                // fallback to the row's own updatedAt). Keeping it separate from the
+                // display `updatedAt` above matches the client-side sort key to the server
+                // order (otherwise the two disagree and the list visibly jumps) while a
+                // rename/favorite edit still shows its real edit time. See rankTopics for
+                // the same activity-time pattern.
+                sortUpdatedAt: topicActivityAt,
+                // Workspace sidebars filter maintenance actions client-side by
+                // ownership (own vs workspace scope) — the filter needs the row
+                // owner even in the slim projection.
+                userId: topics.userId,
                 ...detailColumns,
               } as any)
               .from(topics)
@@ -337,6 +499,7 @@ export class TopicModel {
       const agentWhere = and(
         this.ownership(),
         agentCondition,
+        editingTargetCondition,
         includeTriggerCondition,
         excludeTriggerCondition,
         triggerCondition,
@@ -357,9 +520,23 @@ export class TopicModel {
                 historySummary: topics.historySummary,
                 id: topics.id,
                 metadata: topics.metadata,
+                model: topics.model,
+                provider: topics.provider,
                 status: topics.status,
                 title: topics.title,
                 updatedAt: topics.updatedAt,
+                // Sidebar sorts/groups topics client-side by this `sortUpdatedAt` — the
+                // same `topicActivityAt` the ORDER BY uses (latest message time, COALESCE
+                // fallback to the row's own updatedAt). Keeping it separate from the
+                // display `updatedAt` above matches the client-side sort key to the server
+                // order (otherwise the two disagree and the list visibly jumps) while a
+                // rename/favorite edit still shows its real edit time. See rankTopics for
+                // the same activity-time pattern.
+                sortUpdatedAt: topicActivityAt,
+                // Workspace sidebars filter maintenance actions client-side by
+                // ownership (own vs workspace scope) — the filter needs the row
+                // owner even in the slim projection.
+                userId: topics.userId,
                 ...detailColumns,
               } as any)
               .from(topics)
@@ -414,10 +591,24 @@ export class TopicModel {
               historySummary: topics.historySummary,
               id: topics.id,
               metadata: topics.metadata,
+              model: topics.model,
+              provider: topics.provider,
               sessionId: topics.sessionId,
               status: topics.status,
               title: topics.title,
               updatedAt: topics.updatedAt,
+              // Sidebar sorts/groups topics client-side by this `sortUpdatedAt` — the
+              // same `topicActivityAt` the ORDER BY uses (latest message time, COALESCE
+              // fallback to the row's own updatedAt). Keeping it separate from the
+              // display `updatedAt` above matches the client-side sort key to the server
+              // order (otherwise the two disagree and the list visibly jumps) while a
+              // rename/favorite edit still shows its real edit time. See rankTopics for
+              // the same activity-time pattern.
+              sortUpdatedAt: topicActivityAt,
+              // Workspace sidebars filter maintenance actions client-side by
+              // ownership (own vs workspace scope) — the filter needs the row
+              // owner even in the slim projection.
+              userId: topics.userId,
               ...detailColumns,
             } as any)
             .from(topics)
@@ -437,7 +628,7 @@ export class TopicModel {
 
     // Remove internal fields before returning
 
-    const cleanItems = items.map(({ agentId, sessionId, ...rest }) => rest);
+    const cleanItems = items.map(({ agentId: _agentId, sessionId: _sessionId, ...rest }) => rest);
 
     logTiming(timing, 'db.topic.query:done', {
       itemCount: cleanItems.length,
@@ -452,6 +643,19 @@ export class TopicModel {
     return this.db.query.topics.findFirst({
       where: and(eq(topics.id, id), this.ownership()),
     });
+  };
+
+  /**
+   * Minimal creator projection for router-level workspace row checks on
+   * batch-by-ids operations (batch delete / move).
+   */
+  findOwnersByIds = async (ids: string[]): Promise<{ id: string; userId: string }[]> => {
+    if (ids.length === 0) return [];
+
+    return this.db
+      .select({ id: topics.id, userId: topics.userId })
+      .from(topics)
+      .where(and(inArray(topics.id, ids), this.ownership()));
   };
 
   /**
@@ -482,27 +686,142 @@ export class TopicModel {
   };
 
   /**
-   * Query the current user's topics, optionally filtered by status. Used by the
-   * Fleet view to list actively-running topics across all agents without
-   * pulling the full topic set to the client.
+   * Query the current user's topics, optionally filtered by status — e.g. to
+   * list actively-running topics across all agents without pulling the full
+   * topic set to the client.
+   *
+   * `withLastMessage` additionally pulls each topic's last assistant reply, so a
+   * list can show what the agent actually said instead of just a title. The
+   * preview is truncated server-side — raw assistant output is unbounded
+   * markdown, and a list only ever renders the head of it.
    */
   queryTopics = async ({
     statuses,
     pageSize = 200,
-  }: { pageSize?: number; statuses?: string[] } = {}): Promise<TopicItem[]> => {
+    withLastMessage,
+  }: {
+    pageSize?: number;
+    statuses?: string[];
+    withLastMessage?: boolean;
+  } = {}): Promise<TopicListItem[]> => {
+    const where = and(
+      this.ownership(),
+      statuses && statuses.length > 0
+        ? inArray(topics.status, statuses as ChatTopicStatus[])
+        : undefined,
+    );
+
+    // When the topic's current run started, so a list can show live elapsed
+    // time instead of `updatedAt` (which moves on every message write). The
+    // latest *top-level* running operation is the current run: sub-operations
+    // (callAgent) would restart the clock at their own spawn time, and an
+    // abandoned `running` row from a crashed earlier run sorts below the live
+    // one. Not scoped by `ownership()` — in a workspace the run may have been
+    // started by another member, and the topic join is already ownership-gated.
+    const runStartedAtSubquery = this.db
+      .select({ value: agentOperations.startedAt })
+      .from(agentOperations)
+      .where(
+        and(
+          eq(agentOperations.topicId, topics.id),
+          eq(agentOperations.status, 'running'),
+          isNull(agentOperations.parentOperationId),
+          isNotNull(agentOperations.startedAt),
+        ),
+      )
+      .orderBy(desc(agentOperations.startedAt))
+      .limit(1);
+
+    // CASE-gated so only rows that are actually running pay for the lookup —
+    // and a stale running op under a finished topic can't resurrect a timer.
+    const runStartedAtColumn =
+      sql<Date | null>`CASE WHEN ${topics.status} = 'running' THEN (${runStartedAtSubquery}) ELSE NULL END`
+        .mapWith(agentOperations.startedAt)
+        .as('run_started_at');
+
+    if (!withLastMessage) {
+      return this.db
+        .select({
+          ...getTableColumns(topics),
+          runStartedAt: runStartedAtColumn,
+        })
+        .from(topics)
+        .where(where)
+        .orderBy(desc(topics.updatedAt))
+        .limit(pageSize);
+    }
+
+    // Built with the query builder rather than a raw `sql` template so the inner
+    // `eq(messages.topicId, topics.id)` renders both sides fully qualified —
+    // see the note on `firstUserMessageSubquery` in `query()`.
+    //
+    // Assistant turns that only carried tool calls persist an empty `content`;
+    // skipping them lands on the last thing the agent actually *said*.
+    // One char past the limit, so the caller can tell "exactly this long" from
+    // "cut short" and mark the cut instead of ending mid-sentence.
+    const lastAssistantMessageSubquery = this.db
+      .select({
+        value: sql<string>`left(${messages.content}, ${LAST_MESSAGE_PREVIEW_LENGTH + 1})`,
+      })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.topicId, topics.id),
+          eq(messages.role, 'assistant'),
+          this.messageOwnership(),
+          ne(messages.content, ''),
+        ),
+      )
+      .orderBy(desc(messages.createdAt))
+      .limit(1);
+
+    const rows = await this.db
+      .select({
+        ...getTableColumns(topics),
+        lastAssistantMessage: sql<string | null>`(${lastAssistantMessageSubquery})`.as(
+          'last_assistant_message',
+        ),
+        runStartedAt: runStartedAtColumn,
+      })
+      .from(topics)
+      .where(where)
+      .orderBy(desc(topics.updatedAt))
+      .limit(pageSize);
+
+    return rows.map((row) => ({
+      ...row,
+      lastAssistantMessage:
+        row.lastAssistantMessage && row.lastAssistantMessage.length > LAST_MESSAGE_PREVIEW_LENGTH
+          ? `${row.lastAssistantMessage.slice(0, LAST_MESSAGE_PREVIEW_LENGTH)}…`
+          : row.lastAssistantMessage,
+    }));
+  };
+
+  /**
+   * Recent topics from the same IM channel, most-recent first. Matches the
+   * channel via the `metadata.bot.platformThreadId` path written at topic
+   * creation (see `ChatTopicBotContext`). Used to pre-inject cross-session
+   * history on platforms that can't read chat history at runtime (e.g. WeChat,
+   * whose `readMessages` throws), so a fresh topic still knows what the channel
+   * was just talking about.
+   */
+  findRecentByBotThread = async (
+    platformThreadId: string,
+    { limit = 3 }: { limit?: number } = {},
+  ): Promise<TopicItem[]> => {
+    if (!platformThreadId) return [];
+
     return this.db
       .select()
       .from(topics)
       .where(
         and(
           this.ownership(),
-          statuses && statuses.length > 0
-            ? inArray(topics.status, statuses as ChatTopicStatus[])
-            : undefined,
+          sql`${topics.metadata} -> 'bot' ->> 'platformThreadId' = ${platformThreadId}`,
         ),
       )
       .orderBy(desc(topics.updatedAt))
-      .limit(pageSize);
+      .limit(limit);
   };
 
   queryByKeyword = async (
@@ -809,6 +1128,7 @@ export class TopicModel {
             { userId: this.userId, workspaceId: this.workspaceId },
             {
               ...originalTopic,
+              ...COPIED_TOPIC_USAGE_RESET,
               clientId: null,
               id: this.genId(),
               title: newTitle || originalTopic?.title,
@@ -870,6 +1190,10 @@ export class TopicModel {
             ...message,
             clientId: null,
             id: newId,
+            // A duplicate consumed no tokens: mark it so usage reports do not
+            // count the source's generation twice (the figures themselves stay
+            // — they are what the transcript records).
+            metadata: markCopiedMessageMetadata(message.metadata),
             parentId: newParentId,
             tools: newTools,
             topicId: duplicatedTopic.id,
@@ -910,23 +1234,52 @@ export class TopicModel {
 
   /**
    * Deletes multiple topics based on the sessionId.
+   * `restrictToCreator` limits the sweep to the caller's own rows (workspace
+   * non-owner members must not clear teammates' topics).
    */
-  batchDeleteBySessionId = async (sessionId?: string | null) => {
-    return this.db.delete(topics).where(and(this.matchSession(sessionId), this.ownership()));
+  batchDeleteBySessionId = async (
+    sessionId?: string | null,
+    options?: { restrictToCreator?: boolean },
+  ) => {
+    return this.db
+      .delete(topics)
+      .where(
+        and(
+          this.matchSession(sessionId),
+          options?.restrictToCreator ? this.mine() : this.ownership(),
+        ),
+      );
   };
 
   /**
    * Deletes multiple topics based on the groupId.
+   * `restrictToCreator` limits the sweep to the caller's own rows in workspace mode.
    */
-  batchDeleteByGroupId = async (groupId?: string | null) => {
-    return this.db.delete(topics).where(and(this.matchGroup(groupId), this.ownership()));
+  batchDeleteByGroupId = async (
+    groupId?: string | null,
+    options?: { restrictToCreator?: boolean },
+  ) => {
+    return this.db
+      .delete(topics)
+      .where(
+        and(this.matchGroup(groupId), options?.restrictToCreator ? this.mine() : this.ownership()),
+      );
   };
 
   /**
    * Deletes all topics matching the given agentId (`topics.agentId`).
+   * `restrictToCreator` limits the sweep to the caller's own rows (workspace
+   * non-owner members must not clear teammates' topics).
    */
-  batchDeleteByAgentId = async (agentId: string) => {
-    return this.db.delete(topics).where(and(this.ownership(), eq(topics.agentId, agentId)));
+  batchDeleteByAgentId = async (agentId: string, options?: { restrictToCreator?: boolean }) => {
+    return this.db
+      .delete(topics)
+      .where(
+        and(
+          options?.restrictToCreator ? this.mine() : this.ownership(),
+          eq(topics.agentId, agentId),
+        ),
+      );
   };
 
   /**
@@ -937,7 +1290,7 @@ export class TopicModel {
   };
 
   deleteAll = async () => {
-    return this.db.delete(topics).where(and(this.ownership()));
+    return this.db.delete(topics).where(this.mine());
   };
 
   // **************** Update *************** //
@@ -948,6 +1301,102 @@ export class TopicModel {
       .set({ ...data, updatedAt: new Date() })
       .where(and(eq(topics.id, id), this.ownership()))
       .returning();
+  };
+
+  /**
+   * Settle a topic out of `running` once its run has terminated server-side.
+   *
+   * Guarded on `status = 'running'` so it is race-tolerant with clients: an
+   * attached renderer writes 'active' (focused) or 'unread' (backgrounded) on
+   * the terminal stream event, and whichever write lands first wins — this one
+   * degrades to a no-op instead of clobbering it. Without a server-side settle,
+   * a run with no client attached (cron-dispatched scheduled resume, app closed
+   * mid-run) leaves the topic at `running` forever.
+   *
+   * Returns the settled row, or nothing when the guard didn't match.
+   */
+  settleRunningStatus = async (id: string, status: TopicItem['status'] = 'unread') => {
+    return this.db
+      .update(topics)
+      .set({ status, updatedAt: new Date() })
+      .where(and(eq(topics.id, id), eq(topics.status, 'running'), this.ownership()))
+      .returning({ id: topics.id, status: topics.status });
+  };
+
+  /**
+   * Atomically clear and settle the operation that still owns a topic.
+   * A row lock keeps a stale terminal callback from clearing a newer operation
+   * between the ownership check and update. Missing markers are intentionally
+   * not settled because a client-side run can set `status = 'running'` without
+   * an operation marker, so there is no proof that the terminal callback owns it.
+   *
+   * The result distinguishes a missing marker from a conflicting operation:
+   * some legitimate hetero callbacks arrive after another terminal path has
+   * already cleared their marker, while a callback that observes a newer
+   * operation must stop before dispatching lifecycle hooks for the wrong run.
+   */
+  settleRunningOperation = async (
+    id: string,
+    operationId: string,
+    status: TopicItem['status'] = 'unread',
+  ) => {
+    return this.db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select({ metadata: topics.metadata, status: topics.status })
+        .from(topics)
+        .where(and(eq(topics.id, id), this.ownership()))
+        .for('update');
+
+      const runningOperation = existing?.metadata?.runningOperation;
+      if (!runningOperation) {
+        const currentMessage = existing?.metadata?.heteroCurrentMsgId;
+        return {
+          assistantMessageId:
+            currentMessage?.operationId === operationId ? currentMessage.msgId : undefined,
+          status: 'missing' as const,
+        };
+      }
+      const isRoot = runningOperation.operationId === operationId;
+      const operation = isRoot
+        ? runningOperation
+        : runningOperation.childOperations?.find((child) => child.operationId === operationId);
+      if (!operation) {
+        return { activeOperationId: runningOperation.operationId, status: 'conflict' as const };
+      }
+
+      const metadata = {
+        ...existing.metadata,
+        runningOperation: isRoot
+          ? null
+          : {
+              ...runningOperation,
+              childOperations: runningOperation.childOperations?.filter(
+                (child) => child.operationId !== operationId,
+              ),
+            },
+      } as ChatTopicMetadata;
+
+      await tx
+        .update(topics)
+        .set({
+          metadata,
+          ...(isRoot && existing.status === 'running' ? { status } : {}),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(topics.id, id), this.ownership()));
+
+      const currentMessage = existing.metadata?.heteroCurrentMsgId;
+      return {
+        assistantMessageId:
+          currentMessage?.operationId === operationId
+            ? currentMessage.msgId
+            : operation.assistantMessageId,
+        hooks: operation.hooks,
+        orchestrationRole: operation.orchestrationRole,
+        status: 'settled' as const,
+        threadId: operation.threadId ?? undefined,
+      };
+    });
   };
 
   /**
@@ -1070,6 +1519,351 @@ export class TopicModel {
     });
   };
 
+  appendRunningOperationChild = async (
+    id: string,
+    parentOperationId: string,
+    child: NonNullable<ChatTopicMetadata['runningOperation']>,
+  ): Promise<boolean> =>
+    this.db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select({ metadata: topics.metadata })
+        .from(topics)
+        .where(and(eq(topics.id, id), this.ownership()))
+        .for('update');
+      const runningOperation = existing?.metadata?.runningOperation;
+      if (!existing || runningOperation?.operationId !== parentOperationId) return false;
+
+      await tx
+        .update(topics)
+        .set({
+          metadata: {
+            ...existing.metadata,
+            runningOperation: {
+              ...runningOperation,
+              childOperations: [
+                ...(runningOperation.childOperations ?? []).filter(
+                  (operation) => operation.operationId !== child.operationId,
+                ),
+                child,
+              ],
+            },
+          },
+        })
+        .where(and(eq(topics.id, id), this.ownership()));
+      return true;
+    });
+
+  removeRunningOperationChild = async (id: string, operationId: string): Promise<boolean> =>
+    this.db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select({ metadata: topics.metadata })
+        .from(topics)
+        .where(and(eq(topics.id, id), this.ownership()))
+        .for('update');
+      const runningOperation = existing?.metadata?.runningOperation;
+      if (!existing || !runningOperation?.childOperations) return false;
+      await tx
+        .update(topics)
+        .set({
+          metadata: {
+            ...existing.metadata,
+            runningOperation: {
+              ...runningOperation,
+              childOperations: runningOperation.childOperations.filter(
+                (child) => child.operationId !== operationId,
+              ),
+            },
+          },
+        })
+        .where(and(eq(topics.id, id), this.ownership()));
+      return true;
+    });
+
+  updateRunningOperationAssistantMessage = async (
+    id: string,
+    operationId: string,
+    assistantMessageId: string,
+  ): Promise<boolean> =>
+    this.db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select({ metadata: topics.metadata })
+        .from(topics)
+        .where(and(eq(topics.id, id), this.ownership()))
+        .for('update');
+      const runningOperation = existing?.metadata?.runningOperation;
+      if (!existing || !runningOperation) return false;
+
+      if (runningOperation.operationId === operationId) {
+        await tx
+          .update(topics)
+          .set({
+            metadata: {
+              ...existing.metadata,
+              heteroCurrentMsgId: { msgId: assistantMessageId, operationId },
+              runningOperation: { ...runningOperation, assistantMessageId },
+            },
+          })
+          .where(and(eq(topics.id, id), this.ownership()));
+        return true;
+      }
+
+      const childOperations = runningOperation.childOperations?.map((child) =>
+        child.operationId === operationId ? { ...child, assistantMessageId } : child,
+      );
+      if (!childOperations?.some((child) => child.operationId === operationId)) return false;
+
+      await tx
+        .update(topics)
+        .set({
+          metadata: {
+            ...existing.metadata,
+            heteroCurrentMsgId: { msgId: assistantMessageId, operationId },
+            runningOperation: { ...runningOperation, childOperations },
+          },
+        })
+        .where(and(eq(topics.id, id), this.ownership()));
+      return true;
+    });
+
+  takeRunningOperation = async (
+    id: string,
+    operationId: string,
+  ): Promise<
+    | {
+        isRoot: boolean;
+        operation: NonNullable<ChatTopicMetadata['runningOperation']>;
+      }
+    | undefined
+  > =>
+    this.db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select({ metadata: topics.metadata })
+        .from(topics)
+        .where(and(eq(topics.id, id), this.ownership()))
+        .for('update');
+      const runningOperation = existing?.metadata?.runningOperation;
+      if (!existing || !runningOperation) return undefined;
+
+      if (runningOperation.operationId === operationId) {
+        await tx
+          .update(topics)
+          .set({
+            metadata: { ...existing.metadata, runningOperation: null },
+          })
+          .where(and(eq(topics.id, id), this.ownership()));
+        return { isRoot: true, operation: runningOperation };
+      }
+
+      const child = runningOperation.childOperations?.find(
+        (candidate) => candidate.operationId === operationId,
+      );
+      if (!child) return undefined;
+
+      await tx
+        .update(topics)
+        .set({
+          metadata: {
+            ...existing.metadata,
+            runningOperation: {
+              ...runningOperation,
+              childOperations: runningOperation.childOperations?.filter(
+                (candidate) => candidate.operationId !== operationId,
+              ),
+            },
+          },
+        })
+        .where(and(eq(topics.id, id), this.ownership()));
+      return { isRoot: false, operation: child };
+    });
+
+  /**
+   * Whether the run a `runningOperation` marker points at is still the topic's
+   * legitimate owner.
+   *
+   * The marker itself cannot answer this — it carries no heartbeat and is
+   * cleared best-effort — so the authority is the operation row, which both the
+   * in-process runtime (`createOperation`) and the heterogeneous path
+   * (`CompletionLifecycle.recordStart`) write before publishing the marker.
+   *
+   * Falls back to the marker's own `startedAt` only when no row exists: hetero's
+   * `recordStart` is deliberately non-fatal, so a DB hiccup can leave a live run
+   * with a marker and no row. A marker with neither a row nor a stamp cannot be
+   * proven live and must not keep an already-stuck topic stuck.
+   */
+  private isRunningOperationAlive = async (
+    tx: Pick<LobeChatDatabase, 'select'>,
+    runningOperation: NonNullable<ChatTopicMetadata['runningOperation']>,
+  ): Promise<boolean> => {
+    const [operation] = await tx
+      .select({ createdAt: agentOperations.createdAt, status: agentOperations.status })
+      .from(agentOperations)
+      .where(eq(agentOperations.id, runningOperation.operationId))
+      .limit(1);
+
+    if (!operation) {
+      const markerStartedAt = runningOperation.startedAt
+        ? Date.parse(runningOperation.startedAt)
+        : Number.NaN;
+      return (
+        Number.isFinite(markerStartedAt) &&
+        Date.now() - markerStartedAt < ABANDONED_OPERATION_TTL_MS
+      );
+    }
+
+    if (!LIVE_OPERATION_STATUSES.has(operation.status)) return false;
+    if (UNBOUNDED_OPERATION_STATUSES.has(operation.status)) return true;
+
+    // Claims `running`/`idle`, but a killed process never writes a terminal
+    // status — age it out so the topic is not held forever.
+    const startedAt = operation.createdAt ? new Date(operation.createdAt).getTime() : Number.NaN;
+    return !Number.isFinite(startedAt) || Date.now() - startedAt < ABANDONED_OPERATION_TTL_MS;
+  };
+
+  /**
+   * Atomically reserve an idle topic for one task-callback delivery.
+   *
+   * The topic row lock closes the check/set race between callback workers:
+   * only one callback can observe both `runningOperation` and the reservation
+   * as empty. Foreground/tool continuations clear `runningOperation` before a
+   * callback can claim the topic, so the callback always re-anchors on the
+   * completed turn's latest spine.
+   */
+  tryReserveTaskCallback = async (
+    id: string,
+    messageId: string,
+    options?: {
+      /**
+       * Permit a start that runs *under* this marker (a group member starting
+       * beneath its supervisor). A pure permission check — it never takes the
+       * reservation.
+       */
+      allowRunningOperationId?: string;
+      /**
+       * Skip the `runningOperation` check entirely and serialize only on the
+       * short reservation. Set by interactive sends: "don't run two foreground
+       * turns at once" is a UX policy the client already owns end to end (queue
+       * tray, "Send now", FIFO drain), and it is the only layer that can show
+       * the user anything. A second, blind copy of that policy here can only
+       * fail worse — it used to destroy the message before it was ever
+       * persisted. Background starts (task callbacks, cron, bots) have no such
+       * queue and keep the check.
+       */
+      ignoreRunningOperation?: boolean;
+      replacesOperationId?: string;
+    },
+  ): Promise<boolean | null> =>
+    this.db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select({ metadata: topics.metadata })
+        .from(topics)
+        .where(and(eq(topics.id, id), this.ownership()))
+        .for('update');
+
+      if (!existing) return null;
+
+      const reservation = existing.metadata?.taskCallbackReservation;
+      const reservedAt = reservation ? Date.parse(reservation.reservedAt) : 0;
+      const hasLiveReservation =
+        reservation &&
+        Number.isFinite(reservedAt) &&
+        Date.now() - reservedAt < TASK_CALLBACK_RESERVATION_TTL_MS;
+
+      if (reservation?.messageId === messageId && hasLiveReservation) return true;
+
+      const runningOperation = existing.metadata?.runningOperation;
+      const ownedRunningOperation =
+        !!options?.allowRunningOperationId &&
+        runningOperation?.operationId === options.allowRunningOperationId;
+      if (options?.allowRunningOperationId) return ownedRunningOperation;
+
+      const canReplaceRunningOperation =
+        !!options?.replacesOperationId &&
+        runningOperation?.operationId === options.replacesOperationId;
+
+      // Only a run that can prove it is still alive may hold the topic. Ask the
+      // operation row rather than the marker's age: the marker is never
+      // refreshed, so age alone declares a legitimately long run (an approval
+      // wait can last days) dead and lets a competing continuation start.
+      const hasLiveRunningOperation =
+        !!runningOperation &&
+        !canReplaceRunningOperation &&
+        !options?.ignoreRunningOperation &&
+        (await this.isRunningOperationAlive(tx, runningOperation));
+
+      if (hasLiveRunningOperation || hasLiveReservation) return false;
+
+      await tx
+        .update(topics)
+        .set({
+          metadata: {
+            ...existing.metadata,
+            ...(canReplaceRunningOperation && { runningOperation: null }),
+            taskCallbackReservation: {
+              messageId,
+              reservedAt: new Date().toISOString(),
+            },
+          },
+        })
+        .where(and(eq(topics.id, id), this.ownership()));
+
+      return true;
+    });
+
+  /**
+   * Release only the caller's reservation. The ownership check prevents a
+   * delayed finally block from clearing a newer callback's claim.
+   */
+  releaseTaskCallbackReservation = async (id: string, messageId: string): Promise<void> => {
+    await this.db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select({ metadata: topics.metadata })
+        .from(topics)
+        .where(and(eq(topics.id, id), this.ownership()))
+        .for('update');
+
+      if (existing?.metadata?.taskCallbackReservation?.messageId !== messageId) return;
+
+      await tx
+        .update(topics)
+        .set({
+          metadata: {
+            ...existing.metadata,
+            taskCallbackReservation: null,
+          },
+        })
+        .where(and(eq(topics.id, id), this.ownership()));
+    });
+  };
+
+  /**
+   * Arm a scheduled run on an owned topic: writes `metadata.scheduledRun` and
+   * flips the status to `scheduled` in a single update.
+   *
+   * The pair is one fact — a topic that is `scheduled` with no payload spins in
+   * the dispatcher forever, and a payload on a non-`scheduled` topic never fires
+   * — so they must never be written separately. The inverse is
+   * {@link TopicModel.clearScheduledRun}.
+   */
+  armScheduledRun = async (id: string, scheduledRun: TopicScheduledRun): Promise<void> => {
+    await this.db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select({ metadata: topics.metadata })
+        .from(topics)
+        .where(and(eq(topics.id, id), this.ownership()))
+        .for('update');
+
+      if (!existing) return;
+
+      await tx
+        .update(topics)
+        .set({
+          metadata: { ...existing.metadata, scheduledRun } as ChatTopicMetadata,
+          status: 'scheduled',
+        })
+        .where(and(eq(topics.id, id), this.ownership()));
+    });
+  };
+
   getCronTopicsGroupedByCronJob = async (
     agentId: string,
   ): Promise<{ cronJobId: string; topics: TopicItem[] }[]> => {
@@ -1081,7 +1875,7 @@ export class TopicModel {
           this.ownership(),
           eq(topics.agentId, agentId),
           eq(topics.trigger, 'cron'),
-          sql`(${topics.metadata}->>'cronJobId') IS NOT NULL`,
+          sql`COALESCE(${topics.metadata}->>'cronJobId', '') <> ''`,
         ),
       )
       .orderBy(desc(topics.createdAt));
@@ -1176,10 +1970,10 @@ export class TopicModel {
         options.endDate ? lte(topics.createdAt, options.endDate) : undefined,
         options.ignoreExtracted
           ? undefined
-          : or(
-              isNull(topics.metadata),
-              sql`(${topics.metadata}->>'userMemoryExtractStatus') IS DISTINCT FROM 'completed'`,
-            ),
+          : // COALESCE, not `IS DISTINCT FROM`: a null test on a jsonb arrow
+            // expression crashes the production engine (see the note on the class).
+            // A null `metadata` extracts to '' here too, so this covers it.
+            sql`COALESCE(${topics.metadata}->>'userMemoryExtractStatus', '') <> 'completed'`,
         cursorCondition,
       ),
     });
@@ -1202,13 +1996,213 @@ export class TopicModel {
           options.endDate ? lte(topics.createdAt, options.endDate) : undefined,
           options.ignoreExtracted
             ? undefined
-            : or(
-                isNull(topics.metadata),
-                sql`(${topics.metadata}->>'userMemoryExtractStatus') IS DISTINCT FROM 'completed'`,
-              ),
+            : sql`COALESCE(${topics.metadata}->>'userMemoryExtractStatus', '') <> 'completed'`,
         ),
       );
 
     return result[0]?.total ?? 0;
   };
+
+  /**
+   * Resets the memory-extraction state of all the caller's topics back to
+   * `pending`, clearing any previous run summary. Used by "purge all
+   * memories": after memories are deleted, topics keep `userMemoryExtractStatus =
+   * 'completed'`, so `isTopicExtracted()` skips them forever and nothing can
+   * ever be re-extracted. Resetting to `pending` makes the next memory
+   * analysis re-process them. Fixes #18498.
+   *
+   * Scoped by `userId` only (not `mine()`): `deleteAll` removes every memory
+   * belonging to the caller regardless of workspace scope, so the reset must
+   * cover topics across personal and all workspace scopes alike, otherwise
+   * topics in the other scope keep `completed` and stay stuck behind the
+   * extraction skip gate.
+   */
+  resetMemoryExtractStatus = async () => {
+    return this.db
+      .update(topics)
+      .set({
+        metadata: sql`jsonb_set(
+          jsonb_set(${topics.metadata}, '{userMemoryExtractStatus}', to_jsonb('pending'::text), true),
+          '{userMemoryExtractRunState}', '{}'::jsonb, true
+        )`,
+      })
+      .where(eq(topics.userId, this.userId));
+  };
+
+  // **************** Scheduled run (backend cron) *************** //
+
+  /**
+   * Topics with a scheduled run that has come due.
+   * System-level sweep (no ownership filter) used by the cron dispatcher.
+   *
+   * Due = `status = 'scheduled'` AND the run's gate has passed AND there is no
+   * live claim (`scheduledRun.claim.expiresAt` is absent, or already expired) —
+   * so a topic another replica is mid-dispatch on is skipped.
+   *
+   * `runAt` is the gate for every {@link TopicScheduledRunKind}: a row carrying a
+   * `kind` but no `runAt` is never due, which is what keeps a half-written
+   * scheduled topic from being dispatched immediately.
+   *
+   * The one exception is a row parked by the pre-`kind` version, which has no
+   * `runAt` and gated on the rate-limit reset instead. Those are still in the DB
+   * on deploy, so this reproduces their old gate rather than stranding them at
+   * `scheduled` forever — matching `parseTopicScheduledRun`, which upgrades the
+   * payload the dispatcher then reads.
+   */
+  static async getDueScheduledTopics(
+    db: LobeChatDatabase,
+    now: Date = new Date(),
+  ): Promise<TopicItem[]> {
+    const nowIso = now.toISOString();
+    const nowEpochSeconds = Math.floor(now.getTime() / 1000);
+
+    // Every jsonb path below is COALESCE'd to a sentinel rather than null-tested:
+    // `#>> … IS NULL` in a WHERE clause takes the production engine down. See the
+    // note on the class.
+    const runAt = sql`COALESCE(${topics.metadata}#>>'{scheduledRun,runAt}', '')`;
+
+    return db
+      .select()
+      .from(topics)
+      .where(
+        and(
+          eq(topics.status, 'scheduled'),
+          or(
+            // `''` is the absent-runAt sentinel, and it never satisfies this pair —
+            // an absent gate must not read as "due now", which is what keeps a
+            // half-written schedule parked.
+            and(sql`${runAt} <> ''`, sql`${runAt} <= ${nowIso}`),
+            // Legacy (pre-`kind`) payload: no `runAt`, gated on the rate-limit
+            // reset, and an absent reset read as "due now" (hence the 0 default).
+            and(
+              sql`${runAt} = ''`,
+              sql`COALESCE(${topics.metadata}#>>'{scheduledRun,reason}', '') = 'rate_limit'`,
+              sql`COALESCE((${topics.metadata}#>>'{scheduledRun,rateLimit,resetsAt}')::numeric, 0) <= ${nowEpochSeconds}`,
+            ),
+          ),
+          // No claim, or the lease has expired. `''` (no claim) sorts before every
+          // ISO timestamp, so the same comparison covers both.
+          sql`COALESCE(${topics.metadata}#>>'{scheduledRun,claim,expiresAt}', '') <= ${nowIso}`,
+        ),
+      );
+  }
+
+  /**
+   * Atomically claim a scheduled topic before dispatch, so two concurrent cron
+   * ticks can't trigger the same continuation twice. Serializes on the row with
+   * `SELECT … FOR UPDATE` (mirrors {@link updateMetadata}) and only writes the
+   * lease if the topic is still `scheduled` and not already claimed by a live
+   * lease. Returns `true` when this caller won the claim.
+   */
+  static async claimScheduledTopic(
+    db: LobeChatDatabase,
+    id: string,
+    claim: { claimedAt: string; expiresAt: string; id: string },
+    now: Date = new Date(),
+  ): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ metadata: topics.metadata, status: topics.status })
+        .from(topics)
+        .where(eq(topics.id, id))
+        .for('update');
+
+      if (!row || row.status !== 'scheduled') return false;
+
+      const scheduledRun = row.metadata?.scheduledRun;
+      if (!scheduledRun) return false;
+
+      const existingClaim = scheduledRun.claim;
+      const claimLive = existingClaim && new Date(existingClaim.expiresAt) > now;
+      if (claimLive) return false;
+
+      await tx
+        .update(topics)
+        .set({
+          metadata: {
+            ...row.metadata,
+            scheduledRun: { ...scheduledRun, claim },
+          } as ChatTopicMetadata,
+        })
+        .where(eq(topics.id, id));
+
+      return true;
+    });
+  }
+
+  /**
+   * Clear the scheduled continuation and restore a normal status. Used both when
+   * a continuation is successfully dispatched/executed and when it is cancelled.
+   */
+  static async clearScheduledRun(
+    db: LobeChatDatabase,
+    id: string,
+    nextStatus: ChatTopicStatus = 'active',
+    expectedClaimId?: string,
+  ): Promise<void> {
+    await db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ metadata: topics.metadata, status: topics.status })
+        .from(topics)
+        .where(eq(topics.id, id))
+        .for('update');
+      if (!row || row.status !== 'scheduled') return;
+      if (expectedClaimId && row.metadata?.scheduledRun?.claim?.id !== expectedClaimId) return;
+
+      const nextMetadata = { ...row.metadata, scheduledRun: null } as ChatTopicMetadata;
+      await tx
+        .update(topics)
+        .set({ metadata: nextMetadata, status: nextStatus })
+        .where(eq(topics.id, id));
+    });
+  }
+
+  /**
+   * Re-point a still-pending scheduled run at a new failed-attempt message. A
+   * dispatch that fails inside execAgent leaves its own error bubble on the
+   * placeholder it created; tracking that bubble as the run's
+   * `failedAssistantMessageId` lets the next tick's pre-dispatch cleanup clear
+   * it the same way it clears the original card, so retries don't strand one
+   * stale error bubble per failed attempt.
+   *
+   * `expectedClaimId` fences stale writers the same way it does in
+   * {@link TopicModel.clearScheduledRun}: a dispatch attempt that outlived its
+   * claim lease — or one whose schedule the user cancelled and re-armed — must
+   * not overwrite the pointer of a NEWER scheduled run, or the next cleanup
+   * would delete / anchor against an unrelated message. No-ops when the
+   * schedule was cleared or the claim no longer matches.
+   */
+  static async repointScheduledRunFailedMessage(
+    db: LobeChatDatabase,
+    id: string,
+    failedAssistantMessageId: string,
+    expectedClaimId: string,
+  ): Promise<void> {
+    await db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ metadata: topics.metadata, status: topics.status })
+        .from(topics)
+        .where(eq(topics.id, id))
+        .for('update');
+      if (!row || row.status !== 'scheduled') return;
+
+      const scheduledRun = row.metadata?.scheduledRun;
+      if (!scheduledRun) return;
+      if (scheduledRun.claim?.id !== expectedClaimId) return;
+
+      await tx
+        .update(topics)
+        .set({
+          metadata: {
+            ...row.metadata,
+            scheduledRun: {
+              ...scheduledRun,
+              failedAssistantMessageId,
+              updatedAt: new Date().toISOString(),
+            },
+          } as ChatTopicMetadata,
+        })
+        .where(eq(topics.id, id));
+    });
+  }
 }

@@ -1,4 +1,5 @@
 import type {
+  AgentProfile,
   LobeAgentAgencyConfig,
   LobeAgentChatConfig,
   LobeAgentTTSConfig,
@@ -29,6 +30,9 @@ import { workspaces } from './workspace';
 // agent is a model that represents the assistant that is created by the user
 // agent can have its own knowledge base and files
 
+/** Agent visibility — shared by column def and insert schema. */
+export const AGENT_VISIBILITY = ['private', 'public'] as const;
+
 export const agents = pgTable(
   'agents',
   {
@@ -38,12 +42,34 @@ export const agents = pgTable(
       .notNull(),
     slug: varchar('slug', { length: 100 }).$defaultFn(() => randomSlug(3)),
     title: varchar('title', { length: 255 }),
+    /**
+     * User-facing display name. Independent of `title` (which is slated to
+     * become an identity/role marker); optional at creation, editable later.
+     */
+    name: varchar('name', { length: 255 }),
     description: varchar('description', { length: 1000 }),
     tags: jsonb('tags').$type<string[]>().default([]),
     editorData: jsonb('editor_data'),
     avatar: text('avatar'),
     backgroundColor: text('background_color'),
     marketIdentifier: text('market_identifier'),
+    /**
+     * Default extension bag: anything an agent needs to carry that has no
+     * column and no home in `profile`. Untyped on purpose — give a value a
+     * typed home the moment more than one place reads it.
+     */
+    metadata: jsonb('metadata').$type<Record<string, unknown>>(),
+    /**
+     * The agent's character sheet — traits and artwork. One bag instead of a
+     * column per trait; nothing in it is ever queried. See `AgentProfile`.
+     */
+    profile: jsonb('profile').$type<AgentProfile>(),
+    /**
+     * Owning society (agent org). Left without a foreign key until the
+     * societies table exists; a plain column because agents are listed and
+     * filtered by it — index it together with the first query that does.
+     */
+    societyId: text('society_id'),
 
     plugins: jsonb('plugins').$type<string[]>(),
 
@@ -80,15 +106,14 @@ export const agents = pgTable(
      * the creator (`user_id`). Ignored in personal mode where the row is
      * implicitly private to its owner.
      */
-    visibility: text('visibility', { enum: ['private', 'public'] })
-      .default('public')
-      .notNull(),
+    visibility: text('visibility', { enum: AGENT_VISIBILITY }).default('public').notNull(),
 
     ...timestamps,
   },
   (t) => [
     uniqueIndex('client_id_user_id_unique').on(t.clientId, t.userId),
     uniqueIndex('agents_slug_user_id_unique').on(t.slug, t.userId).where(isNull(t.workspaceId)),
+    index('agents_created_at_idx').on(t.createdAt),
     index('agents_user_id_idx').on(t.userId),
     index('agents_title_idx').on(t.title),
     index('agents_description_idx').on(t.description),
@@ -106,6 +131,10 @@ export const insertAgentSchema = createInsertSchema(agents, {
   agencyConfig: z.custom<LobeAgentAgencyConfig>().nullish(),
   // Override chatConfig type to use the proper schema
   chatConfig: AgentChatConfigSchema.nullish(),
+  // See insertSessionGroupSchema: Zod 4 + drizzle-zod text-enum inference pollution.
+  // `.optional()` preserves defaulted-column omit semantics at runtime.
+  // Enum values from AGENT_VISIBILITY so column def and schema stay in sync.
+  visibility: z.enum(AGENT_VISIBILITY).optional(),
 });
 
 export type NewAgent = typeof agents.$inferInsert;

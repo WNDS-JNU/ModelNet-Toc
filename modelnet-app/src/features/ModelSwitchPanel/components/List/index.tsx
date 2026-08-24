@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { useBusinessModelListGuard } from '@/business/client/hooks/useBusinessModelListGuard';
 import type { ModelNetProviderRuntimeConfigMap } from '@/features/ModelNetParallel';
 import { useEnabledChatModels } from '@/hooks/useEnabledChatModels';
+import { useSingleton } from '@/hooks/useSingleton';
 import type { EnabledProviderWithModels } from '@/types/aiProvider';
 
 import { FOOTER_HEIGHT, ITEM_HEIGHT, MAX_PANEL_HEIGHT, TOOLBAR_HEIGHT } from '../../const';
@@ -46,7 +47,8 @@ export const List: FC<ListProps> = ({
 }) => {
   const { t: tCommon } = useTranslation('common');
   const newLabel = tCommon('new');
-  const { isModelRestricted, onRestrictedModelClick } = useBusinessModelListGuard();
+  const { isModelRestricted, onBeforeModelSelect, onRestrictedModelClick, sortModelLast } =
+    useBusinessModelListGuard();
   const proLabel = isModelRestricted ? tCommon('pro') : undefined;
 
   const chatEnabledList = useEnabledChatModels();
@@ -58,7 +60,7 @@ export const List: FC<ListProps> = ({
     onOpenChange,
     runtimeConfig,
   });
-  const listItems = useBuildListItems(enabledList, groupMode, searchKeyword);
+  const listItems = useBuildListItems(enabledList, groupMode, searchKeyword, sortModelLast);
 
   const panelHeight = useMemo(
     () =>
@@ -81,16 +83,19 @@ export const List: FC<ListProps> = ({
 
   const listHeight = panelHeight - TOOLBAR_HEIGHT - FOOTER_HEIGHT;
 
-  const scrollListenersRef = useRef(new Set<() => void>());
-  const subscribeScroll = useCallback((cb: () => void) => {
-    scrollListenersRef.current.add(cb);
-    return () => {
-      scrollListenersRef.current.delete(cb);
-    };
-  }, []);
+  const scrollListeners = useSingleton(() => new Set<() => void>());
+  const subscribeScroll = useCallback(
+    (cb: () => void) => {
+      scrollListeners.add(cb);
+      return () => {
+        scrollListeners.delete(cb);
+      };
+    },
+    [scrollListeners],
+  );
   const handleListScroll = useCallback(() => {
-    scrollListenersRef.current.forEach((cb) => cb());
-  }, []);
+    scrollListeners.forEach((cb) => cb());
+  }, [scrollListeners]);
 
   useLayoutEffect(() => {
     if (hasInitializedPositionRef.current) return;
@@ -153,6 +158,7 @@ export const List: FC<ListProps> = ({
               newLabel={newLabel}
               proLabel={proLabel}
               subscribeScroll={subscribeScroll}
+              onBeforeModelSelect={onBeforeModelSelect}
               onClose={handleClose}
               onModelChange={handleModelChange}
               onRestrictedModelClick={onRestrictedModelClick}

@@ -1,4 +1,4 @@
-import { type EnabledAiModel } from 'model-bank';
+import type { BuiltinModelIdentifier, EnabledAiModel } from 'model-bank';
 
 import {
   type AiProviderDetailItem,
@@ -24,10 +24,16 @@ export interface AIProviderState {
   enabledAiProviders?: EnabledProvider[];
   // used for select
   enabledChatModelList?: EnabledProviderWithModels[];
+  enabledEmbeddingModelList?: EnabledProviderWithModels[];
   enabledImageModelList?: EnabledProviderWithModels[];
   enabledVideoModelList?: EnabledProviderWithModels[];
+  hiddenBuiltinModels?: BuiltinModelIdentifier[];
   initAiProviderList: boolean;
   isInitAiProviderRuntimeState: boolean;
+  /** Retired model id → successor id, delivered with the provider runtime state. */
+  modelRedirects?: Record<string, string>;
+  /** Secret-free provider → supported local agent binding capabilities. */
+  providerBindingAgentTypes: Record<string, string[]>;
   providerSearchKeyword: string;
 }
 
@@ -40,5 +46,6 @@ export const initialAIProviderState: AIProviderState = {
   aiProviderRuntimeConfig: {},
   initAiProviderList: false,
   isInitAiProviderRuntimeState: false,
+  providerBindingAgentTypes: {},
   providerSearchKeyword: '',
 };

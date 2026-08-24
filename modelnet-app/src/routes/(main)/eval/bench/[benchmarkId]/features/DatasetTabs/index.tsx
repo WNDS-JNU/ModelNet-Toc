@@ -1,6 +1,7 @@
 'use client';
 
-import { Empty, Tabs } from '@lobehub/ui';
+import { Empty } from '@lobehub/ui';
+import { Tabs } from '@lobehub/ui/base-ui';
 import { Database } from 'lucide-react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';

@@ -135,6 +135,13 @@ export interface LocalFilePreviewUrlParams {
    */
   allowExternalFile?: boolean;
   path: string;
+  /**
+   * Exposes sibling workspace resources through the same short-lived preview
+   * session. Intended for HTML documents whose relative URLs must resolve as
+   * they do on disk. User-approved external files are restricted to their
+   * containing directory.
+   */
+  resourceScope?: 'workspace';
   workingDirectory: string;
 }
 
@@ -156,12 +163,24 @@ export interface LocalFilePreviewImage {
   type: 'image';
 }
 
+/**
+ * Binary document (pdf / office) small enough to preview in-app, carried as
+ * base64 so it survives IPC / RPC serialization. Oversized documents stay on
+ * the `binary` / `pdf` unsupported variants.
+ */
+export interface LocalFilePreviewDocument {
+  base64: string;
+  contentType: string;
+  type: 'document';
+}
+
 export interface LocalFilePreviewUnsupported {
   contentType: string;
   type: 'binary' | 'pdf' | 'video';
 }
 
 export type LocalFilePreview =
+  | LocalFilePreviewDocument
   | LocalFilePreviewImage
   | LocalFilePreviewText
   | LocalFilePreviewUnsupported;
@@ -184,6 +203,25 @@ export interface LocalReadFileResult {
   createdTime: Date;
   filename: string;
   fileType: string;
+  /**
+   * File record id of the uploaded image. Present only when
+   * {@link LocalReadFileResult.isImage} is true and the main process
+   * successfully uploaded the bytes to file storage.
+   */
+  imageFileId?: string;
+  /**
+   * Durable URL of the uploaded image. The main process uploads image reads
+   * to file storage directly (base64 never crosses IPC or reaches the DB);
+   * the tool layer forwards this URL to vision models. Absent when the
+   * upload was declined/failed — `content` then carries a placeholder.
+   */
+  imageUrl?: string;
+  /**
+   * True when the path resolves to an image file. The binary is NOT placed
+   * in `content`; instead {@link LocalReadFileResult.imageUrl} references
+   * the uploaded bytes so vision models can inspect the image.
+   */
+  isImage?: boolean;
   /**
    * Line count of the content within the specified `loc` range.
    */
@@ -232,6 +270,8 @@ export interface LocalSearchFilesParams {
 }
 
 export interface ProjectFileIndexEntry {
+  /** Whether Git ignore rules match this file or directory. */
+  gitIgnored?: boolean;
   isDirectory: boolean;
   name: string;
   path: string;
@@ -279,7 +319,77 @@ export interface RunCommandParams {
   /** Merged into the child process environment (after `process.env`). */
   env?: Record<string, string>;
   run_in_background?: boolean;
+  /**
+   * Run this command inside the device sandbox (writes confined to `cwd` + the
+   * OS temp dir, no network). Set by the caller that knows the agent picked the
+   * "Local Sandbox" execution environment — the server device-proxy for
+   * gateway-routed runs, the client executor for in-process desktop runs. The
+   * model never supplies it: the manifest doesn't expose it, and it is a
+   * user-owned security decision, not a per-call one.
+   *
+   * Absent/false keeps the historical unsandboxed path, so nothing changes for
+   * agents that never opted in. When true the sandbox is mandatory — a host
+   * that cannot provide one fails the command instead of downgrading.
+   */
+  sandbox?: boolean;
+  /**
+   * Let a sandboxed command reach the package-registry allowlist. Ignored
+   * unless `sandbox` is true. Never means "the network is open" — the backend
+   * refuses a catch-all allowlist, so this opens a fixed, named set of
+   * registries and forges and nothing else.
+   */
+  sandboxNetwork?: boolean;
   timeout?: number;
+}
+
+/**
+ * Whether this device can actually run sandboxed commands, as reported by the
+ * desktop main process. The renderer needs the real answer (not a platform
+ * guess) before offering the "Local Sandbox" option: SRT supports macOS and
+ * Linux only, and on Linux it additionally depends on host binaries that may be
+ * missing.
+ */
+export interface DeviceSandboxCapabilityResult {
+  available: boolean;
+  /**
+   * The app can provision the backend itself on this host (one UAC prompt on
+   * Windows). Lets the UI offer a setup button instead of a dead end — a user
+   * who installed the desktop app should not have to run anything by hand
+   * before the sandbox works.
+   */
+  canInstall: boolean;
+  /** What to do by hand when the app cannot install it (e.g. Linux packages). */
+  instructions?: string;
+  /** Human-readable explanation when `available` is false. */
+  reason?: string;
+}
+
+/**
+ * Result of a user-initiated sandbox setup, plus the capability re-read
+ * afterwards so the caller never has to guess whether it took.
+ */
+export interface DeviceSandboxInstallResult {
+  capability: DeviceSandboxCapabilityResult;
+  /** Failure detail when `status` is `failed`. */
+  error?: string;
+  /** `cancelled` means the user dismissed the elevation prompt — not a failure. */
+  status: 'cancelled' | 'failed' | 'installed' | 'not-installable';
+}
+
+export interface EnsureSandboxWorkspaceParams {
+  /** Scopes the workspace per agent, so two agents never share a fence root. */
+  agentId: string;
+}
+
+export interface EnsureSandboxWorkspaceResult {
+  /**
+   * Absolute path of the created directory. Absent when it could not be
+   * created — the caller then leaves the working directory unset rather than
+   * pointing it at something that does not exist.
+   */
+  path?: string;
+  /** Why the directory could not be created. */
+  reason?: string;
 }
 
 export interface RunCommandResult {
@@ -291,6 +401,11 @@ export interface RunCommandResult {
     stderr: { path: string; size: number; truncated: boolean };
     stdout: { path: string; size: number; truncated: boolean };
   };
+  /**
+   * Whether the command was actually confined by the device sandbox — what
+   * happened, not what was requested. Absent when no sandbox was asked for.
+   */
+  sandboxed?: boolean;
   shell_id?: string;
   stderr?: string;
   stdout?: string;
@@ -324,6 +439,29 @@ export interface GetCommandOutputResult {
   stderr: string;
   stdout: string;
   success: boolean;
+}
+
+/**
+ * User preference for the shell that runs agent commands on Windows.
+ * `auto` = pwsh 7 → Windows PowerShell 5.1 → cmd.exe detection chain.
+ */
+export type WindowsShellMode = 'auto' | 'gitbash';
+
+export interface DesktopShellSettings {
+  /** Shell currently used to execute commands (after applying the mode). */
+  currentShell: {
+    displayName: string;
+    path: string;
+  };
+  /** Whether Git for Windows is installed — controls showing the Git Bash option. */
+  gitBashAvailable: boolean;
+  /** Detected Git Bash executable path, when available. */
+  gitBashPath?: string;
+  mode: WindowsShellMode;
+}
+
+export interface SetShellModeParams {
+  mode: WindowsShellMode;
 }
 
 export interface KillCommandParams {
@@ -499,6 +637,9 @@ export interface ResolveSkillResourcePathResult {
   success: boolean;
 }
 
+export type ProjectSkillScope = 'device' | 'project';
+export type ProjectSkillSource = '.agents/skills' | '.claude/skills';
+
 export interface ProjectSkillItem {
   description?: string;
   /** Total number of regular files under `skillDir` (recursive, including `SKILL.md`). */
@@ -511,10 +652,14 @@ export interface ProjectSkillItem {
   name: string;
   /** Absolute path to the SKILL.md file. */
   path: string;
+  /** Approved root used by the host preview protocol for this skill. */
+  previewRoot: string;
+  /** Skill filesystem scope: project cwd or execution-device home. */
+  scope: ProjectSkillScope;
   /** Directory containing the SKILL.md (e.g. `<root>/.agents/skills/spa-routes`). */
   skillDir: string;
   /** Source directory the skill was discovered in. */
-  source: '.agents/skills' | '.claude/skills';
+  source: ProjectSkillSource;
 }
 
 export interface ListProjectSkillsParams {
@@ -525,8 +670,8 @@ export interface ListProjectSkillsParams {
 export interface ListProjectSkillsResult {
   root: string;
   skills: ProjectSkillItem[];
-  /** Source directory actually scanned (after fallback resolution). */
-  source: ProjectSkillItem['source'] | null;
+  /** Legacy source hint. Per-skill `scope` / `source` fields are authoritative. */
+  source: ProjectSkillSource | null;
 }
 
 export interface InitWorkspaceParams {

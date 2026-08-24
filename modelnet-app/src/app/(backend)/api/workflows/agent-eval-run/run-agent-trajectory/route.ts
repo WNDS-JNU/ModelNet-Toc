@@ -1,3 +1,4 @@
+import { withOtelMetricsForUpstashWorkflows } from '@lobechat/observability-otel/modules/upstash-workflow';
 import { serve } from '@upstash/workflow/nextjs';
 import debug from 'debug';
 
@@ -9,6 +10,7 @@ import {
   type RunAgentTrajectoryPayload,
 } from '@/server/workflows/agentEvalRun';
 import { resolveAgentEvalRunWorkspace } from '@/server/workflows/agentEvalRun/utils';
+import { runStep } from '@/server/workflows/step';
 
 const log = debug('lobe-server:workflows:run-agent-trajectory');
 
@@ -18,7 +20,7 @@ const log = debug('lobe-server:workflows:run-agent-trajectory');
  * For k>1: creates K threads and triggers K run-thread-trajectory sub-workflows
  */
 export const { POST } = serve<RunAgentTrajectoryPayload>(
-  async (context) => {
+  withOtelMetricsForUpstashWorkflows(async (context) => {
     const { runId, testCaseId, userId } = context.requestPayload ?? {};
 
     log('Starting: runId=%s testCaseId=%s', runId, testCaseId);
@@ -32,7 +34,7 @@ export const { POST } = serve<RunAgentTrajectoryPayload>(
     const service = new AgentEvalRunService(db, userId, wsId);
 
     // Step 1: Read all required data
-    const data = await context.run('agent-eval-run:load-data', () =>
+    const data = await runStep(context, 'agent-eval-run:load-data', () =>
       service.loadTrajectoryData(runId, testCaseId),
     );
 
@@ -40,7 +42,7 @@ export const { POST } = serve<RunAgentTrajectoryPayload>(
       return { error: data.error, success: false };
     }
 
-    const { run, testCase, envPrompt } = data;
+    const { environment, envPrompt, run, testCase } = data;
 
     if (run.status === 'aborted') {
       log('Run aborted, skipping: runId=%s testCaseId=%s', runId, testCaseId);
@@ -52,7 +54,7 @@ export const { POST } = serve<RunAgentTrajectoryPayload>(
     // Step 2: Branch on k value
     if (k > 1) {
       // Multi-thread path: create K threads and trigger sub-workflows
-      const result = await context.run('agent-eval-run:exec-multi-thread', () =>
+      const result = await runStep(context, 'agent-eval-run:exec-multi-thread', () =>
         service.executeMultiThreadTrajectory({ k, run, runId, testCaseId }),
       );
 
@@ -74,13 +76,13 @@ export const { POST } = serve<RunAgentTrajectoryPayload>(
     }
 
     // Single execution path (k=1): existing logic
-    const result = await context.run('agent-eval-run:exec-agent', () =>
-      service.executeTrajectory({ envPrompt, run, runId, testCase, testCaseId }),
+    const result = await runStep(context, 'agent-eval-run:exec-agent', () =>
+      service.executeTrajectory({ environment, envPrompt, run, runId, testCase, testCaseId }),
     );
 
     // If execAgent failed, record completion and check if run should be finalized
     if ('error' in result) {
-      await context.run('agent-eval-run:handle-exec-error', async () => {
+      await runStep(context, 'agent-eval-run:handle-exec-error', async () => {
         const { allDone } = await service.recordTrajectoryCompletion({
           runId,
           status: 'error',
@@ -109,7 +111,7 @@ export const { POST } = serve<RunAgentTrajectoryPayload>(
       testCaseId,
       topicId: result.topicId,
     };
-  },
+  }),
   {
     flowControl: {
       key: 'agent-eval-run.run-agent-trajectory',

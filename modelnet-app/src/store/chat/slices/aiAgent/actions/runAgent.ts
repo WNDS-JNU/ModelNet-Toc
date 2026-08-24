@@ -3,6 +3,7 @@ import debug from 'debug';
 
 import { type StreamEvent } from '@/services/agentRuntime';
 import { agentRuntimeService } from '@/services/agentRuntime';
+import { operationSelectors } from '@/store/chat/slices/operation/selectors';
 import { type ChatStore } from '@/store/chat/store';
 import {
   notifyDesktopAgentCompleted,
@@ -124,7 +125,13 @@ export class AgentActionImpl {
         // has no later step_start to carry a fresh snapshot, so without
         // this branch the streamed assistantGroup would only be reconciled
         // with DB once a refetch fires — losing the SoT guarantee.
-        if (Array.isArray(uiMessages)) {
+        if (
+          Array.isArray(uiMessages) &&
+          !operationSelectors.hasNewerConversationOperation(
+            operationId,
+            operation.context,
+          )(this.#get())
+        ) {
           log(`Replacing messages from agent_runtime_end uiMessages (${uiMessages.length} msgs)`);
           this.#get().replaceMessages(uiMessages, { context: operation.context });
         }
@@ -301,6 +308,20 @@ export class AgentActionImpl {
           });
 
           await notifyDesktopHumanApprovalRequired(this.#get, operation.context);
+          if (operation.context.topicId) {
+            const statusWrite = this.#get().updateTopicStatus?.({
+              agentId: operation.context.agentId,
+              groupId: operation.context.groupId,
+              ...(operation.context.scope === 'group' || operation.context.scope === 'group_agent'
+                ? { scope: operation.context.scope }
+                : {}),
+              status: 'waitingForHuman',
+              topicId: operation.context.topicId,
+            });
+            void statusWrite?.catch((error) => {
+              console.error('[runAgent] updateTopicStatus failed:', error);
+            });
+          }
 
           // Stop loading state, waiting for human intervention
           log(`Stopping loading for human approval: ${assistantId}`);

@@ -7,6 +7,7 @@ import type {
 } from '@lobechat/context-engine';
 import type {
   ChatToolPayload,
+  ExpertiseContextSnapshot,
   SecurityBlacklistConfig,
   UserInterventionConfig,
 } from '@lobechat/types';
@@ -35,7 +36,11 @@ export interface AgentState {
   costLimit?: CostLimit;
   // --- Metadata ---
   createdAt: string;
+  /** Whether ContextEngine may inject the operation expertise snapshot. */
+  enableExpertise?: boolean;
   error?: any;
+  /** Immutable expertise snapshot resolved once when this operation starts. */
+  expertise?: ExpertiseContextSnapshot;
   /**
    * When true, the agent is in force-finish mode (maxSteps exceeded).
    * Tools are allowed to complete, but the next LLM call will have tools stripped
@@ -91,15 +96,23 @@ export interface AgentState {
 
   /** Operation-level tool set snapshot (immutable after creation) */
   operationToolSet?: OperationToolSet;
+  // --- HIL ---
+  /**
+   * Assistant placeholder seeded for a resume that starts by executing a tool
+   * (e.g. a human-approved / auto-approved tool such as the tools activator).
+   * The first `call_llm` after that tool consumes this id so its output reuses
+   * the placeholder instead of creating a new message and orphaning the seed.
+   * Cleared once consumed.
+   */
+  pendingAssistantMessageId?: string;
   pendingHumanPrompt?: { metadata?: Record<string, unknown>; prompt: string };
+
   pendingHumanSelect?: {
     metadata?: Record<string, unknown>;
     multi?: boolean;
     options: Array<{ label: string; value: string }>;
     prompt?: string;
   };
-
-  // --- HIL ---
   /**
    * When status is 'waiting_for_human', this stores pending requests
    * for human-in-the-loop operations.

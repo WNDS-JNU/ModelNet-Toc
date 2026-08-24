@@ -3,6 +3,9 @@ import { type LobeChatDatabase } from '@lobechat/database';
 import { getTestDB } from '@lobechat/database/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { AcceptanceModel } from '@/database/models/acceptance';
+import { TaskModel } from '@/database/models/task';
+
 import { taskRouter } from '../../task';
 import {
   cleanupTestUser,
@@ -155,6 +158,32 @@ describe('Task Router Integration', () => {
         }),
       ).rejects.toThrow('Assignee agent not found');
     });
+
+    it('should clear stale editorData for instruction-only updates', async () => {
+      const task = await caller.create({
+        editorData: { root: { children: [{ text: 'Old instruction' }] } },
+        instruction: 'Old instruction',
+        name: 'Editable task',
+      });
+
+      const instructionOnlyUpdate = await caller.update({
+        id: task.data.id,
+        instruction: 'New instruction',
+      });
+
+      expect(instructionOnlyUpdate.data.instruction).toBe('New instruction');
+      expect(instructionOnlyUpdate.data.editorData).toBeNull();
+
+      const nextEditorData = { root: { children: [{ text: 'Rich instruction' }] } };
+      const richTextUpdate = await caller.update({
+        editorData: nextEditorData,
+        id: task.data.id,
+        instruction: 'Rich instruction',
+      });
+
+      expect(richTextUpdate.data.instruction).toBe('Rich instruction');
+      expect(richTextUpdate.data.editorData).toEqual(nextEditorData);
+    });
   });
 
   describe('subtasks + dependencies', () => {
@@ -281,6 +310,18 @@ describe('Task Router Integration', () => {
       });
       expect(completed.data.status).toBe('completed');
     });
+
+    it('updates the bound goal when addressed by task identifier', async () => {
+      const task = await caller.create({
+        goal: { title: 'Identifier lifecycle goal' },
+        instruction: 'Test goal lifecycle',
+      });
+
+      await caller.updateStatus({ id: task.data.identifier, status: 'running' });
+
+      const goal = await serverDB.query.goals.findFirst();
+      expect(goal).toMatchObject({ status: 'running', subjectId: task.data.id });
+    });
   });
 
   describe('comments', () => {
@@ -329,6 +370,33 @@ describe('Task Router Integration', () => {
       const deletedDetail = await caller.detail({ id: task.data.identifier });
       expect(deletedDetail.data.activities?.some((a) => a.id === added.data.id)).toBe(false);
     });
+
+    it('should clear stale editorData for content-only comment updates', async () => {
+      const task = await caller.create({ instruction: 'Test' });
+      const comment = await caller.addComment({
+        content: 'Old comment',
+        editorData: { root: { children: [{ text: 'Old comment' }] } },
+        id: task.data.id,
+      });
+
+      const contentOnlyUpdate = await caller.updateComment({
+        commentId: comment.data.id,
+        content: 'New comment',
+      });
+
+      expect(contentOnlyUpdate.data.content).toBe('New comment');
+      expect(contentOnlyUpdate.data.editorData).toBeNull();
+
+      const nextEditorData = { root: { children: [{ text: 'Rich comment' }] } };
+      const richTextUpdate = await caller.updateComment({
+        commentId: comment.data.id,
+        content: 'Rich comment',
+        editorData: nextEditorData,
+      });
+
+      expect(richTextUpdate.data.content).toBe('Rich comment');
+      expect(richTextUpdate.data.editorData).toEqual(nextEditorData);
+    });
   });
 
   describe('review config', () => {
@@ -369,6 +437,28 @@ describe('Task Router Integration', () => {
   });
 
   describe('verify config', () => {
+    it('moves verify config supplied at task creation into Acceptance', async () => {
+      const task = await caller.create({
+        config: {
+          model: 'test-model',
+          verify: { enabled: true, maxIterations: 2, requirement: 'Ship the artifact' },
+        },
+        instruction: 'Test',
+      });
+
+      const storedTask = await new TaskModel(serverDB, userId).findById(task.data.id);
+      const acceptance = await new AcceptanceModel(serverDB, userId).findBySubject(
+        'task',
+        task.data.id,
+      );
+
+      expect(storedTask?.config).toEqual({ model: 'test-model' });
+      expect(acceptance).toMatchObject({
+        config: { enabled: true, maxIterations: 2 },
+        requirement: 'Ship the artifact',
+      });
+    });
+
     it('should set and retrieve verify config (round-trip)', async () => {
       const task = await caller.create({ instruction: 'Test' });
 
@@ -401,6 +491,22 @@ describe('Task Router Integration', () => {
         verifyCriteriaIds: ['c1', 'c2'],
         verifyRubricId: 'rub_1',
       });
+
+      const storedTask = await new TaskModel(serverDB, userId).findById(task.data.id);
+      const acceptance = await new AcceptanceModel(serverDB, userId).findBySubject(
+        'task',
+        task.data.id,
+      );
+      expect(storedTask?.config).not.toHaveProperty('verify');
+      expect(acceptance).toMatchObject({
+        config: {
+          enabled: true,
+          maxIterations: 3,
+          verifierAgentId: 'agt_codex',
+          verifyCriteriaIds: ['c1', 'c2'],
+          verifyRubricId: 'rub_1',
+        },
+      });
     });
 
     it('should clear a saved field when passed null', async () => {
@@ -432,9 +538,43 @@ describe('Task Router Integration', () => {
       const verify = await caller.getVerifyConfig({ id: task.data.id });
       expect(verify.data).toEqual({ enabled: true, maxIterations: 4 });
     });
+
+    it('preserves legacy verify fields when applying a partial Acceptance patch', async () => {
+      const task = await caller.create({ instruction: 'Test' });
+      await new TaskModel(serverDB, userId).updateVerifyConfig(task.data.id, {
+        enabled: true,
+        maxIterations: 4,
+        verifierAgentId: 'legacy-verifier',
+      });
+
+      await caller.updateVerifyConfig({
+        id: task.data.id,
+        verify: { maxIterations: 2 },
+      });
+
+      const verify = await caller.getVerifyConfig({ id: task.data.id });
+      expect(verify.data).toEqual({
+        enabled: true,
+        maxIterations: 2,
+        verifierAgentId: 'legacy-verifier',
+      });
+    });
   });
 
   describe('run idempotency', () => {
+    it('starts the bound goal when addressed by task identifier', async () => {
+      const task = await caller.create({
+        assigneeAgentId: testAgentId,
+        goal: { title: 'Identifier run goal' },
+        instruction: 'Test',
+      });
+
+      await caller.run({ id: task.data.identifier });
+
+      const goal = await serverDB.query.goals.findFirst();
+      expect(goal).toMatchObject({ status: 'running', subjectId: task.data.id });
+    });
+
     it('should reject run when a topic is already running', async () => {
       const task = await caller.create({
         assigneeAgentId: testAgentId,
@@ -454,7 +594,7 @@ describe('Task Router Integration', () => {
         instruction: 'Test',
       });
 
-      const result = await caller.run({ id: task.data.id });
+      await caller.run({ id: task.data.id });
 
       await expect(caller.run({ continueTopicId: 'tpc_test', id: task.data.id })).rejects.toThrow(
         /already running/,

@@ -25,12 +25,20 @@ import { normalizeAsyncError } from '@/libs/swr/normalizeError';
 export type AsyncErrorVariant = 'page' | 'block' | 'inline' | 'metric';
 
 export interface AsyncErrorProps {
+  /**
+   * Custom action rendered in the retry button's slot — for terminal errors
+   * where retrying can never succeed but the user still needs a way out
+   * (e.g. a Back button on a 403).
+   */
+  action?: ReactNode;
   /** Override the auto-derived description (status-based copy otherwise). */
   description?: ReactNode;
   /** The thrown error; normalized for status-specific copy + retryable gating. */
   error?: unknown;
   /** Retry the same request (SWR `mutate` / query refetch). Hidden if absent. */
   onRetry?: () => void;
+  /** Whether an explicit Retry action is currently in flight. */
+  retrying?: boolean;
   /** Override the default title copy. */
   title?: ReactNode;
   variant?: AsyncErrorVariant;
@@ -56,6 +64,7 @@ const styles = createStaticStyles(({ css }) => ({
     color: ${cssVar.colorTextQuaternary};
   `,
   page: css`
+    flex: 1;
     width: 100%;
     min-height: 320px;
     padding: 48px;
@@ -63,7 +72,7 @@ const styles = createStaticStyles(({ css }) => ({
 }));
 
 const AsyncError = memo<AsyncErrorProps>(
-  ({ variant = 'block', error, onRetry, title, description }) => {
+  ({ variant = 'block', error, onRetry, retrying = false, title, description, action }) => {
     const { t } = useTranslation('error');
     const { status, retryable } = normalizeAsyncError(error);
 
@@ -83,15 +92,15 @@ const AsyncError = memo<AsyncErrorProps>(
             {t('asyncState.metricLabel')}
           </Text>
           {showRetry && (
-            <Text
-              aria-label={t('error.retry')}
-              role={'button'}
-              style={{ color: cssVar.colorPrimary, cursor: 'pointer' }}
-              tabIndex={0}
+            <Button
+              disabled={retrying}
+              loading={retrying}
+              size={'small'}
+              type={'text'}
               onClick={onRetry}
             >
               {t('error.retry')}
-            </Text>
+            </Button>
           )}
         </Flexbox>
       );
@@ -100,20 +109,21 @@ const AsyncError = memo<AsyncErrorProps>(
     // ─── inline: single-line row failure with a retry link ───
     if (variant === 'inline') {
       return (
-        <Flexbox horizontal align={'center'} className={styles.inline} gap={8}>
+        <Flexbox horizontal align={'center'} className={styles.inline} gap={8} justify={'center'}>
           <Icon className={styles.icon} icon={TriangleAlertIcon} size={14} />
           <Text color={cssVar.colorTextSecondary} fontSize={13}>
             {heading}
           </Text>
           {showRetry && (
-            <Text
-              role={'button'}
-              style={{ color: cssVar.colorPrimary, cursor: 'pointer' }}
-              tabIndex={0}
+            <Button
+              disabled={retrying}
+              loading={retrying}
+              size={'small'}
+              type={'text'}
               onClick={onRetry}
             >
               {t('error.retry')}
-            </Text>
+            </Button>
           )}
         </Flexbox>
       );
@@ -140,11 +150,18 @@ const AsyncError = memo<AsyncErrorProps>(
             {reason}
           </Text>
         </Flexbox>
-        {showRetry && (
-          <Button icon={<Icon icon={RotateCwIcon} />} size={'small'} onClick={onRetry}>
-            {t('error.retry')}
-          </Button>
-        )}
+        {action ??
+          (showRetry && (
+            <Button
+              disabled={retrying}
+              icon={<Icon icon={RotateCwIcon} />}
+              loading={retrying}
+              size={'small'}
+              onClick={onRetry}
+            >
+              {t('error.retry')}
+            </Button>
+          ))}
       </Center>
     );
   },

@@ -9,6 +9,7 @@ import { storageOverageRouter } from '@/business/server/lambda-routers/storageOv
 import { subscriptionRouter } from '@/business/server/lambda-routers/subscription';
 import { taskTemplateRouter } from '@/business/server/lambda-routers/taskTemplate';
 import { topUpRouter } from '@/business/server/lambda-routers/topUp';
+import { waitlistRouter } from '@/business/server/lambda-routers/waitlist';
 import { workspaceRouter } from '@/business/server/lambda-routers/workspace';
 import { workspaceAuditLogRouter } from '@/business/server/lambda-routers/workspaceAuditLog';
 import { workspaceCreditsRouter } from '@/business/server/lambda-routers/workspaceCredits';
@@ -18,13 +19,16 @@ import { workspaceMemberRouter } from '@/business/server/lambda-routers/workspac
 import { workspaceUsageRouter } from '@/business/server/lambda-routers/workspaceUsage';
 import { publicProcedure, router } from '@/libs/trpc/lambda';
 
+import { acceptanceRouter } from './acceptance';
 import { agentRouter } from './agent';
 import { agentBotProviderRouter } from './agentBotProvider';
 import { agentDocumentRouter } from './agentDocument';
 import { agentEvalRouter } from './agentEval';
 import { agentEvalExternalRouter } from './agentEvalExternal';
 import { agentGroupRouter } from './agentGroup';
+import { agentLabelRouter } from './agentLabel';
 import { agentNotifyRouter } from './agentNotify';
+import { agentQuotaRouter } from './agentQuota';
 import { agentSignalRouter } from './agentSignal';
 import { agentSkillsRouter } from './agentSkills';
 import { aiAgentRouter } from './aiAgent';
@@ -43,12 +47,14 @@ import { configRouter } from './config';
 import { connectorRouter } from './connector';
 import { deviceRouter } from './device';
 import { documentRouter } from './document';
+import { expertiseRouter } from './expertise';
 import { exporterRouter } from './exporter';
 import { fileRouter } from './file';
 import { followUpActionRouter } from './followUpAction';
 import { generationRouter } from './generation';
 import { generationBatchRouter } from './generationBatch';
 import { generationTopicRouter } from './generationTopic';
+import { goalRouter } from './goal';
 import { homeRouter } from './home';
 import { imageRouter } from './image';
 import { importerRouter } from './importer';
@@ -61,11 +67,15 @@ import { messageRouter } from './message';
 import { messengerRouter } from './messenger';
 import { notebookRouter } from './notebook';
 import { notificationRouter } from './notification';
+import { oauthAppRouter } from './oauthApp';
 import { oauthDeviceFlowRouter } from './oauthDeviceFlow';
 import { pluginRouter } from './plugin';
+import { projectRouter } from './project';
 import { pushTokenRouter } from './pushToken';
 import { ragEvalRouter } from './ragEval';
 import { recentRouter } from './recent';
+import { resourcePermissionRouter } from './resourcePermission';
+import { resourceTransferRequestRouter } from './resourceTransferRequest';
 import { searchRouter } from './search';
 import { sessionRouter } from './session';
 import { sessionGroupRouter } from './sessionGroup';
@@ -73,6 +83,7 @@ import { shareRouter } from './share';
 import { taskRouter } from './task';
 import { threadRouter } from './thread';
 import { topicRouter } from './topic';
+import { topicCommentRouter } from './topicComment';
 import { uploadRouter } from './upload';
 import { usageRouter } from './usage';
 import { userRouter } from './user';
@@ -81,8 +92,11 @@ import { userMemoryRouter } from './userMemory';
 import { verifyRouter } from './verify';
 import { videoRouter } from './video';
 import { webBrowsingRouter } from './webBrowsing';
+import { workRouter } from './work';
+import { workspaceUserSettingsRouter } from './workspaceUserSettings';
 
 export const lambdaRouter = router({
+  acceptance: acceptanceRouter,
   agent: agentRouter,
   agentBotProvider: agentBotProviderRouter,
   agentNotify: agentNotifyRouter,
@@ -90,14 +104,16 @@ export const lambdaRouter = router({
   agentDocument: agentDocumentRouter,
   agentEval: agentEvalRouter,
   agentEvalExternal: agentEvalExternalRouter,
+  agentLabel: agentLabelRouter,
   agentSkills: agentSkillsRouter,
+  expertise: expertiseRouter,
   agentSignal: agentSignalRouter,
-  task: taskRouter,
   changelog: changelogRouter,
   brief: briefRouter,
   aiAgent: aiAgentRouter,
   aiChat: aiChatRouter,
   aiModel: aiModelRouter,
+  agentQuota: agentQuotaRouter,
   aiProvider: aiProviderRouter,
   apiKey: apiKeyRouter,
   asr: asrRouter,
@@ -113,6 +129,7 @@ export const lambdaRouter = router({
   generation: generationRouter,
   generationBatch: generationBatchRouter,
   generationTopic: generationTopicRouter,
+  goal: goalRouter,
   group: agentGroupRouter,
   healthcheck: publicProcedure.query(() => "i'm live!"),
   home: homeRouter,
@@ -129,17 +146,23 @@ export const lambdaRouter = router({
   messenger: messengerRouter,
   notebook: notebookRouter,
   notification: notificationRouter,
+  oauthApp: oauthAppRouter,
   oauthDeviceFlow: oauthDeviceFlowRouter,
   plugin: pluginRouter,
+  project: projectRouter,
   pushToken: pushTokenRouter,
   ragEval: ragEvalRouter,
   recent: recentRouter,
+  resourcePermission: resourcePermissionRouter,
+  resourceTransferRequest: resourceTransferRequestRouter,
   search: searchRouter,
   session: sessionRouter,
   sessionGroup: sessionGroupRouter,
   share: shareRouter,
+  task: taskRouter,
   thread: threadRouter,
   topic: topicRouter,
+  topicComment: topicCommentRouter,
   upload: uploadRouter,
   usage: usageRouter,
   user: userRouter,
@@ -148,6 +171,7 @@ export const lambdaRouter = router({
   verify: verifyRouter,
   video: videoRouter,
   webBrowsing: webBrowsingRouter,
+  work: workRouter,
   workspace: workspaceRouter,
   workspaceAuditLog: workspaceAuditLogRouter,
   workspaceCreds: workspaceCredsRouter,
@@ -155,6 +179,7 @@ export const lambdaRouter = router({
   workspaceData: workspaceDataRouter,
   workspaceMember: workspaceMemberRouter,
   workspaceUsage: workspaceUsageRouter,
+  workspaceUserSettings: workspaceUserSettingsRouter,
   accountDeletion: accountDeletionRouter,
   pageShare: pageShareRouter,
   referral: referralRouter,
@@ -163,6 +188,7 @@ export const lambdaRouter = router({
   subscription: subscriptionRouter,
   taskTemplate: taskTemplateRouter,
   topUp: topUpRouter,
+  waitlist: waitlistRouter,
 });
 
 export type LambdaRouter = typeof lambdaRouter;

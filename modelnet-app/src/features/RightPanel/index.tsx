@@ -3,7 +3,7 @@ import { DraggablePanel } from '@lobehub/ui';
 import { cssVar } from 'antd-style';
 import { memo, Suspense, useState } from 'react';
 
-import Loading from '@/components/Loading/BrandTextLoading';
+import SurfaceSkeleton from '@/components/Skeleton/Surface';
 import { useGlobalStore } from '@/store/global';
 import { systemStatusSelectors } from '@/store/global/selectors';
 
@@ -25,6 +25,12 @@ interface RightPanelProps extends Omit<
   expand?: boolean;
   onExpandChange?: (expand: boolean) => void;
   onSizeChange?: (size?: Size) => void;
+  /**
+   * Controlled width. When provided, the parent owns the width (and should keep
+   * it in sync via `onSizeChange` on drag). Omit for the default self-managed
+   * behaviour seeded by `defaultWidth`.
+   */
+  width?: number | string;
 }
 
 const RightPanel = memo<RightPanelProps>(
@@ -36,6 +42,7 @@ const RightPanel = memo<RightPanelProps>(
     expand: expandProp,
     onExpandChange,
     onSizeChange,
+    width: widthProp,
     ...rest
   }) => {
     const [globalExpand, globalToggle] = useGlobalStore((s) => [
@@ -46,7 +53,8 @@ const RightPanel = memo<RightPanelProps>(
     const expand = expandProp ?? globalExpand;
     const handleExpandChange = onExpandChange ?? ((next: boolean) => globalToggle(next));
 
-    const [width, setWidth] = useState<string | number>(defaultWidth);
+    const [internalWidth, setInternalWidth] = useState<string | number>(defaultWidth);
+    const width = widthProp ?? internalWidth;
 
     return (
       <DraggablePanel
@@ -63,13 +71,15 @@ const RightPanel = memo<RightPanelProps>(
         onExpandChange={handleExpandChange}
         onSizeChange={(_, size) => {
           if (size?.width) {
-            setWidth(size.width);
+            setInternalWidth(size.width);
           }
           if (size) onSizeChange?.(size);
         }}
         {...rest}
       >
-        <Suspense fallback={<Loading debugId={'RightPanel'} />}>{children}</Suspense>
+        <Suspense fallback={<SurfaceSkeleton header={false} variant={'list'} />}>
+          {children}
+        </Suspense>
       </DraggablePanel>
     );
   },

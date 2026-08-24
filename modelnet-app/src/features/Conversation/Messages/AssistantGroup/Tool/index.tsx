@@ -48,9 +48,11 @@ const Tool = memo<GroupToolProps>(({ assistantMessageId, disableEditing, id }) =
   const type = tool?.type;
   const toolMessageId = tool?.result_msg_id;
 
-  // Get renderDisplayControl from manifest
+  // Get renderDisplayControl from manifest. `result.state` lets an API whose
+  // output shape varies by target refine it — CC `Read` expands once the result
+  // turns out to be an image, and stays collapsed for source text.
   const renderDisplayControl = useToolStore(
-    toolSelectors.getRenderDisplayControl(identifier, apiName),
+    toolSelectors.getRenderDisplayControl(identifier, apiName, result?.state),
   );
   const [showDebug, setShowDebug] = useState(false);
   const [showToolRender, setShowToolRender] = useState(false);
@@ -94,7 +96,9 @@ const Tool = memo<GroupToolProps>(({ assistantMessageId, disableEditing, id }) =
   const looksLikeWaitingForToolResult = !hasError && !isArgumentsStreaming && !hasFinishedResult;
   const isToolCallingFallback = looksLikeWaitingForToolResult && isAssistantMessageBusy;
   const isToolCalling = !hasFinishedResult && (isToolCallingFromOperation || isToolCallingFallback);
-  const toolCallStartTime = useChatStore(operationSelectors.getRunningToolCallStartTime(id));
+  const toolCallStartTime = useConversationStore(
+    dataSelectors.getToolMessageCreatedAt(toolMessageId),
+  );
 
   const hasCustomRender = !!getBuiltinRender(identifier, apiName);
   // Only allow toggle when has custom render and not in pending/reject/abort state

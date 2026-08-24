@@ -1,12 +1,16 @@
 'use client';
 
-import { groupTopicsByProject, groupTopicsByUpdatedTime } from '@lobechat/utils/client/topic';
-import { Flexbox, Skeleton } from '@lobehub/ui';
+import {
+  getTopicWorkingDirectorySourcePath,
+  groupTopicsByProject,
+  groupTopicsByUpdatedTime,
+} from '@lobechat/utils/client/topic';
+import { Flexbox } from '@lobehub/ui';
 import { memo, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AsyncError from '@/components/AsyncError';
-import Loading from '@/components/Loading/BrandTextLoading';
+import TopicsSkeleton from '@/components/Skeleton/Topics';
 import { useChatStore } from '@/store/chat';
 import { topicSelectors } from '@/store/chat/selectors';
 import { shinyTextStyles } from '@/styles/loading';
@@ -20,7 +24,7 @@ import Toolbar from './Toolbar';
 import TopicGrid from './TopicGrid';
 import TopicListView from './TopicListView';
 import {
-  getProjectLabel,
+  getProjectFilterLabel,
   matchesGroup,
   matchesStatus,
   matchesTimeRange,
@@ -144,9 +148,9 @@ const AgentTopicManager = memo(() => {
   const projects = useMemo(() => {
     const map = new Map<string, string>();
     for (const t of baseTopics) {
-      const wd = t.metadata?.workingDirectory;
+      const wd = getTopicWorkingDirectorySourcePath(t);
       if (wd && !map.has(wd)) {
-        map.set(wd, getProjectLabel(t) ?? wd);
+        map.set(wd, getProjectFilterLabel(t) ?? wd);
       }
     }
     return Array.from(map, ([value, label]) => ({ label, value }));
@@ -196,7 +200,7 @@ const AgentTopicManager = memo(() => {
     return () => observer.disconnect();
   }, [hasMore, isLoadingMore, isSearchMode, loadMoreAgentTopicsView, loadMoreError]);
 
-  if (!activeAgentId) return <Loading debugId="AgentTopicManager" />;
+  if (!activeAgentId) return <TopicsSkeleton />;
 
   return (
     <Flexbox flex={1} height={'100%'} style={{ overflow: 'hidden' }}>
@@ -231,7 +235,7 @@ const AgentTopicManager = memo(() => {
               }}
             />
           ) : isLoading && baseTopics.length === 0 ? (
-            <Skeleton active paragraph={{ rows: 6 }} title={false} />
+            <TopicsSkeleton chrome={'body'} />
           ) : totalAfterFilter === 0 ? (
             <EmptyState
               agentId={activeAgentId}

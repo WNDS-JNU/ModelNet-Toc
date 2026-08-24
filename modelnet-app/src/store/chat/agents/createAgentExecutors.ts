@@ -68,14 +68,14 @@ interface ModelNetSourceStreamEvent {
   backend?: Record<string, any>;
   delta?: string;
   error?: string;
-  latencyMs?: number;
   latency_ms?: number;
+  latencyMs?: number;
   metadata?: Record<string, any>;
   model?: string;
   reason?: string;
-  sourceId?: string;
   source_id?: string;
   sourceCount?: number;
+  sourceId?: string;
   text?: string;
   type?: string;
 }
@@ -110,7 +110,7 @@ const mergeModelNetParallelEvent = (
       modelnetParallel: {
         ...currentParallel,
         synthesis: {
-          ...(currentParallel.synthesis ?? {}),
+          ...currentParallel.synthesis,
           error: event.error,
           reason: event.reason,
           sourceCount: event.sourceCount,
@@ -131,7 +131,7 @@ const mergeModelNetParallelEvent = (
   if (!sourceId) return currentMetadata;
 
   const sources: Record<string, ModelNetParallelSourceState> = {
-    ...(currentParallel.sources ?? {}),
+    ...currentParallel.sources,
   };
   const existing = sources[sourceId] ?? {
     model: event.model || sourceId,
@@ -145,7 +145,7 @@ const mergeModelNetParallelEvent = (
     backend: event.backend ?? existing.backend,
     error: event.error ?? existing.error,
     latencyMs: event.latencyMs ?? event.latency_ms ?? existing.latencyMs,
-    metadata: event.metadata ? { ...(existing.metadata ?? {}), ...event.metadata } : existing.metadata,
+    metadata: event.metadata ? { ...existing.metadata, ...event.metadata } : existing.metadata,
     model: event.model || existing.model || sourceId,
     updatedAt: now,
   };

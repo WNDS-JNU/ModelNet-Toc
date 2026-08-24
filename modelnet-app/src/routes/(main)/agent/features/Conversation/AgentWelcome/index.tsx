@@ -6,18 +6,16 @@ import React, { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { DEFAULT_AVATAR, DEFAULT_INBOX_AVATAR } from '@/const/meta';
-import { useIsMobile } from '@/hooks/useIsMobile';
+import OpeningQuestions from '@/features/AgentHome/OpeningQuestions';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors, builtinAgentSelectors } from '@/store/agent/selectors';
 import { useUserStore } from '@/store/user';
 import { userGeneralSettingsSelectors } from '@/store/user/selectors';
 
-import OpeningQuestions from './OpeningQuestions';
 import ToolAuthAlert from './ToolAuthAlert';
 
 const InboxWelcome = memo(() => {
   const { t } = useTranslation(['welcome', 'chat']);
-  const mobile = useIsMobile();
   const isInbox = useAgentStore(builtinAgentSelectors.isInboxAgent);
   const openingQuestions = useAgentStore(agentSelectors.openingQuestions, isEqual);
   const fontSize = useUserStore(userGeneralSettingsSelectors.fontSize);
@@ -61,9 +59,7 @@ const InboxWelcome = memo(() => {
             {isInbox ? t('guide.defaultMessageWithoutCreate', { appName: inboxTitle }) : message}
           </Markdown>
         </Flexbox>
-        {openingQuestions.length > 0 && (
-          <OpeningQuestions mobile={mobile} questions={openingQuestions} />
-        )}
+        {openingQuestions.length > 0 && <OpeningQuestions questions={openingQuestions} />}
         <ToolAuthAlert />
       </Flexbox>
     </>

@@ -56,15 +56,20 @@ const botMessageWriteProcedure = botMessageProcedure.use(withScopedPermission('m
  * three procedures stay in lockstep — the platform-specific helpers
  * downstream only see one shape.
  */
-const attachmentsInputSchema = z.array(
-  z.object({
-    data: z.string().optional(),
-    fetchUrl: z.string().url().optional(),
-    mimeType: z.string().optional(),
-    name: z.string().optional(),
-    type: z.enum(['image', 'file', 'video', 'audio']),
-  }),
-);
+const attachmentsInputSchema = z
+  .array(
+    z.object({
+      data: z.string().optional(),
+      fetchUrl: z.string().url().optional(),
+      mimeType: z.string().optional(),
+      name: z.string().optional(),
+      type: z.enum(['image', 'file', 'video', 'audio']),
+    }),
+  )
+  // Bounded like the push path: an unmeasured `fetchUrl` costs a size probe
+  // before anything is sent, so an unbounded array is unbounded latency inside
+  // one serverless request.
+  .max(10);
 
 // ── Service Factory ──────────────────────────────────────
 
@@ -112,7 +117,9 @@ const createServiceForCredentials = (
     }
     case 'wechat': {
       return new WechatMessageService(
-        new WechatApiClient(credentials.botToken, credentials.botId),
+        // `baseUrl` is issued during QR confirmation and must be honored when
+        // it differs from the default endpoint (see wechat/protocol-spec.md).
+        new WechatApiClient(credentials.botToken, credentials.botId, credentials.baseUrl),
         applicationId,
       );
     }
@@ -205,6 +212,28 @@ const resolveMessengerInstall = async (
   }
 
   const gateKeeper = await KeyVaultsGateKeeper.initWithEnvKey().catch(() => undefined);
+  const wechatLink = await new MessengerAccountLinkModel(
+    ctx.serverDB,
+    ctx.userId,
+  ).findByIdWithCredentials(installationId, 'wechat', gateKeeper);
+  if (wechatLink) {
+    if (!wechatLink.applicationId || typeof wechatLink.credentials.botToken !== 'string') {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: `WeChat connection credentials are unavailable: ${installationId}`,
+      });
+    }
+    return {
+      platform: 'wechat',
+      service: createServiceForCredentials(
+        'wechat',
+        wechatLink.applicationId,
+        wechatLink.credentials,
+      ),
+      settings: {},
+    };
+  }
+
   const row = await MessengerInstallationModel.findById(ctx.serverDB, installationId, gateKeeper);
   if (!row) {
     throw new TRPCError({
@@ -306,7 +335,7 @@ export const botMessageRouter = router({
           botId: z.string().optional(),
           channelId: z.string(),
           content: z.string(),
-          embeds: z.array(z.record(z.unknown())).optional(),
+          embeds: z.array(z.record(z.string(), z.unknown())).optional(),
           messengerInstallationId: z.string().optional(),
           replyTo: z.string().optional(),
         })

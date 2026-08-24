@@ -1,6 +1,7 @@
-import { type UIChatMessage } from '@lobechat/types';
+import { agentDisplayName, type UIChatMessage } from '@lobechat/types';
 import { type FormItemProps } from '@lobehub/ui';
-import { Button, Flexbox, Form, Tabs } from '@lobehub/ui';
+import { Flexbox, Form } from '@lobehub/ui';
+import { Button, Tabs } from '@lobehub/ui/base-ui';
 import { Switch } from 'antd';
 import { CopyIcon } from 'lucide-react';
 import { memo, useState } from 'react';
@@ -28,8 +29,8 @@ const DEFAULT_FIELD_VALUE: FieldType = {
 const ShareImage = memo<{ message: UIChatMessage; mobile?: boolean; uniqueId?: string }>(
   ({ message, uniqueId }) => {
     const agentId = useConversationStore(contextSelectors.agentId);
-    const currentAgentTitle = useAgentStore(
-      (s) => agentSelectors.getAgentMetaById(agentId)(s).title,
+    const currentAgentTitle = useAgentStore((s) =>
+      agentDisplayName(agentSelectors.getAgentMetaById(agentId)(s)),
     );
     const context = useConversationStore((s) => s.context);
     const [fieldValue, setFieldValue] = useState<FieldType>(DEFAULT_FIELD_VALUE);

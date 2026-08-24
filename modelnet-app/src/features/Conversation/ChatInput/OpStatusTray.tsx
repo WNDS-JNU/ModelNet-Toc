@@ -175,6 +175,10 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
     transform-box: fill-box;
     fill: ${cssVar.colorPrimary};
     animation: op-status-tray-glyph-core 1.5s ease-in-out infinite;
+
+    @media (prefers-reduced-motion: reduce) {
+      animation: none;
+    }
   `,
   glyphOrbit: css`
     transform-origin: center;
@@ -187,17 +191,19 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
     stroke-width: 1.5;
 
     animation: op-status-tray-glyph-spin 2s linear infinite;
+
+    @media (prefers-reduced-motion: reduce) {
+      animation: none;
+    }
   `,
 }));
 
-const ActivityGlyph = memo(() => (
+const ActivityGlyph = () => (
   <svg aria-hidden className={styles.activityGlyph} viewBox="0 0 16 16">
     <circle className={styles.glyphOrbit} cx="8" cy="8" r="6.1" />
     <circle className={styles.glyphCore} cx="8" cy="8" r="2.7" />
   </svg>
-));
-
-ActivityGlyph.displayName = 'ActivityGlyph';
+);
 
 const formatTokens = (n: number) => {
   if (n < 1000) return String(n);

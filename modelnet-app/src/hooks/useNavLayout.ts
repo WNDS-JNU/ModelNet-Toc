@@ -61,10 +61,10 @@ export const useNavLayout = (): NavLayout => {
           url: '/tasks',
         },
         {
-          icon: getRouteById('page')!.icon,
-          key: SidebarTabKey.Pages,
-          title: t('tab.pages'),
-          url: '/page',
+          icon: getRouteById('resource')!.icon,
+          key: SidebarTabKey.Resource,
+          title: t('tab.resource'),
+          url: '/resource',
         },
         {
           icon: getRouteById('leaderboard')!.icon,
@@ -93,10 +93,10 @@ export const useNavLayout = (): NavLayout => {
           url: '/community',
         },
         {
-          icon: getRouteById('resource')!.icon,
-          key: SidebarTabKey.Resource,
-          title: t('tab.resource'),
-          url: '/resource',
+          icon: getRouteById('page')!.icon,
+          key: SidebarTabKey.Pages,
+          title: t('tab.pages'),
+          url: '/page',
         },
         {
           hidden: !!activeWorkspaceSlug,

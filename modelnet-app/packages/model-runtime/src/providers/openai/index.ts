@@ -1,4 +1,4 @@
-import { ModelProvider } from 'model-bank';
+import { ModelProvider, openaiChatModels } from 'model-bank';
 
 import { pruneReasoningPayload } from '../../core/contextBuilders/openai';
 import type { OpenAICompatibleFactoryOptions } from '../../core/openaiCompatibleFactory';
@@ -11,11 +11,17 @@ import {
   isOpenAIReasoningPayloadModel,
   isResponsesAPIModel,
   supportsOpenAIServiceTierFlex,
-} from './openaiModelId';
+} from './modelId';
 
 export interface OpenAIModelCard {
   id: string;
 }
+
+const hasAudioInput = (payload: ChatStreamPayload) =>
+  payload.messages.some(
+    (message) =>
+      Array.isArray(message.content) && message.content.some((part) => part.type === 'audio_url'),
+  );
 
 const oaiSearchContextSize = process.env.OPENAI_SEARCH_CONTEXT_SIZE; // low, medium, high
 const enableServiceTierFlex = process.env.OPENAI_SERVICE_TIER_FLEX === '1';
@@ -23,15 +29,21 @@ const enableServiceTierFlex = process.env.OPENAI_SERVICE_TIER_FLEX === '1';
 export const params = {
   baseURL: 'https://api.openai.com/v1',
   chatCompletion: {
+    contextPreFlight: { models: openaiChatModels },
     handlePayload: (payload) => {
       const { enabledSearch, model, ...rest } = payload;
+      const containsAudioInput = hasAudioInput(payload);
 
-      if (isResponsesAPIModel(model) || enabledSearch) {
+      if (!containsAudioInput && (isResponsesAPIModel(model) || enabledSearch)) {
         return { ...rest, apiMode: 'responses', enabledSearch, model } as ChatStreamPayload;
       }
 
       if (isOpenAIReasoningPayloadModel(model)) {
-        return pruneReasoningPayload(payload) as any;
+        return pruneReasoningPayload({
+          ...rest,
+          ...(containsAudioInput && { apiMode: 'chatCompletion' }),
+          model,
+        } as ChatStreamPayload) as any;
       }
 
       if (model.includes('-search-')) {
@@ -55,12 +67,14 @@ export const params = {
 
       return {
         ...rest,
+        ...(containsAudioInput && { apiMode: 'chatCompletion' }),
         model,
         ...(enableServiceTierFlex &&
           supportsOpenAIServiceTierFlex(model) && { service_tier: 'flex' }),
         stream: payload.stream ?? true,
       };
     },
+    supportsAudioInput: true,
   },
   debug: {
     chatCompletion: () => process.env.DEBUG_OPENAI_CHAT_COMPLETION === '1',

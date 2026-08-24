@@ -1,6 +1,7 @@
 'use client';
 
-import { Center, Checkbox, Flexbox } from '@lobehub/ui';
+import { Center, Flexbox } from '@lobehub/ui';
+import { Checkbox } from '@lobehub/ui/base-ui';
 import { VirtuosoMasonry } from '@virtuoso.dev/masonry';
 import { cssVar } from 'antd-style';
 import { SearchIcon } from 'lucide-react';
@@ -8,38 +9,58 @@ import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Virtuoso } from 'react-virtuoso';
 
+import { useActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
 import AsyncError from '@/components/AsyncError';
 import NeuralNetworkLoading from '@/components/NeuralNetworkLoading';
+import { useResourceManagerStore } from '@/features/ResourceManager/store';
+import {
+  getResourceQueryVisibility,
+  getResourceSourceFilter,
+} from '@/features/ResourceManager/store/selectors';
 import { useClientDataSWR } from '@/libs/swr';
 import { resourceKeys } from '@/libs/swr/keys';
-import { useResourceManagerStore } from '@/routes/(main)/resource/features/store';
 import { resourceService } from '@/services/resource';
 import { useGlobalStore } from '@/store/global';
-import { INITIAL_STATUS } from '@/store/global/initialState';
+import {
+  DEFAULT_RESOURCE_MANAGER_COLUMN_WIDTHS,
+  INITIAL_STATUS,
+} from '@/store/global/initialState';
 import type { AsyncTaskStatus } from '@/types/asyncTask';
-import type { FileListItem } from '@/types/files';
+import { type FileListItem, type ResourceSourceFilter } from '@/types/files';
 
+import { useExplorerSelectionEligibility } from './hooks/useExplorerSelection';
 import FileListItemComponent from './ListView/ListItem';
+import { getListViewMinWidth } from './ListView/ListItem/constants';
 import MasonryItemWrapper from './MasonryView/MasonryItem/MasonryItemWrapper';
 import { useMasonryColumnCount } from './useMasonryColumnCount';
 
 const SearchResultsOverlay = memo(() => {
   const { t } = useTranslation('components');
-  const [searchQuery, libraryId, category, viewMode] = useResourceManagerStore((s) => [
-    s.searchQuery,
-    s.libraryId,
-    s.category,
-    s.viewMode,
-  ]);
+  const [searchQuery, libraryId, category, viewMode, listVisibility, sourceFilter] =
+    useResourceManagerStore((s) => [
+      s.searchQuery,
+      s.libraryId,
+      s.category,
+      s.viewMode,
+      s.listVisibility,
+      getResourceSourceFilter(s),
+    ]);
 
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
+  const { isItemSelectable } = useExplorerSelectionEligibility();
 
-  const columnWidths = useGlobalStore(
-    (s) => s.status.resourceManagerColumnWidths || INITIAL_STATUS.resourceManagerColumnWidths,
-  );
+  const columnWidths = useGlobalStore((s) => ({
+    ...DEFAULT_RESOURCE_MANAGER_COLUMN_WIDTHS,
+    ...(s.status.resourceManagerColumnWidths || INITIAL_STATUS.resourceManagerColumnWidths),
+  }));
   const columnCount = useMasonryColumnCount();
 
   const isActive = !!searchQuery && searchQuery.length > 0;
+  // Personal account has only one uploader (the user themselves), so hide the
+  // column entirely there — it only makes sense in a workspace with multiple members.
+  const activeWorkspaceId = useActiveWorkspaceId();
+  const showUploader = !!activeWorkspaceId && (!!libraryId || listVisibility !== 'private');
+  const visibility = getResourceQueryVisibility(libraryId, listVisibility);
 
   const {
     data: rawData,
@@ -48,13 +69,32 @@ const SearchResultsOverlay = memo(() => {
     mutate,
   } = useClientDataSWR(
     isActive
-      ? resourceKeys.search({
-          category: libraryId ? undefined : category,
-          libraryId,
-          q: searchQuery,
-        })
+      ? resourceKeys.search(
+          {
+            category: libraryId ? undefined : category,
+            libraryId,
+            q: searchQuery,
+            // Search narrows the list the user is looking at, so it has to honour
+            // the source they picked. Omitting it left the chip visibly selected
+            // while results came back from every non-hidden source — and made
+            // `Acceptance` search unusable, since that source is hidden unless
+            // explicitly asked for.
+            sourceFilter,
+            visibility,
+          },
+          activeWorkspaceId ?? null,
+        )
       : null,
-    async ([, params]: [string, { category?: string; libraryId?: string; q: string }]) => {
+    async ([, params]: [
+      string,
+      {
+        category?: string;
+        libraryId?: string;
+        q: string;
+        sourceFilter?: ResourceSourceFilter;
+        visibility?: 'private' | 'public';
+      },
+    ]) => {
       const response = await resourceService.queryResources({
         ...params,
         limit: 50,
@@ -82,8 +122,12 @@ const SearchResultsOverlay = memo(() => {
 
   const masonryContext = useMemo(
     () => ({
+      isItemSelectable,
       knowledgeBaseId: libraryId ?? undefined,
       onSelectedChange: (id: string, checked: boolean) => {
+        const item = data?.find((entry) => entry.id === id);
+        if (!item || !isItemSelectable(item)) return;
+
         if (checked) {
           setSelectedFileIds((prev) => [...prev, id]);
         } else {
@@ -93,7 +137,7 @@ const SearchResultsOverlay = memo(() => {
       selectAllState: 'loaded' as const,
       selectFileIds: selectedFileIds,
     }),
-    [libraryId, selectedFileIds],
+    [data, isItemSelectable, libraryId, selectedFileIds],
   );
 
   if (!isActive) return null;
@@ -146,7 +190,7 @@ const SearchResultsOverlay = memo(() => {
                 fontSize: 12,
                 height: 40,
                 minHeight: 40,
-                minWidth: 800,
+                minWidth: getListViewMinWidth(showUploader),
               }}
             >
               <Center height={40} style={{ paddingInline: 4 }}>
@@ -178,6 +222,20 @@ const SearchResultsOverlay = memo(() => {
               >
                 {t('FileManager.title.createdAt')}
               </Flexbox>
+              {showUploader && (
+                <Flexbox
+                  justify="center"
+                  style={{
+                    flexShrink: 0,
+                    height: '100%',
+                    paddingBlock: 6,
+                    paddingInlineEnd: 16,
+                    width: columnWidths.uploader,
+                  }}
+                >
+                  {t('FileManager.title.uploader')}
+                </Flexbox>
+              )}
               <Flexbox
                 justify="center"
                 style={{
@@ -198,13 +256,17 @@ const SearchResultsOverlay = memo(() => {
                 style={{ height: '100%' }}
                 itemContent={(index, item) => {
                   if (!item) return null;
+                  const selectable = isItemSelectable(item);
                   return (
                     <FileListItemComponent
                       columnWidths={columnWidths}
                       index={index}
                       key={item.id}
-                      selected={selectedFileIds.includes(item.id)}
+                      selectable={selectable}
+                      selected={selectable && selectedFileIds.includes(item.id)}
+                      showUploader={showUploader}
                       onSelectedChange={(id, checked) => {
+                        if (!selectable) return;
                         if (checked) {
                           setSelectedFileIds((prev) => [...prev, id]);
                         } else {

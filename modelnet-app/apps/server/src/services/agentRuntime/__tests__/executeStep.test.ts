@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { GeneralChatAgent, GraphAgent } from '@lobechat/agent-runtime';
+import type { AgentGraph } from '@lobechat/types';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createRuntimeExecutors } from '@/server/modules/AgentRuntime/RuntimeExecutors';
@@ -20,6 +22,7 @@ vi.mock('@/server/modules/AgentRuntime', () => ({
     getOperationMetadata: vi.fn(),
     tryClaimStep: vi.fn().mockResolvedValue(true),
     releaseStepLock: vi.fn().mockResolvedValue(undefined),
+    refreshStepLock: vi.fn().mockResolvedValue(true),
   })),
   createStreamEventManager: vi.fn(() => ({
     publishStreamEvent: vi.fn(),
@@ -215,6 +218,118 @@ describe('AgentRuntimeService.executeStep - early exit on terminal state', () =>
     );
   });
 
+  it('disables early final visible output end for GraphAgent', async () => {
+    vi.mocked(createRuntimeExecutors).mockClear();
+    const graph = {
+      edges: [{ from: '__root__', instruction: 'Answer the user.', to: 'answer' }],
+      fields: {},
+      name: 'answer-graph',
+      nodes: { answer: { type: 'llm' } },
+      terminal: 'answer',
+    } satisfies AgentGraph;
+    const service = new AgentRuntimeService({} as any, 'user-1', {
+      agentFactory: (config) => new GraphAgent({ ...config, graph }),
+      queueService: null,
+    });
+
+    await (service as any).createAgentRuntime({
+      metadata: {
+        agentConfig: {},
+        modelRuntimeConfig: { model: 'gpt-test', provider: 'lobehub' },
+        userId: 'user-1',
+      },
+      operationId: 'op-graph-agent',
+      stepIndex: 0,
+    });
+
+    expect(createRuntimeExecutors).toHaveBeenCalledWith(
+      expect.objectContaining({ allowEarlyFinalAnswerVisibleOutputEnd: false }),
+    );
+  });
+
+  it('allows early final visible output end when a factory returns GeneralChatAgent', async () => {
+    vi.mocked(createRuntimeExecutors).mockClear();
+    const service = new AgentRuntimeService({} as any, 'user-1', {
+      agentFactory: (config) => new GeneralChatAgent(config),
+      queueService: null,
+    });
+
+    await (service as any).createAgentRuntime({
+      metadata: {
+        agentConfig: {},
+        modelRuntimeConfig: { model: 'gpt-test', provider: 'lobehub' },
+        userId: 'user-1',
+      },
+      operationId: 'op-general-agent',
+      stepIndex: 0,
+    });
+
+    expect(createRuntimeExecutors).toHaveBeenCalledWith(
+      expect.objectContaining({ allowEarlyFinalAnswerVisibleOutputEnd: true }),
+    );
+  });
+
+  const sandboxToolCallState = (path: string) => ({
+    messages: [
+      {
+        role: 'assistant',
+        tool_calls: [
+          {
+            function: {
+              arguments: JSON.stringify({ path }),
+              name: 'lobe-cloud-sandbox____writeFile____builtin',
+            },
+            id: 'call-1',
+            type: 'function',
+          },
+        ],
+      },
+    ],
+  });
+
+  it('suppresses early visible output end once the run edited entity-format files', async () => {
+    // Completion still has to export + register those files as `file` Works
+    // BEFORE the terminal snapshot; an early hint would end the visible loading
+    // seconds before the file-Work card can exist.
+    vi.mocked(createRuntimeExecutors).mockClear();
+    const service = new AgentRuntimeService({} as any, 'user-1', { queueService: null });
+
+    await (service as any).createAgentRuntime({
+      agentState: sandboxToolCallState('/work/deck.pptx'),
+      metadata: {
+        agentConfig: {},
+        modelRuntimeConfig: { model: 'gpt-test', provider: 'lobehub' },
+        userId: 'user-1',
+      },
+      operationId: 'op-entity-edit',
+      stepIndex: 3,
+    });
+
+    expect(createRuntimeExecutors).toHaveBeenCalledWith(
+      expect.objectContaining({ allowEarlyFinalAnswerVisibleOutputEnd: false }),
+    );
+  });
+
+  it('keeps the early hint when edited files are not entity-format', async () => {
+    vi.mocked(createRuntimeExecutors).mockClear();
+    const service = new AgentRuntimeService({} as any, 'user-1', { queueService: null });
+
+    await (service as any).createAgentRuntime({
+      agentState: sandboxToolCallState('/work/notes.md'),
+      metadata: {
+        agentConfig: {},
+        modelRuntimeConfig: { model: 'gpt-test', provider: 'lobehub' },
+        userId: 'user-1',
+      },
+      operationId: 'op-plain-edit',
+      stepIndex: 3,
+    });
+
+    expect(createRuntimeExecutors).toHaveBeenCalledWith(
+      expect.objectContaining({ allowEarlyFinalAnswerVisibleOutputEnd: true }),
+    );
+  });
+
   it('should NOT skip step when operation status is "running"', async () => {
     const service = createService();
 
@@ -246,10 +361,15 @@ describe('AgentRuntimeService.executeStep - step idempotency (distributed lock)'
     return service;
   };
 
-  it('should return locked=true when tryClaimStep returns false', async () => {
+  it('should return locked=true for a non-stale lock conflict', async () => {
     const service = createService();
     const coordinator = (service as any).coordinator;
     coordinator.tryClaimStep = vi.fn().mockResolvedValue(false);
+    coordinator.loadAgentState = vi.fn().mockResolvedValue({
+      status: 'running',
+      stepCount: 5,
+      lastModified: new Date().toISOString(),
+    });
 
     const result = await service.executeStep({
       operationId: 'op-locked',
@@ -259,8 +379,170 @@ describe('AgentRuntimeService.executeStep - step idempotency (distributed lock)'
     expect(result.locked).toBe(true);
     expect(result.success).toBe(false);
     expect(result.nextStepScheduled).toBe(false);
-    // Should NOT call loadAgentState since lock was not acquired
-    expect(coordinator.loadAgentState).not.toHaveBeenCalled();
+    expect(coordinator.loadAgentState).toHaveBeenCalledWith('op-locked');
+    expect(coordinator.releaseStepLock).not.toHaveBeenCalled();
+  });
+
+  it('should re-queue the same step on its own backoff for a non-stale lock conflict', async () => {
+    const scheduleMessage = vi.fn().mockResolvedValue('msg-1');
+    const service = new AgentRuntimeService({} as any, 'user-1', {
+      queueService: { getImpl: () => ({}), scheduleMessage } as any,
+    });
+    const coordinator = (service as any).coordinator;
+    coordinator.tryClaimStep = vi.fn().mockResolvedValue(false);
+    coordinator.loadAgentState = vi.fn().mockResolvedValue({
+      status: 'running',
+      stepCount: 5,
+      metadata: { queueRetries: 5, queueRetryDelay: '10000' },
+    });
+
+    const result = await service.executeStep({ operationId: 'op-requeue', stepIndex: 5 });
+
+    expect(result.locked).toBe(true);
+    expect(result.lockRescheduled).toBe(true);
+    // ACK so the queue doesn't retry on top of the re-delivery we just scheduled.
+    expect(result.success).toBe(true);
+    expect(scheduleMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: 'op-requeue',
+        payload: { lockRetryAttempt: 1 },
+        retries: 5,
+        retryDelay: '10000',
+        stepIndex: 5,
+      }),
+    );
+    expect(coordinator.releaseStepLock).not.toHaveBeenCalled();
+  });
+
+  it('should carry the delivery resume payload into the re-queued lock-conflict message', async () => {
+    const scheduleMessage = vi.fn().mockResolvedValue('msg-1');
+    const service = new AgentRuntimeService({} as any, 'user-1', {
+      queueService: { getImpl: () => ({}), scheduleMessage } as any,
+    });
+    const coordinator = (service as any).coordinator;
+    coordinator.tryClaimStep = vi.fn().mockResolvedValue(false);
+    coordinator.loadAgentState = vi.fn().mockResolvedValue({ status: 'running', stepCount: 5 });
+
+    // A human-intervention resume that lost the lock race. Re-queueing only the
+    // retry counter would run a plain step and drop the approval entirely.
+    await service.executeStep({
+      approvedToolCall: { id: 'call-1' },
+      humanInput: 'approved',
+      operationId: 'op-resume',
+      rejectAndContinue: false,
+      stepIndex: 5,
+      toolMessageId: 'msg-tool-1',
+    });
+
+    expect(scheduleMessage.mock.calls[0][0].payload).toMatchObject({
+      approvedToolCall: { id: 'call-1' },
+      humanInput: 'approved',
+      lockRetryAttempt: 1,
+      rejectAndContinue: false,
+      toolMessageId: 'msg-tool-1',
+    });
+  });
+
+  it('should carry an async-tool resume flag into the re-queued lock-conflict message', async () => {
+    const scheduleMessage = vi.fn().mockResolvedValue('msg-1');
+    const service = new AgentRuntimeService({} as any, 'user-1', {
+      queueService: { getImpl: () => ({}), scheduleMessage } as any,
+    });
+    const coordinator = (service as any).coordinator;
+    coordinator.tryClaimStep = vi.fn().mockResolvedValue(false);
+    coordinator.loadAgentState = vi.fn().mockResolvedValue({ status: 'running', stepCount: 5 });
+
+    await service.executeStep({
+      operationId: 'op-async-resume',
+      resumeAsyncTool: true,
+      stepIndex: 5,
+    });
+
+    expect(scheduleMessage.mock.calls[0][0].payload).toMatchObject({
+      lockRetryAttempt: 1,
+      resumeAsyncTool: true,
+    });
+  });
+
+  it('should back off exponentially across successive lock-conflict re-deliveries', async () => {
+    const scheduleMessage = vi.fn().mockResolvedValue('msg-1');
+    const service = new AgentRuntimeService({} as any, 'user-1', {
+      queueService: { getImpl: () => ({}), scheduleMessage } as any,
+    });
+    const coordinator = (service as any).coordinator;
+    coordinator.tryClaimStep = vi.fn().mockResolvedValue(false);
+    coordinator.loadAgentState = vi.fn().mockResolvedValue({ status: 'running', stepCount: 5 });
+
+    await service.executeStep({ lockRetryAttempt: 0, operationId: 'op-b', stepIndex: 5 });
+    await service.executeStep({ lockRetryAttempt: 2, operationId: 'op-b', stepIndex: 5 });
+
+    expect(scheduleMessage.mock.calls[0][0]).toMatchObject({
+      delay: 15_000,
+      payload: { lockRetryAttempt: 1 },
+    });
+    expect(scheduleMessage.mock.calls[1][0]).toMatchObject({
+      delay: 60_000,
+      payload: { lockRetryAttempt: 3 },
+    });
+  });
+
+  it('should fall back to a retryable response once the lock-conflict backoff is exhausted', async () => {
+    const scheduleMessage = vi.fn().mockResolvedValue('msg-1');
+    const service = new AgentRuntimeService({} as any, 'user-1', {
+      queueService: { getImpl: () => ({}), scheduleMessage } as any,
+    });
+    const coordinator = (service as any).coordinator;
+    coordinator.tryClaimStep = vi.fn().mockResolvedValue(false);
+    coordinator.loadAgentState = vi.fn().mockResolvedValue({ status: 'running', stepCount: 5 });
+
+    const result = await service.executeStep({
+      lockRetryAttempt: 12,
+      operationId: 'op-exhausted',
+      stepIndex: 5,
+    });
+
+    expect(scheduleMessage).not.toHaveBeenCalled();
+    expect(result.locked).toBe(true);
+    expect(result.lockRescheduled).toBeUndefined();
+    expect(result.success).toBe(false);
+  });
+
+  it('should stay retryable when re-queueing after a lock conflict fails', async () => {
+    const scheduleMessage = vi.fn().mockRejectedValue(new Error('qstash down'));
+    const service = new AgentRuntimeService({} as any, 'user-1', {
+      queueService: { getImpl: () => ({}), scheduleMessage } as any,
+    });
+    const coordinator = (service as any).coordinator;
+    coordinator.tryClaimStep = vi.fn().mockResolvedValue(false);
+    coordinator.loadAgentState = vi.fn().mockResolvedValue({ status: 'running', stepCount: 5 });
+
+    const result = await service.executeStep({ operationId: 'op-schedule-fail', stepIndex: 5 });
+
+    expect(result.locked).toBe(true);
+    expect(result.lockRescheduled).toBeUndefined();
+    expect(result.success).toBe(false);
+  });
+
+  it('should ack stale duplicate deliveries even when the stale step lock is held', async () => {
+    const service = createService();
+    const coordinator = (service as any).coordinator;
+    coordinator.tryClaimStep = vi.fn().mockResolvedValue(false);
+    coordinator.loadAgentState = vi.fn().mockResolvedValue({
+      status: 'running',
+      stepCount: 10,
+      lastModified: new Date().toISOString(),
+    });
+
+    const result = await service.executeStep({
+      operationId: 'op-stale-locked',
+      stepIndex: 8,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.locked).toBeUndefined();
+    expect(result.stepResult).toBeNull();
+    expect(result.nextStepScheduled).toBe(false);
+    expect(coordinator.releaseStepLock).not.toHaveBeenCalled();
   });
 
   it('should skip execution when stepCount > stepIndex (delayed retry after lock TTL)', async () => {
@@ -282,7 +564,11 @@ describe('AgentRuntimeService.executeStep - step idempotency (distributed lock)'
     expect(result.stepResult).toBeNull();
     expect(result.nextStepScheduled).toBe(false);
     // Lock should still be released
-    expect(coordinator.releaseStepLock).toHaveBeenCalledWith('op-stale', 8);
+    expect(coordinator.releaseStepLock).toHaveBeenCalledWith(
+      'op-stale',
+      8,
+      expect.stringContaining('op-stale:8:'),
+    );
   });
 
   it('should release lock after successful execution', async () => {
@@ -300,7 +586,11 @@ describe('AgentRuntimeService.executeStep - step idempotency (distributed lock)'
       stepIndex: 6,
     });
 
-    expect(coordinator.releaseStepLock).toHaveBeenCalledWith('op-done', 6);
+    expect(coordinator.releaseStepLock).toHaveBeenCalledWith(
+      'op-done',
+      6,
+      expect.stringContaining('op-done:6:'),
+    );
   });
 
   it('should release lock even when step execution encounters an error', async () => {
@@ -324,7 +614,11 @@ describe('AgentRuntimeService.executeStep - step idempotency (distributed lock)'
 
     expect(result.state.status).toBe('error');
     // Lock must still be released via finally block
-    expect(coordinator.releaseStepLock).toHaveBeenCalledWith('op-error', 6);
+    expect(coordinator.releaseStepLock).toHaveBeenCalledWith(
+      'op-error',
+      6,
+      expect.stringContaining('op-error:6:'),
+    );
   });
 
   it('should NOT release lock when tryClaimStep returns false', async () => {
@@ -350,7 +644,32 @@ describe('AgentRuntimeService.executeStep - step idempotency (distributed lock)'
       stepIndex: 42,
     });
 
-    expect(coordinator.tryClaimStep).toHaveBeenCalledWith('op-args', 42, 35);
+    expect(coordinator.tryClaimStep).toHaveBeenCalledWith(
+      'op-args',
+      42,
+      120,
+      expect.stringContaining('op-args:42:'),
+    );
+  });
+
+  it('should refresh the step lock while execution is still running', async () => {
+    vi.useFakeTimers();
+    const service = createService();
+    const coordinator = (service as any).coordinator;
+
+    try {
+      const stopHeartbeat = (service as any).startStepLockHeartbeat('op-heartbeat', 7, 'owner-1');
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(coordinator.refreshStepLock).toHaveBeenCalledWith('op-heartbeat', 7, 120, 'owner-1');
+
+      stopHeartbeat();
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(coordinator.refreshStepLock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -1020,5 +1339,75 @@ describe('AgentRuntimeService.executeStep - step_start uiMessages payload', () =
     expect(stepStartCall[1].data).not.toHaveProperty('uiMessages');
     // Did not even attempt the DB query when context is missing.
     expect(queryMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('AgentRuntimeService.executeStep - pre-snapshot file-Work registration', () => {
+  const runTerminalStep = async (newState: any) => {
+    const service = new AgentRuntimeService({} as any, 'user-1', { queueService: null });
+    const coordinator = (service as any).coordinator;
+    coordinator.loadAgentState = vi.fn().mockResolvedValue({
+      lastModified: new Date().toISOString(),
+      metadata: {},
+      status: 'running',
+      stepCount: 1,
+    });
+    const registerSpy = vi
+      .spyOn((service as any).completionLifecycle, 'registerFileWorks')
+      .mockResolvedValue(undefined);
+    vi.spyOn((service as any).completionLifecycle, 'emitSignalEvents').mockResolvedValue([]);
+    vi.spyOn((service as any).completionLifecycle, 'dispatchHooks').mockResolvedValue(undefined);
+    (service as any).createAgentRuntime = vi.fn().mockResolvedValue({
+      runtime: {
+        step: vi.fn().mockResolvedValue({ events: [], newState, nextContext: undefined }),
+      },
+    });
+
+    await service.executeStep({
+      context: { phase: 'agent_step' } as any,
+      operationId: 'op-order',
+      stepIndex: 2,
+    });
+
+    return { registerSpy, saveStepResult: coordinator.saveStepResult };
+  };
+
+  const doneState = (status: string) => ({
+    lastModified: new Date().toISOString(),
+    messages: [],
+    metadata: {},
+    status,
+    stepCount: 2,
+  });
+
+  it('registers file works BEFORE the terminal saveStepResult publishes the snapshot', async () => {
+    const { registerSpy, saveStepResult } = await runTerminalStep(doneState('done'));
+
+    // The terminal save publishes agent_runtime_end with the uiMessages
+    // snapshot the client adopts — the Work rows must already exist by then.
+    expect(registerSpy).toHaveBeenCalledWith(
+      'op-order',
+      expect.objectContaining({ status: 'done' }),
+    );
+    expect(saveStepResult).toHaveBeenCalledTimes(1);
+    expect(registerSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      saveStepResult.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('skips pre-save registration for a non-success terminal (error)', async () => {
+    const { registerSpy } = await runTerminalStep(doneState('error'));
+
+    expect(registerSpy).not.toHaveBeenCalled();
+  });
+
+  // Regression: the approval resume continues the SAME operationId, so the
+  // terminal completion's scan covers pre-park edits. Registering at the park
+  // would persist `_fileWorksRegistered` into the park snapshot — skipping the
+  // terminal registration — and freeze versions at pre-approval content.
+  it('skips pre-save registration when parking on waiting_for_human', async () => {
+    const { registerSpy } = await runTerminalStep(doneState('waiting_for_human'));
+
+    expect(registerSpy).not.toHaveBeenCalled();
   });
 });

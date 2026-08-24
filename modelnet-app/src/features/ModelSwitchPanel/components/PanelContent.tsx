@@ -3,6 +3,7 @@ import { type ComponentType, type FC } from 'react';
 import { useMemo, useState } from 'react';
 import { Rnd } from 'react-rnd';
 
+import { useBusinessModelPricingPrefetch } from '@/business/client/hooks/useBusinessModelPricing';
 import { withModelNetParallelModel } from '@/features/ModelNetParallel';
 import { useEnabledChatModels } from '@/hooks/useEnabledChatModels';
 import { useAiInfraStore } from '@/store/aiInfra';
@@ -45,6 +46,7 @@ export const PanelContent: FC<PanelContentProps> = ({
   const [searchKeyword, setSearchKeyword] = useState('');
   const isDevMode = useUserStore((s) => userGeneralSettingsSelectors.config(s).isDevMode);
   const { panelHeight, panelWidth, handlePanelWidthChange } = usePanelSize(enabledList.length);
+  useBusinessModelPricingPrefetch();
 
   const content = (
     <>
@@ -74,11 +76,12 @@ export const PanelContent: FC<PanelContentProps> = ({
       <Rnd
         disableDragging
         enableResizing={ENABLE_RESIZING}
+        maxHeight={`min(${panelHeight}px, var(--available-height, ${panelHeight}px))`}
         maxWidth={MAX_WIDTH}
         minWidth={MIN_WIDTH}
         position={{ x: 0, y: 0 }}
         size={{ height: panelHeight, width: panelWidth }}
-        style={{ display: 'flex', flexDirection: 'column', position: 'relative' }}
+        style={{ display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative' }}
         onResizeStop={(_e, _direction, ref) => {
           handlePanelWidthChange(ref.offsetWidth);
         }}
@@ -93,7 +96,7 @@ export const PanelContent: FC<PanelContentProps> = ({
       style={{
         display: 'flex',
         flexDirection: 'column',
-        height: panelHeight,
+        height: `min(${panelHeight}px, var(--available-height, ${panelHeight}px))`,
         position: 'relative',
         width: DEFAULT_WIDTH,
       }}

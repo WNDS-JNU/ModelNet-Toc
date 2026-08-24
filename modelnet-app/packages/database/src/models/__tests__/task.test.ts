@@ -1,12 +1,26 @@
 // @vitest-environment node
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
-import { agents, briefs, documents, tasks, topics, users, workspaces } from '../../schemas';
+import {
+  acceptances,
+  agents,
+  briefs,
+  documents,
+  goals,
+  tasks,
+  topics,
+  users,
+  workspaces,
+} from '../../schemas';
 import { taskTopics } from '../../schemas/task';
+import { works } from '../../schemas/work';
 import type { LobeChatDatabase } from '../../type';
+import { GoalModel } from '../goal';
+import { ProjectModel } from '../project';
 import { TaskModel } from '../task';
+import { WorkModel } from '../work';
 
 const serverDB: LobeChatDatabase = await getTestDB();
 
@@ -240,6 +254,27 @@ describe('TaskModel', () => {
       const deleted = await model2.delete(task.id);
       expect(deleted).toBe(false);
     });
+
+    // Non-tool deletion (UI / CLI) must leave the Work artifact orphaned so the
+    // UI can render it as "resource deleted" from its snapshot. Tool-driven
+    // deletion removes the Work separately at the dispatch layer.
+    it('should NOT delete the task Work artifact', async () => {
+      const model = new TaskModel(serverDB, userId);
+      const workModel = new WorkModel(serverDB, userId);
+      const task = await model.create({ instruction: 'Keep my Work' });
+      await workModel.registerTask({
+        changeType: 'created',
+        toolCallId: 'tool-call-task-keep',
+        toolIdentifier: 'lobe-task',
+        toolName: 'createTask',
+        taskId: task.id,
+      });
+
+      await model.delete(task.id);
+
+      const workRows = await serverDB.select().from(works).where(eq(works.resourceId, task.id));
+      expect(workRows).toHaveLength(1);
+    });
   });
 
   describe('list', () => {
@@ -309,6 +344,110 @@ describe('TaskModel', () => {
       expect(total).toBe(5);
       expect(tasks).toHaveLength(2);
     });
+
+    // The tick services refuse these three shapes, so a roll-up that lists them
+    // as schedules is listing things that will never fire — and in a bounded
+    // list they push out the ones that will.
+    it('should leave out automation the runtime would refuse to fire', async () => {
+      const model = new TaskModel(serverDB, userId);
+      const live = await model.create({
+        automationMode: 'schedule',
+        instruction: 'Nightly digest',
+        schedulePattern: '0 9 * * *',
+      });
+      const noPattern = await model.create({
+        automationMode: 'schedule',
+        instruction: 'Schedule with its pattern cleared',
+      });
+      const noInterval = await model.create({
+        automationMode: 'heartbeat',
+        heartbeatInterval: 0,
+        instruction: 'Heartbeat with its interval cleared',
+      });
+      const done = await model.create({
+        automationMode: 'schedule',
+        instruction: 'Completed but still carries its cron',
+        schedulePattern: '0 9 * * *',
+      });
+      await model.updateStatus(done.id, 'completed');
+
+      const automated = await model.list({ automated: true });
+      expect(automated.tasks.map((t) => t.id)).toEqual([live.id]);
+
+      // Complementary, so nothing falls into neither bucket.
+      const manual = await model.list({ automated: false });
+      expect(manual.tasks.map((t) => t.id).sort()).toEqual(
+        [noPattern.id, noInterval.id, done.id].sort(),
+      );
+    });
+
+    it('should order by last activity when asked, not by creation', async () => {
+      const model = new TaskModel(serverDB, userId);
+      const older = await model.create({ instruction: 'Created first, touched last' });
+      const newer = await model.create({ instruction: 'Created second, never touched' });
+
+      // Stamp `updated_at` rather than letting `update()` do it. Inserts take
+      // their timestamp from Postgres `now()` while `update()` writes a Node
+      // `new Date()`, so asserting on a real edit races the database clock
+      // against the host's — which is stable enough to pass alone and flips
+      // under a loaded full-suite run. The column under test is the ORDER BY,
+      // not who wrote the value.
+      const stamp = async (id: string, iso: string) => {
+        await serverDB.execute(sql`update tasks set updated_at = ${iso} where id = ${id}`);
+      };
+      await stamp(newer.id, '2026-01-01T00:00:00Z');
+      await stamp(older.id, '2026-06-01T00:00:00Z');
+
+      const order = async (params: Parameters<TaskModel['list']>[0]) => {
+        const { tasks: rows } = await model.list(params);
+        // Only these two rows: the assertion is about their relative order.
+        return rows.map((t) => t.id).filter((id) => id === older.id || id === newer.id);
+      };
+
+      expect(await order({})).toEqual([newer.id, older.id]);
+      expect(await order({ orderBy: 'updatedAt' })).toEqual([older.id, newer.id]);
+    });
+
+    it('should split automated tasks from manual ones', async () => {
+      const model = new TaskModel(serverDB, userId);
+      const cron = await model.create({
+        automationMode: 'schedule',
+        instruction: 'Nightly digest',
+        schedulePattern: '0 9 * * *',
+      });
+      const heartbeat = await model.create({
+        automationMode: 'heartbeat',
+        heartbeatInterval: 3600,
+        instruction: 'Keep watching',
+      });
+      const manual = await model.create({ instruction: 'One-off' });
+
+      const automated = await model.list({ automated: true });
+      expect(automated.total).toBe(2);
+      expect(automated.tasks.map((t) => t.id).sort()).toEqual([cron.id, heartbeat.id].sort());
+
+      const notAutomated = await model.list({ automated: false });
+      expect(notAutomated.total).toBe(1);
+      expect(notAutomated.tasks[0].id).toBe(manual.id);
+
+      // Omitting the flag must not narrow anything.
+      expect((await model.list()).total).toBe(3);
+    });
+
+    it('should filter by projectId', async () => {
+      const model = new TaskModel(serverDB, userId);
+      const project = await new ProjectModel(serverDB, userId).create({
+        identifier: 'TLIST',
+        name: 'Scoped project',
+      });
+      await model.create({ instruction: 'Project task', projectId: project.id });
+      await model.create({ instruction: 'Unrelated task' });
+
+      const result = await model.list({ projectId: project.id });
+
+      expect(result.total).toBe(1);
+      expect(result.tasks[0].instruction).toBe('Project task');
+    });
   });
 
   describe('groupList', () => {
@@ -316,7 +455,7 @@ describe('TaskModel', () => {
       const model = new TaskModel(serverDB, userId);
 
       // Create tasks with different statuses
-      const t1 = await model.create({ instruction: 'Backlog task' });
+      const _t1 = await model.create({ instruction: 'Backlog task' });
       const t2 = await model.create({ instruction: 'Running task' });
       await model.updateStatus(t2.id, 'running', { startedAt: new Date() });
       const t3 = await model.create({ instruction: 'Paused task' });
@@ -385,6 +524,19 @@ describe('TaskModel', () => {
       expect(backlogP2.offset).toBe(2);
     });
 
+    it('should not double-count duplicate statuses in a group', async () => {
+      const model = new TaskModel(serverDB, userId);
+      await model.create({ instruction: 'Backlog task' });
+
+      const [group] = await model.groupList({
+        groups: [{ key: 'backlog', statuses: ['backlog', 'backlog'] }],
+      });
+
+      expect(group.total).toBe(1);
+      expect(group.tasks).toHaveLength(1);
+      expect(group.hasMore).toBe(false);
+    });
+
     it('should filter root tasks only (parentTaskId null)', async () => {
       const model = new TaskModel(serverDB, userId);
       const parent = await model.create({ instruction: 'Parent' });
@@ -427,6 +579,158 @@ describe('TaskModel', () => {
       expect(result[0].total).toBe(1);
       expect(result[0].tasks).toHaveLength(1);
     });
+
+    it('should exclude runnable automation from ordinary kanban groups', async () => {
+      const model = new TaskModel(serverDB, userId);
+      const manual = await model.create({ instruction: 'Manual task' });
+      await model.create({
+        automationMode: 'schedule',
+        instruction: 'Scheduled task',
+        schedulePattern: '0 9 * * *',
+      });
+
+      const [group] = await model.groupList({
+        automated: false,
+        groups: [{ key: 'backlog', statuses: ['backlog'] }],
+      });
+
+      expect(group.tasks.map((task) => task.id)).toEqual([manual.id]);
+      expect(group.total).toBe(1);
+    });
+
+    it('should filter tasks by their bound goal entity', async () => {
+      const model = new TaskModel(serverDB, userId);
+
+      const goalTask = await model.create({ instruction: 'Persistent objective' });
+      const goalRow = await new GoalModel(serverDB, userId).create({
+        maxRounds: 5,
+        subjectId: goalTask.id,
+        subjectType: 'task',
+        title: 'Persistent objective',
+      });
+      await model.create({ instruction: 'Ordinary task' });
+
+      const goals = await model.groupList({
+        groups: [{ key: 'goals', statuses: ['backlog'] }],
+        hasGoal: true,
+      });
+      const ordinary = await model.groupList({
+        groups: [{ key: 'tasks', statuses: ['backlog'] }],
+        hasGoal: false,
+      });
+
+      expect(goals[0].tasks.map((task) => task.id)).toEqual([goalTask.id]);
+      // The goal entity rides along on the returned task row.
+      expect(goals[0].tasks[0].goal?.id).toBe(goalRow.id);
+      expect(goals[0].tasks[0].goal?.maxRounds).toBe(5);
+      expect(ordinary[0].tasks).toHaveLength(1);
+      expect(ordinary[0].tasks[0].instruction).toBe('Ordinary task');
+      expect(ordinary[0].tasks[0].goal).toBeNull();
+    });
+
+    it('should group only tasks from the requested project', async () => {
+      const model = new TaskModel(serverDB, userId);
+      const project = await new ProjectModel(serverDB, userId).create({
+        identifier: 'TGRP',
+        name: 'Scoped project',
+      });
+      await model.create({ instruction: 'Project task', projectId: project.id });
+      await model.create({ instruction: 'Unrelated task' });
+
+      const [group] = await model.groupList({
+        groups: [{ key: 'backlog', statuses: ['backlog'] }],
+        projectId: project.id,
+      });
+
+      expect(group.total).toBe(1);
+      expect(group.tasks[0].instruction).toBe('Project task');
+    });
+
+    it('should aggregate run cost and duration for the returned task batch', async () => {
+      const model = new TaskModel(serverDB, userId);
+      const task = await model.create({ instruction: 'Measured goal' });
+      const startedAt = new Date('2026-08-06T10:00:00.000Z');
+
+      await serverDB.insert(topics).values([
+        {
+          completedAt: new Date('2026-08-06T10:01:00.000Z'),
+          id: 'group-list-run-1',
+          totalCost: 0.015,
+          userId,
+        },
+        {
+          completedAt: new Date('2026-08-06T10:03:00.000Z'),
+          id: 'group-list-run-2',
+          totalCost: 0.025,
+          userId,
+        },
+      ]);
+      await serverDB.insert(taskTopics).values([
+        { createdAt: startedAt, seq: 1, taskId: task.id, topicId: 'group-list-run-1', userId },
+        { createdAt: startedAt, seq: 2, taskId: task.id, topicId: 'group-list-run-2', userId },
+      ]);
+
+      const [group] = await model.groupList({
+        groups: [{ key: 'goals', statuses: ['backlog'] }],
+      });
+      const measuredTask = group.tasks.find(({ id }) => id === task.id);
+
+      expect(measuredTask?.totalRunCost).toBeCloseTo(0.04);
+      expect(measuredTask?.totalRunDuration).toBe(240_000);
+    });
+
+    it('should aggregate descendant run metrics into the root goal', async () => {
+      const model = new TaskModel(serverDB, userId);
+      const root = await model.create({ instruction: 'Root goal' });
+      const child = await model.create({ instruction: 'Delegated work', parentTaskId: root.id });
+      const startedAt = new Date('2026-08-06T10:00:00.000Z');
+
+      await serverDB.insert(topics).values({
+        completedAt: new Date('2026-08-06T10:02:00.000Z'),
+        id: 'descendant-goal-run',
+        totalCost: 0.05,
+        userId,
+      });
+      await serverDB.insert(taskTopics).values({
+        createdAt: startedAt,
+        seq: 1,
+        taskId: child.id,
+        topicId: 'descendant-goal-run',
+        userId,
+      });
+
+      const [group] = await model.groupList({
+        groups: [{ key: 'goals', statuses: ['backlog'] }],
+        parentTaskId: null,
+      });
+      const measuredRoot = group.tasks.find(({ id }) => id === root.id);
+
+      expect(measuredRoot?.totalRunCost).toBeCloseTo(0.05);
+      expect(measuredRoot?.totalRunDuration).toBe(120_000);
+    });
+  });
+
+  describe('deleteSubtree', () => {
+    it('should delete the root and all descendants without leaving orphan tasks', async () => {
+      const model = new TaskModel(serverDB, userId);
+      const root = await model.create({ instruction: 'Root goal' });
+      const child = await model.create({ instruction: 'Child', parentTaskId: root.id });
+      const grandchild = await model.create({ instruction: 'Grandchild', parentTaskId: child.id });
+      await serverDB.insert(acceptances).values({
+        subjectId: grandchild.id,
+        subjectType: 'task',
+        userId,
+      });
+
+      await expect(model.deleteSubtree(root.id)).resolves.toBe(3);
+      await expect(model.findAllDescendants(root.id)).resolves.toEqual([]);
+      await expect(model.findById(root.id)).resolves.toBeNull();
+      const remainingAcceptances = await serverDB
+        .select()
+        .from(acceptances)
+        .where(eq(acceptances.subjectId, grandchild.id));
+      expect(remainingAcceptances).toEqual([]);
+    });
   });
 
   describe('findSubtasks', () => {
@@ -462,6 +766,21 @@ describe('TaskModel', () => {
       const updated = await model.updateStatus(task.id, 'running', { startedAt });
       expect(updated!.status).toBe('running');
       expect(updated!.startedAt).toBeDefined();
+    });
+
+    it('should update status only when the current status matches', async () => {
+      const model = new TaskModel(serverDB, userId);
+      const task = await model.create({ instruction: 'Test' });
+      await model.updateStatus(task.id, 'running');
+
+      const completed = await model.updateStatusIfCurrent(task.id, 'running', 'completed', {
+        completedAt: new Date(),
+      });
+      const staleUpdate = await model.updateStatusIfCurrent(task.id, 'running', 'failed');
+
+      expect(completed?.status).toBe('completed');
+      expect(staleUpdate).toBeNull();
+      expect((await model.findById(task.id))?.status).toBe('completed');
     });
   });
 
@@ -615,6 +934,59 @@ describe('TaskModel', () => {
       const pinned = await model.getPinnedDocuments(task.id);
       expect(pinned).toHaveLength(1);
       expect(pinned[0].documentId).toBe(doc.id);
+    });
+
+    it('tombstones a pinned document in the workspace tree once its owner flips it back to private', async () => {
+      const workspaceId = 'task-doc-workspace';
+      await serverDB.insert(workspaces).values({
+        id: workspaceId,
+        name: 'Workspace',
+        primaryOwnerId: userId,
+        slug: workspaceId,
+      });
+
+      const ownerModel = new TaskModel(serverDB, userId, workspaceId);
+      const task = await ownerModel.create({ instruction: 'Shared task' });
+
+      const [doc] = await serverDB
+        .insert(documents)
+        .values({
+          content: '',
+          fileType: 'text/plain',
+          source: 'test',
+          sourceType: 'file',
+          title: 'Shared Doc',
+          totalCharCount: 12,
+          totalLineCount: 1,
+          userId,
+          visibility: 'public',
+          workspaceId,
+        })
+        .returning();
+      await ownerModel.pinDocument(task.id, doc.id);
+
+      const memberModel = new TaskModel(serverDB, userId2, workspaceId);
+
+      // While public the member sees the real title.
+      const before = await memberModel.getTreePinnedDocuments(task.id);
+      expect(before.nodeMap[doc.id]).toMatchObject({ title: 'Shared Doc' });
+      expect(before.nodeMap[doc.id].inaccessible).toBeUndefined();
+
+      // The document is flipped back to private independently of the task —
+      // the junction mirror still says public, so only the document-level
+      // guard protects the title.
+      await serverDB
+        .update(documents)
+        .set({ visibility: 'private' })
+        .where(eq(documents.id, doc.id));
+
+      const after = await memberModel.getTreePinnedDocuments(task.id);
+      expect(after.nodeMap[doc.id]).toMatchObject({ inaccessible: true, title: '' });
+
+      // The owner keeps seeing their own private document.
+      const owner = await ownerModel.getTreePinnedDocuments(task.id);
+      expect(owner.nodeMap[doc.id]).toMatchObject({ title: 'Shared Doc' });
+      expect(owner.nodeMap[doc.id].inaccessible).toBeUndefined();
     });
 
     it('should unpin document', async () => {
@@ -949,6 +1321,24 @@ describe('TaskModel', () => {
       const { total: total2 } = await model2.list();
       expect(total1).toBe(0);
       expect(total2).toBe(1);
+    });
+
+    it('sweeps the goals bound to bulk-deleted tasks', async () => {
+      // Regression (codex review): the FK-less goals rows survived clearAll,
+      // orphaning every cleared goal — only single and subtree deletion swept.
+      const model = new TaskModel(serverDB, userId);
+      const goalModel = new GoalModel(serverDB, userId);
+      const goalTask = await model.create({ instruction: 'Goal task' });
+      await goalModel.create({ subjectId: goalTask.id, subjectType: 'task', title: 'Doomed' });
+      const otherUsers = new GoalModel(serverDB, userId2);
+      await otherUsers.create({ subjectId: 'task_foreign', subjectType: 'task', title: 'Keep' });
+
+      await model.deleteAll();
+
+      const mine = await serverDB.query.goals.findMany({ where: eq(goals.userId, userId) });
+      const theirs = await serverDB.query.goals.findMany({ where: eq(goals.userId, userId2) });
+      expect(mine).toHaveLength(0);
+      expect(theirs).toHaveLength(1);
     });
   });
 
@@ -1972,8 +2362,8 @@ describe('TaskModel', () => {
     });
 
     it('should hide private task comments from other workspace members', async () => {
-      // LOBE-10962 #2: comments inherit task visibility on insert and are
-      // filtered by commentsOwnership on read.
+      // Comments inherit task visibility on insert and are filtered by
+      // commentsOwnership on read.
       const alice = new TaskModel(serverDB, userId, wsId);
       const bob = new TaskModel(serverDB, userId2, wsId);
 
@@ -2006,7 +2396,7 @@ describe('TaskModel', () => {
       expect(await bob.getComments(publicTask.id)).toHaveLength(1);
     });
 
-    it('should NOT cascade updateVisibility into historical task_comments (LOBE-11028)', async () => {
+    it('should NOT cascade updateVisibility into historical task_comments', async () => {
       // Comments are event-shaped historical rows whose visibility is fixed at
       // write time. Promoting the parent task to public must not retroactively
       // expose discussions that took place while the task was private — that
@@ -2051,7 +2441,7 @@ describe('TaskModel', () => {
       expect(await bob.getComments(task.id)).toHaveLength(1);
     });
 
-    it('should NOT cascade updateVisibility into historical task_topics (LOBE-11028)', async () => {
+    it('should NOT cascade updateVisibility into historical task_topics', async () => {
       // Same rationale as comments: a task_topics row records one run of the
       // task. Its visibility is fixed at write time; promoting the task to
       // public must not retroactively expose runs (transcripts, handoffs,
@@ -2089,6 +2479,131 @@ describe('TaskModel', () => {
         .from(taskTopics)
         .where(eq(taskTopics.taskId, task.id));
       expect(historical.visibility).toBe('private');
+    });
+
+    it('should cascade public→private demotion into task_comments and task_topics', async () => {
+      // Inverse of the two non-cascade tests above: comment/topic visibility
+      // is a write-time mirror of the task used as a JOIN-free authorization
+      // proxy. When the task is pulled back to private, public-era rows must
+      // follow — otherwise members who saved a comment/topic id while the
+      // task was public could keep reading/operating those historical rows.
+      const alice = new TaskModel(serverDB, userId, wsId);
+      const bob = new TaskModel(serverDB, userId2, wsId);
+
+      const task = await alice.create({
+        instruction: 'will be demoted',
+        visibility: 'public',
+      });
+      await alice.addComment({
+        authorUserId: userId,
+        content: 'public-era comment',
+        taskId: task.id,
+        userId,
+      });
+
+      const publicTopicId = await createTopic('public-era-run-topic-id');
+      await serverDB.insert(taskTopics).values({
+        seq: 1,
+        status: 'completed',
+        taskId: task.id,
+        topicId: publicTopicId,
+        userId,
+        visibility: 'public',
+        workspaceId: wsId,
+      });
+
+      // Sanity: Bob sees the public-era comment while the task is public.
+      expect(await bob.getComments(task.id)).toHaveLength(1);
+
+      await alice.updateVisibility(task.id, 'private');
+
+      // Task and both child rows are private now — gone from Bob's scope.
+      expect(await bob.findById(task.id)).toBeNull();
+      expect(await bob.getComments(task.id)).toHaveLength(0);
+      const [demotedTopic] = await serverDB
+        .select({ visibility: taskTopics.visibility })
+        .from(taskTopics)
+        .where(eq(taskTopics.taskId, task.id));
+      expect(demotedTopic.visibility).toBe('private');
+
+      // Alice (creator) keeps access to her own rows.
+      expect(await alice.getComments(task.id)).toHaveLength(1);
+    });
+
+    it('should count tasks blocking agent demotion (public + other creators, even private)', async () => {
+      // Backs the agent demotion guard. Blocking: public tasks by any member,
+      // and other members' tasks of ANY visibility (their creators lose the
+      // assignee after demotion). Non-blocking: the agent owner's own private
+      // tasks and tasks assigned elsewhere.
+      const alice = new TaskModel(serverDB, userId, wsId);
+      const bob = new TaskModel(serverDB, userId2, wsId);
+      const agentId = 'count-assignee-agent';
+      await serverDB
+        .insert(agents)
+        .values({ id: agentId, userId, visibility: 'public', workspaceId: wsId })
+        .onConflictDoNothing();
+
+      expect(await alice.countTasksBlockingAgentDemotion(agentId, userId)).toBe(0);
+
+      // Owner's own private task — does NOT block (owner keeps the agent).
+      await alice.create({
+        assigneeAgentId: agentId,
+        instruction: 'Alice private',
+        visibility: 'private',
+      });
+      expect(await alice.countTasksBlockingAgentDemotion(agentId, userId)).toBe(0);
+
+      // Public tasks block regardless of creator.
+      await alice.create({
+        assigneeAgentId: agentId,
+        instruction: 'Alice public',
+        visibility: 'public',
+      });
+      // Bob's PRIVATE task blocks too — invisible to Alice, but Bob would
+      // lose the assignee.
+      await bob.create({
+        assigneeAgentId: agentId,
+        instruction: 'Bob private',
+        visibility: 'private',
+      });
+      // Unrelated public task does not count.
+      await alice.create({ instruction: 'Unassigned public', visibility: 'public' });
+
+      expect(await alice.countTasksBlockingAgentDemotion(agentId, userId)).toBe(2);
+
+      // Personal mode: guard is inert.
+      const personal = new TaskModel(serverDB, userId);
+      expect(await personal.countTasksBlockingAgentDemotion(agentId, userId)).toBe(0);
+    });
+
+    it('should detect other creators in the subtree (visibility-blind)', async () => {
+      const alice = new TaskModel(serverDB, userId, wsId);
+      const bob = new TaskModel(serverDB, userId2, wsId);
+
+      const root = await alice.create({ instruction: 'Root', visibility: 'public' });
+      const aliceChild = await alice.create({
+        instruction: 'Alice child',
+        parentTaskId: root.id,
+        visibility: 'public',
+      });
+
+      // Single-creator subtree → demotion is allowed.
+      expect(await alice.subtreeHasOtherCreators(root.id, userId)).toBe(false);
+
+      // Bob's PRIVATE grandchild — invisible to Alice, but demoting the root
+      // would orphan it, so it must still be detected.
+      await bob.create({
+        instruction: 'Bob grandchild',
+        parentTaskId: aliceChild.id,
+        visibility: 'private',
+      });
+      expect(await alice.subtreeHasOtherCreators(root.id, userId)).toBe(true);
+
+      // The root's own creator mismatch is not the subtree's problem: a
+      // workspace owner demoting Bob's task compares against Bob (the root
+      // creator), not the caller.
+      const bobRoot = await bob.create({ instruction: 'Bob root', visibility: 'public' });
+      expect(await alice.subtreeHasOtherCreators(bobRoot.id, userId2)).toBe(false);
     });
 
     it('should narrow list() to private tasks when visibility filter is set', async () => {

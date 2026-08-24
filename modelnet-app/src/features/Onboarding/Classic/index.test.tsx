@@ -1,4 +1,4 @@
-import { MAX_ONBOARDING_STEPS } from '@lobechat/types';
+import { CLASSIC_ONBOARDING_MAX_STEP } from '@lobechat/types';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router';
@@ -14,12 +14,12 @@ const metrics = vi.hoisted(() => ({
 const mocks = vi.hoisted(() => ({
   commonStepsCompleted: true,
   currentStep: 1,
-  enableKlavis: true,
-  finishOnboarding: vi.fn().mockResolvedValue(undefined),
+  enableComposio: true,
   goToNextStep: vi.fn(),
   goToPreviousStep: vi.fn(),
   isUserStateInit: true,
   serverConfigInit: true,
+  setOnboardingStep: vi.fn(),
 }));
 
 vi.mock('@lobehub/ui', () => ({
@@ -30,15 +30,26 @@ vi.mock('@/components/Loading/BrandTextLoading', () => ({
   default: ({ debugId }: { debugId: string }) => <div>Loading:{debugId}</div>,
 }));
 
-vi.mock('@/features/Onboarding/components/ModeSwitch', () => ({
-  default: () => <div>ModeSwitch</div>,
+vi.mock('@/hooks/useOnboardingAgentTemplates', () => ({
+  useOnboardingAgentTemplates: vi.fn(),
 }));
 
-vi.mock('@/routes/onboarding/_layout', () => ({
+vi.mock('@/features/Onboarding/Layout', () => ({
   default: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
-vi.mock('@/routes/onboarding/features/FullNameStep', () => ({
+vi.mock('@/features/Onboarding/steps/AgentPickerStep', () => ({
+  default: ({ onBack }: { onBack: () => void }) => (
+    <div>
+      AgentPickerStep
+      <button type="button" onClick={onBack}>
+        agent-back
+      </button>
+    </div>
+  ),
+}));
+
+vi.mock('@/features/Onboarding/steps/FullNameStep', () => ({
   default: ({ onBack, onNext }: { onBack: () => void; onNext: () => void }) => (
     <div>
       FullNameStep
@@ -52,7 +63,7 @@ vi.mock('@/routes/onboarding/features/FullNameStep', () => ({
   ),
 }));
 
-vi.mock('@/routes/onboarding/features/InterestsStep', () => ({
+vi.mock('@/features/Onboarding/steps/InterestsStep', () => ({
   default: ({ onBack, onNext }: { onBack: () => void; onNext: () => void }) => (
     <div>
       InterestsStep
@@ -66,7 +77,7 @@ vi.mock('@/routes/onboarding/features/InterestsStep', () => ({
   ),
 }));
 
-vi.mock('@/routes/onboarding/features/ProSettingsStep', () => ({
+vi.mock('@/features/Onboarding/steps/ProSettingsStep', () => ({
   default: ({ onBack, onNext }: { onBack: () => void; onNext: () => void }) => (
     <div>
       ProSettingsStep
@@ -87,14 +98,17 @@ vi.mock('@/services/onboardingMetrics', () => ({
 
 vi.mock('@/store/serverConfig', () => ({
   serverConfigSelectors: {
-    enableKlavis: (s: { serverConfig: { enableKlavis?: boolean } }) =>
-      s.serverConfig.enableKlavis || false,
+    enableComposio: (s: { serverConfig: { enableComposio?: boolean } }) =>
+      s.serverConfig.enableComposio || false,
   },
   useServerConfigStore: <T,>(
-    selector: (state: { serverConfig: { enableKlavis: boolean }; serverConfigInit: boolean }) => T,
+    selector: (state: {
+      serverConfig: { enableComposio: boolean };
+      serverConfigInit: boolean;
+    }) => T,
   ) =>
     selector({
-      serverConfig: { enableKlavis: mocks.enableKlavis },
+      serverConfig: { enableComposio: mocks.enableComposio },
       serverConfigInit: mocks.serverConfigInit,
     }),
 }));
@@ -104,19 +118,19 @@ vi.mock('@/store/user', () => ({
     selector: (state: {
       commonStepsCompleted: boolean;
       currentStep: number;
-      finishOnboarding: () => Promise<void>;
       goToNextStep: () => void;
       goToPreviousStep: () => void;
       isUserStateInit: boolean;
+      setOnboardingStep: (step: number) => void;
     }) => T,
   ) =>
     selector({
       commonStepsCompleted: mocks.commonStepsCompleted,
       currentStep: mocks.currentStep,
-      finishOnboarding: mocks.finishOnboarding,
       goToNextStep: mocks.goToNextStep,
       goToPreviousStep: mocks.goToPreviousStep,
       isUserStateInit: mocks.isUserStateInit,
+      setOnboardingStep: mocks.setOnboardingStep,
     }),
 }));
 
@@ -137,12 +151,12 @@ const renderClassic = () =>
 beforeEach(() => {
   mocks.commonStepsCompleted = true;
   mocks.currentStep = 1;
-  mocks.enableKlavis = true;
-  mocks.finishOnboarding.mockClear();
+  mocks.enableComposio = true;
   mocks.goToNextStep.mockReset();
   mocks.goToPreviousStep.mockReset();
   mocks.isUserStateInit = true;
   mocks.serverConfigInit = true;
+  mocks.setOnboardingStep.mockReset();
   metrics.trackOnboardingStepCompleted.mockReset();
   metrics.trackOnboardingStepViewed.mockReset();
 });
@@ -176,9 +190,9 @@ describe('ClassicOnboardingPage', () => {
     expect(mocks.goToNextStep).toHaveBeenCalledTimes(1);
   });
 
-  it('finishes onboarding from interests when ProSettings is skipped', async () => {
+  it('skips ProSettings when moving forward from interests without Composio', () => {
     mocks.currentStep = 2;
-    mocks.enableKlavis = false;
+    mocks.enableComposio = false;
 
     renderClassic();
     fireEvent.click(screen.getByText('interests-next'));
@@ -189,22 +203,22 @@ describe('ClassicOnboardingPage', () => {
       step: 'interests',
       stepIndex: 2,
     });
-    await waitFor(() => expect(mocks.finishOnboarding).toHaveBeenCalledTimes(1));
-    expect(mocks.goToNextStep).not.toHaveBeenCalled();
+    expect(mocks.goToNextStep).toHaveBeenCalledTimes(2);
   });
 
-  it('finishes immediately when resuming the removed agent picker step', async () => {
-    mocks.currentStep = MAX_ONBOARDING_STEPS;
+  it('moves back from the agent picker to interests when ProSettings is skipped', () => {
+    mocks.currentStep = CLASSIC_ONBOARDING_MAX_STEP;
+    mocks.enableComposio = false;
 
     renderClassic();
+    fireEvent.click(screen.getByText('agent-back'));
 
-    await waitFor(() => expect(mocks.finishOnboarding).toHaveBeenCalledTimes(1));
-    expect(screen.queryByText('AgentPickerStep')).not.toBeInTheDocument();
+    expect(mocks.goToPreviousStep).toHaveBeenCalledTimes(2);
   });
 
   it('waits for server config before deciding whether to skip ProSettings', () => {
     mocks.currentStep = 2;
-    mocks.enableKlavis = false;
+    mocks.enableComposio = false;
     mocks.serverConfigInit = false;
 
     renderClassic();
@@ -215,7 +229,7 @@ describe('ClassicOnboardingPage', () => {
 
   it('shows loading at ProSettings until server config initializes', () => {
     mocks.currentStep = 3;
-    mocks.enableKlavis = false;
+    mocks.enableComposio = false;
     mocks.serverConfigInit = false;
 
     renderClassic();
@@ -224,9 +238,9 @@ describe('ClassicOnboardingPage', () => {
     expect(mocks.goToNextStep).not.toHaveBeenCalled();
   });
 
-  it('skips a persisted ProSettings step when Klavis is disabled', async () => {
+  it('skips a persisted ProSettings step when Composio is disabled', async () => {
     mocks.currentStep = 3;
-    mocks.enableKlavis = false;
+    mocks.enableComposio = false;
 
     renderClassic();
 
@@ -244,7 +258,7 @@ describe('ClassicOnboardingPage', () => {
   it('does not skip while shared prefix steps are incomplete', async () => {
     mocks.commonStepsCompleted = false;
     mocks.currentStep = 3;
-    mocks.enableKlavis = false;
+    mocks.enableComposio = false;
 
     renderClassic();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -252,9 +266,28 @@ describe('ClassicOnboardingPage', () => {
     expect(mocks.goToNextStep).not.toHaveBeenCalled();
   });
 
-  it('finishes onboarding from ProSettings when Klavis is enabled', async () => {
+  it('renders a renderable step for a legacy out-of-range persisted step', async () => {
+    mocks.currentStep = 5;
+
+    renderClassic();
+
+    expect(screen.getByText('ProSettingsStep')).toBeInTheDocument();
+    expect(screen.queryByText('AgentPickerStep')).not.toBeInTheDocument();
+    await waitFor(() => expect(mocks.setOnboardingStep).toHaveBeenCalledWith(3));
+  });
+
+  it('leaves an in-range persisted step untouched', () => {
+    mocks.currentStep = CLASSIC_ONBOARDING_MAX_STEP;
+
+    renderClassic();
+
+    expect(screen.getByText('AgentPickerStep')).toBeInTheDocument();
+    expect(mocks.setOnboardingStep).not.toHaveBeenCalled();
+  });
+
+  it('keeps ProSettings in the flow when Composio is enabled', () => {
     mocks.currentStep = 3;
-    mocks.enableKlavis = true;
+    mocks.enableComposio = true;
 
     renderClassic();
     fireEvent.click(screen.getByText('pro-next'));
@@ -265,7 +298,6 @@ describe('ClassicOnboardingPage', () => {
       step: 'prosettings',
       stepIndex: 3,
     });
-    await waitFor(() => expect(mocks.finishOnboarding).toHaveBeenCalledTimes(1));
-    expect(mocks.goToNextStep).not.toHaveBeenCalled();
+    expect(mocks.goToNextStep).toHaveBeenCalled();
   });
 });

@@ -1,5 +1,8 @@
+import VoiceDictation from '../Dictation';
+import VoiceMessage from '../VoiceMessage';
 import AgentMode from './AgentMode';
 import Clear from './Clear';
+import Effort from './Effort';
 import History from './History';
 import Memory from './Memory';
 import Mention from './Mention';
@@ -10,7 +13,6 @@ import ModelNetSerial from './ModelNetSerial';
 import Params from './Params';
 import Plus from './Plus';
 import PromptTransform from './PromptTransform';
-import SaveTopic from './SaveTopic';
 import Search from './Search';
 import ContextWindow from './Token';
 import Tools from './Tools';
@@ -21,6 +23,7 @@ export const actionMap = {
   agentMode: AgentMode,
   clear: Clear,
   contextWindow: ContextWindow,
+  effort: Effort,
   fileUpload: Upload,
   plus: Plus,
   history: History,
@@ -32,11 +35,12 @@ export const actionMap = {
   modelnetSerial: ModelNetSerial,
   params: Params,
   promptTransform: PromptTransform,
-  saveTopic: SaveTopic,
   search: Search,
   temperature: Params,
   tools: Tools,
   typo: Typo,
+  voiceDictation: VoiceDictation,
+  voiceMessage: VoiceMessage,
 } as const;
 
 export type ActionKey = keyof typeof actionMap;

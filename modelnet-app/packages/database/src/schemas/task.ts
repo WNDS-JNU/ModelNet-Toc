@@ -16,6 +16,7 @@ import { createdAt, timestamps, timestamptz, varchar255 } from './_helpers';
 import { agents } from './agent';
 import { agentCronJobs } from './agentCronJob';
 import { documents } from './file';
+import { projects } from './project';
 import { topics } from './topic';
 import { users } from './user';
 import { workspaces } from './workspace';
@@ -38,6 +39,7 @@ export const tasks = pgTable(
       .references(() => users.id, { onDelete: 'cascade' })
       .notNull(),
     workspaceId: text('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
     createdByAgentId: text('created_by_agent_id').references(() => agents.id, {
       onDelete: 'set null',
     }),
@@ -121,6 +123,7 @@ export const tasks = pgTable(
     index('tasks_automation_mode_idx').on(t.automationMode),
     index('tasks_heartbeat_idx').on(t.status, t.lastHeartbeatAt),
     index('tasks_workspace_id_idx').on(t.workspaceId),
+    index('tasks_project_id_status_idx').on(t.projectId, t.status),
     index('tasks_workspace_visibility_idx').on(t.workspaceId, t.visibility, t.createdByUserId),
     uniqueIndex('tasks_identifier_workspace_id_unique')
       .on(t.workspaceId, t.identifier)
@@ -235,6 +238,12 @@ export const taskTopics = pgTable(
     // 'running' | 'completed' | 'failed' | 'timeout' | 'canceled'
     status: text('status').notNull().default('running'),
 
+    // What triggered this run: 'manual' (ad-hoc run-now / agent tool call),
+    // 'schedule' (cron tick) or 'heartbeat' (interval tick). Null for legacy
+    // rows created before this column existed. Used so the maxExecutions quota
+    // counts only automation ticks, not manual runs.
+    trigger: text('trigger').$type<'manual' | 'schedule' | 'heartbeat' | 'goal'>(),
+
     // Handoff (populated after topic completes via LLM summarization)
     // { title, summary, keyFindings: string[], nextAction }
     handoff: jsonb('handoff'),
@@ -248,8 +257,8 @@ export const taskTopics = pgTable(
 
     // Snapshot of the task's visibility at the time this run was created.
     // Topics inherit `tasks.visibility` on insert but are **not** cascaded by
-    // `TaskModel.updateVisibility` (LOBE-11028): promoting a task to public
-    // must not retroactively expose runs that happened while it was private.
+    // `TaskModel.updateVisibility`: promoting a task to public must not
+    // retroactively expose runs that happened while it was private.
     visibility: text('visibility', { enum: ['private', 'public'] })
       .default('public')
       .notNull(),

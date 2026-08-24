@@ -31,10 +31,13 @@ export const FILE_URL = {
 
 export const BRANDING_EMAIL = {
   business: '',
+  replyTo: undefined,
   support: '',
 };
 
 export const BRANDING_PROVIDER = 'modelnet';
+
+export const APPLE_APP_STORE_ID = '';
 
 export const COPYRIGHT = `© ${new Date().getFullYear()} ${ORG_NAME}`;
 export const COPYRIGHT_FULL = `${COPYRIGHT}. All rights reserved.`;

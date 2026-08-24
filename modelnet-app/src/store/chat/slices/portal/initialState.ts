@@ -1,3 +1,5 @@
+import type { TopicCommentItem } from '@lobechat/types';
+
 import { type PortalArtifact } from '@/types/artifact';
 
 export enum ArtifactDisplayMode {
@@ -8,6 +10,9 @@ export enum ArtifactDisplayMode {
 // ============== Portal View Stack Types ==============
 
 export enum PortalViewType {
+  Acceptance = 'acceptance',
+  AcceptanceCheck = 'acceptanceCheck',
+  AgentDetail = 'agentDetail',
   Artifact = 'artifact',
   Document = 'document',
   FilePreview = 'filePreview',
@@ -19,6 +24,10 @@ export enum PortalViewType {
   TaskDetail = 'taskDetail',
   Thread = 'thread',
   ToolUI = 'toolUI',
+  Topic = 'topic',
+  TopicComments = 'topicComments',
+  TopicCommentThread = 'topicCommentThread',
+  VerifyReport = 'verifyReport',
   VerifyResult = 'verifyResult',
 }
 
@@ -32,6 +41,13 @@ export interface OpenLocalFileParams {
   allowExternalFilePreview?: boolean;
   deviceId?: string;
   filePath: string;
+  /**
+   * Present when the file lives in the topic's cloud sandbox instead of a local
+   * or device filesystem: content is fetched live via the sandbox
+   * `readLocalFile` tool scoped to this topic, read-only, and unavailable once
+   * the sandbox is recycled.
+   */
+  sandboxTopicId?: string;
   workingDirectory: string;
 }
 
@@ -41,6 +57,9 @@ export interface OpenLocalFileEntry extends OpenLocalFileParams {
 
 export type PortalViewData =
   | { type: PortalViewType.Home }
+  | { acceptanceId: string; type: PortalViewType.Acceptance }
+  | { acceptanceId: string; checkId: string; type: PortalViewType.AcceptanceCheck }
+  | { agentId: string; type: PortalViewType.AgentDetail }
   | { artifact: PortalArtifact; type: PortalViewType.Artifact }
   | { agentDocumentId?: string; documentId: string; type: PortalViewType.Document }
   | { type: PortalViewType.Notebook }
@@ -54,8 +73,19 @@ export type PortalViewData =
       type: PortalViewType.ToolUI;
     }
   | { startMessageId?: string; threadId?: string; type: PortalViewType.Thread }
+  | { topicId: string; type: PortalViewType.Topic }
   | { agentId: string; type: PortalViewType.GroupThread }
   | { taskId: string; type: PortalViewType.TaskDetail }
+  | {
+      focusCommentId?: string;
+      initialReplyCount?: number;
+      initialRoot?: TopicCommentItem;
+      rootCommentId: string;
+      topicId: string;
+      type: PortalViewType.TopicCommentThread;
+    }
+  | { messageId?: string; topicId: string; type: PortalViewType.TopicComments }
+  | { runId: string; type: PortalViewType.VerifyReport }
   | { checkItemId: string; operationId: string; type: PortalViewType.VerifyResult };
 
 // ============== Portal State ==============

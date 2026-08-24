@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
 import { RequestTrigger } from '../../agentRuntime';
+import type { ContextSelection } from './contextSelection';
+import { ContextSelectionSchema } from './contextSelection';
 import type { PageSelection } from './pageSelection';
 import { PageSelectionSchema } from './pageSelection';
 
@@ -167,13 +169,24 @@ export const MessageSignalSchema = z.object({
   type: z.enum(['tool-stdout', 'tool-callback', 'task-completion']),
 });
 
+export const MessageTaskCallbackSchema = z.object({
+  // Task identifier (e.g. `T-42`) for the card header + jump link.
+  identifier: z.string(),
+  // Terminal outcome of the task run that produced this callback.
+  reason: z.enum(['done', 'error', 'interrupted']),
+  // The task id (jump target → task detail).
+  taskId: z.string(),
+  // The completed task topic, for an optional "view run" link.
+  topicId: z.string().optional(),
+});
+
 export const ModelNetParallelSourceSchema = z
   .object({
-    backend: z.record(z.any()).optional(),
+    backend: z.record(z.string(), z.unknown()).optional(),
     completedAt: z.number().optional(),
     error: z.string().optional(),
     latencyMs: z.number().optional(),
-    metadata: z.record(z.any()).optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
     model: z.string(),
     sourceId: z.string(),
     startedAt: z.number().optional(),
@@ -188,19 +201,53 @@ export const ModelNetParallelSourceSchema = z
 export const ModelNetParallelMetadataSchema = z
   .object({
     sourceOrder: z.array(z.string()).optional(),
-    sources: z.record(ModelNetParallelSourceSchema).optional(),
-    synthesis: z.record(z.any()).optional(),
+    sources: z.record(z.string(), ModelNetParallelSourceSchema).optional(),
+    synthesis: z.record(z.string(), z.unknown()).optional(),
     updatedAt: z.number().optional(),
   })
   .passthrough();
 
+export type ModelNetParallelSourceState = z.infer<typeof ModelNetParallelSourceSchema>;
+export type ModelNetParallelMetadata = z.infer<typeof ModelNetParallelMetadataSchema>;
+
+export const MessageWorkMetadataSchema = z.object({
+  rootOperationId: z.string().min(1),
+  userMessageId: z.string().optional(),
+});
+
+export const AgentDispatchMetadataSchema = z.object({
+  kind: z.enum(['callAgent']),
+  visibility: z.literal('internal'),
+});
+
+export interface AgentDispatchMetadata {
+  kind: 'callAgent';
+  visibility: 'internal';
+}
+
 export const MessageMetadataSchema = ModelUsageSchema.merge(ModelPerformanceSchema).extend({
+  agentDispatch: AgentDispatchMetadataSchema.optional(),
   collapsed: z.boolean().optional(),
+  contextSelections: z.array(ContextSelectionSchema).optional(),
+  // Hetero-agent (Claude Code) per-message provenance. Listed here so zod does
+  // NOT strip them from writes going through UpdateMessageParamsSchema /
+  // CreateMessageParamsSchema (the renderer executor's `messageService` path).
+  heteroMessageId: z.string().optional(),
+  heteroSessionId: z.string().optional(),
+  // Durable watermark for replace-only heterogeneous tool-state snapshots.
+  // The pair is scoped by operation so a later run may restart seq at 1.
+  heterogeneousToolStateOperationId: z.string().optional(),
+  heterogeneousToolStateSeq: z.number().int().positive().optional(),
   inspectExpanded: z.boolean().optional(),
   isMultimodal: z.boolean().optional(),
   isSupervisor: z.boolean().optional(),
   localSystemToolSnapshots: z.array(LocalSystemToolSnapshotSchema).optional(),
   modelnetParallel: ModelNetParallelMetadataSchema.optional(),
+  // Creation provenance (agent operation that produced this message). Listed
+  // here so zod does NOT strip the runtime's stamp from writes going through
+  // CreateMessageParamsSchema / UpdateMessageParamsSchema.
+  operationId: z.string().min(1).optional(),
+  orchestrationRole: z.enum(['supervisor', 'member']).optional(),
   pageSelections: z.array(PageSelectionSchema).optional(),
   // Canonical nested shape — flat fields above are deprecated. Must be listed
   // here so zod doesn't strip them from writes going through UpdateMessageParamsSchema
@@ -211,8 +258,17 @@ export const MessageMetadataSchema = ModelUsageSchema.merge(ModelPerformanceSche
   // External-signal lineage for Monitor-style callback turns ().
   signal: MessageSignalSchema.optional(),
   subAgentId: z.string().optional(),
+  // role='taskCallback' card: which task delivered its handoff back to this
+  // conversation, and the run outcome. The card header + jump link read this.
+  taskCallback: MessageTaskCallbackSchema.optional(),
   toolExecutionTimeMs: z.number().optional(),
   trigger: z.nativeEnum(RequestTrigger).optional(),
+  // role='verify' card: which Agent Run (agent_operations.id) it renders.
+  verifyOperationId: z.string().optional(),
+  verifyRound: z.number().optional(),
+  work: MessageWorkMetadataSchema.optional(),
+  // @deprecated token usage moved to the top-level `usage` column. Still listed
+  // so zod doesn't strip `metadata.usage` from legacy writes during migration.
   usage: ModelUsageSchema.optional(),
 });
 
@@ -242,76 +298,100 @@ export interface ModelPerformance {
   ttft?: number;
 }
 
-export interface ModelNetParallelSourceState {
-  backend?: Record<string, any>;
-  completedAt?: number;
-  error?: string;
-  latencyMs?: number;
-  metadata?: Record<string, any>;
-  model: string;
-  sourceId: string;
-  startedAt?: number;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'summarized';
-  summarized?: boolean;
-  summary?: string;
-  text: string;
-  updatedAt: number;
-}
-
-export interface ModelNetParallelMetadata {
-  sourceOrder?: string[];
-  sources?: Record<string, ModelNetParallelSourceState>;
-  synthesis?: Record<string, any>;
-  updatedAt?: number;
-}
-
 export interface MessageMetadata {
   // ───────────────────────────────────────────────────────────────
   // Token usage + performance fields — DEPRECATED flat shape.
-  // New code must write to `metadata.usage` / `metadata.performance` (nested)
-  // instead. Kept here so legacy reads still type-check during migration;
-  // writers should stop populating them.
+  // Token usage now lives in the dedicated top-level `usage` column
+  // (`UIChatMessage.usage`); performance still lives in `metadata.performance`.
+  // These flat fields (and the nested `metadata.usage` below) are kept so legacy
+  // reads still type-check during migration; writers should stop populating them.
   // ───────────────────────────────────────────────────────────────
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   acceptedPredictionTokens?: number;
   activeBranchIndex?: number;
   activeColumn?: boolean;
+  /**
+   * Marks a `role: 'tool'` message (a group broadcast tool call) as an
+   * AgentCouncil: its member responses render as one parallel-streaming block.
+   */
+  agentCouncil?: boolean;
+  /**
+   * Explicit transport semantics for an internal cross-agent dispatch turn.
+   * Renderers consume this marker instead of inferring intent from the message tree.
+   */
+  agentDispatch?: AgentDispatchMetadata;
   /**
    * Message collapse state
    * true: collapsed, false/undefined: expanded
    */
   collapsed?: boolean;
   compare?: boolean;
-  /** @deprecated use `metadata.usage` instead */
+  /**
+   * Generic context selections attached to user messages.
+   * Page selections remain mirrored in `pageSelections` for compatibility.
+   */
+  contextSelections?: ContextSelection[];
+  /**
+   * This row is a DUPLICATED transcript (agent/group copy, workspace import),
+   * not a generation event in its current scope: the tokens were consumed by
+   * the source, so usage REPORTS exclude it. The row keeps its own token/cost
+   * figures — they describe the generation the transcript records, and the
+   * chat UI and context engine read them — so this marker is the only thing
+   * separating "what this scope spent" from "what this transcript shows".
+   */
+  copied?: boolean;
+  /** @deprecated use the top-level message `usage` field instead */
   cost?: number;
   /** @deprecated use `metadata.performance` instead */
   duration?: number;
   finishType?: string;
-  /** @deprecated use `metadata.usage` instead */
+  /** Operation owning the durable heterogeneous tool-state watermark. */
+  heterogeneousToolStateOperationId?: string;
+  /** Last persisted replace-snapshot sequence for this tool message. */
+  heterogeneousToolStateSeq?: number;
+  /**
+   * The native id of this message inside the hetero agent (Claude Code /
+   * Codex) that produced it — forensic provenance tying a row back to its
+   * source.
+   *
+   * - live runs: the CC API `message.id` of the turn (all the stream exposes),
+   *   stamped by the server persistence handler and the renderer executor
+   * - imported transcripts: the record's own id in the source file (CC session
+   *   record `uuid`; codex call item `fc_...` / `ctc_...` id)
+   */
+  heteroMessageId?: string;
+  /**
+   * The CC-native session id this hetero-agent message was produced under.
+   * `topic.metadata.heteroSessionId` keeps only the single latest value (written
+   * at run end); this per-message copy lets a diff pinpoint the exact row where
+   * CC forked to a new session — the signal for a lost-`--resume` "session break".
+   */
+  heteroSessionId?: string;
+  /** @deprecated use the top-level message `usage` field instead */
   inputAudioTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   inputCachedAudioTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   inputCachedImageTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   inputCachedTextTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   inputCachedTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   inputCachedVideoTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   inputCacheMissTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   inputCitationTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   inputImageTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   inputTextTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   inputToolTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   inputVideoTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   inputWriteCacheTokens?: number;
   /**
    * Tool inspect expanded state
@@ -328,7 +408,6 @@ export interface MessageMetadata {
    * Flag indicating if message content is multimodal (serialized MessageContentPart[])
    */
   isMultimodal?: boolean;
-
   /**
    * Flag indicating if message is from the Supervisor agent in group orchestration
    * Used by conversation-flow to transform role to 'supervisor' for UI rendering
@@ -341,13 +420,33 @@ export interface MessageMetadata {
    */
   localSystemToolSnapshots?: LocalSystemToolSnapshot[];
   modelnetParallel?: ModelNetParallelMetadata;
-  /** @deprecated use `metadata.usage` instead */
+
+  /**
+   * Orchestration role of the message author within a group conversation.
+   * `'supervisor'` = the group's coordinating agent, `'member'` = a delegated
+   * member agent. Persisted as a snapshot at write time (not derived at render)
+   * so historical transcripts stay stable across later membership/role changes,
+   * and so the standard message `role` stays `'assistant'` (training-friendly).
+   * Supersedes the boolean {@link isSupervisor}, which is kept for back-compat.
+   */
+  /**
+   * Creation provenance: id of the agent operation that produced this message
+   * (`agent_operations.id`), stamped when the runtime creates the assistant
+   * row. Always the message's OWN operation — for sub-agent (callAgent) turns
+   * this is the sub-operation, not the root; climb `parent_operation_id` for
+   * the root. Do not confuse with `work.rootOperationId` (Work display anchor,
+   * root op, only on Work-producing rounds) or `verifyOperationId` (the run a
+   * verify card verifies).
+   */
+  operationId?: string;
+  orchestrationRole?: 'supervisor' | 'member';
+  /** @deprecated use the top-level message `usage` field instead */
   outputAudioTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   outputImageTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   outputReasoningTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   outputTextTokens?: number;
   /**
    * Page selections attached to user message
@@ -363,7 +462,7 @@ export interface MessageMetadata {
    * Emoji reactions on this message
    */
   reactions?: EmojiReaction[];
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   rejectedPredictionTokens?: number;
   /**
    * Message scope - indicates the context in which this message was created
@@ -396,6 +495,12 @@ export interface MessageMetadata {
    * Used by callAgent tool (sub_agent) and group orchestration (group modes)
    */
   subAgentId?: string;
+  /**
+   * Task-callback card pointer (for role='taskCallback' messages). Identifies
+   * the task whose handoff result was delivered back into this conversation and
+   * the run outcome; the card header + jump link read off it.
+   */
+  taskCallback?: MessageTaskCallback;
   taskTitle?: string;
   // message content is multimodal, display content in the streaming, won't save to db
   tempDisplayContent?: string;
@@ -403,11 +508,11 @@ export interface MessageMetadata {
    * Tool execution time for tool messages (ms)
    */
   toolExecutionTimeMs?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   totalInputTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   totalOutputTokens?: number;
-  /** @deprecated use `metadata.usage` instead */
+  /** @deprecated use the top-level message `usage` field instead */
   totalTokens?: number;
   /** @deprecated use `metadata.performance` instead */
   tps?: number;
@@ -417,7 +522,47 @@ export interface MessageMetadata {
   trigger?: RequestTrigger;
   /** @deprecated use `metadata.performance` instead */
   ttft?: number;
+  /**
+   * @deprecated Token usage has been promoted to the dedicated top-level `usage`
+   * column / `UIChatMessage.usage` field. Reads fall back here for legacy rows,
+   * but new writers should target the top-level `usage` instead.
+   */
   usage?: ModelUsage;
+  /**
+   * Agent Run operation id this verify card belongs to (for role='verify' messages).
+   * References `agent_operations.id`; the card reads the verify plan + results off it.
+   */
+  verifyOperationId?: string;
+  /** Display round number for the verify card (1-based; repair rounds are separate). */
+  verifyRound?: number;
+  /**
+   * Final assistant message marker for Work artifacts produced during one root
+   * operation. Work ownership stays on `work_versions.root_operation_id`; this
+   * metadata only tells refreshed chat history where to render the cards.
+   */
+  work?: MessageWorkMetadata;
+}
+
+export interface MessageWorkMetadata {
+  rootOperationId: string;
+  userMessageId?: string;
+}
+
+/**
+ * Pointer carried on a `role='taskCallback'` message — the result-bridge card
+ * that reports a finished task's handoff back to its creator conversation
+ * The handoff summary itself lives in the message `content`; this
+ * pointer drives the card header (identifier + outcome) and the jump link.
+ */
+export interface MessageTaskCallback {
+  /** Task identifier (e.g. `T-42`) for the card header + jump link. */
+  identifier: string;
+  /** Terminal outcome of the task run that produced this callback. */
+  reason: 'done' | 'error' | 'interrupted';
+  /** The task id (jump target → task detail). */
+  taskId: string;
+  /** The completed task topic, for an optional "view run" link. */
+  topicId?: string;
 }
 
 /**

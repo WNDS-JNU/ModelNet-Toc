@@ -2,10 +2,12 @@ import { useWatchBroadcast } from '@lobechat/electron-client-ipc';
 import { ActionIcon, Flexbox } from '@lobehub/ui';
 import { Input, Popover, Switch } from 'antd';
 import { createStaticStyles } from 'antd-style';
-import { HardDrive } from 'lucide-react';
+import { HardDrive, SettingsIcon } from 'lucide-react';
 import { memo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useActiveWorkspaceSlug } from '@/business/client/hooks/useActiveWorkspaceSlug';
+import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { useElectronStore } from '@/store/electron';
 import { electronSyncSelectors } from '@/store/electron/selectors';
 
@@ -44,6 +46,12 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
     padding-block: 4px;
     padding-inline: 0;
   `,
+  scopeHint: css`
+    font-size: 11px;
+    line-height: 1.4;
+    color: ${cssVar.colorTextDescription};
+    white-space: nowrap;
+  `,
   statusTitle: css`
     font-size: 13px;
     font-weight: 500;
@@ -53,6 +61,7 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 
 const DeviceGateway = memo(() => {
   const { t } = useTranslation('electron');
+  const navigate = useWorkspaceAwareNavigate();
   const [
     gatewayStatus,
     gatewayError,
@@ -85,11 +94,15 @@ const DeviceGateway = memo(() => {
   });
 
   const isConnected = gatewayStatus === 'connected';
-  const isConnecting = gatewayStatus === 'connecting' || gatewayStatus === 'reconnecting';
+  const isConnecting =
+    gatewayStatus === 'authenticating' ||
+    gatewayStatus === 'connecting' ||
+    gatewayStatus === 'reconnecting';
 
   const [localName, setLocalName] = useState<string | undefined>();
   const [localDescription, setLocalDescription] = useState<string | undefined>();
 
+  const [open, setOpen] = useState(false);
   const handleSwitchChange = useCallback(
     async (checked: boolean) => {
       if (checked) {
@@ -115,16 +128,36 @@ const DeviceGateway = memo(() => {
     setLocalDescription(undefined);
   }, [localDescription, gatewayDeviceInfo?.description, updateDeviceDescription]);
 
+  const connectionHint = t(
+    isConnecting
+      ? 'gateway.statusConnecting'
+      : isConnected
+        ? 'gateway.statusConnected'
+        : 'gateway.statusDisconnected',
+  );
+
   const popoverContent = (
     <Flexbox className={styles.popoverContent} gap={16}>
       <Flexbox horizontal align="center" justify="space-between">
         <span className={styles.statusTitle}>{t('gateway.enableConnection')}</span>
-        <Switch
-          checked={isConnected || isConnecting}
-          loading={isConnecting}
-          size="small"
-          onChange={handleSwitchChange}
-        />
+        <Flexbox horizontal align="center" gap={6}>
+          <ActionIcon
+            aria-label={t('gateway.manageDevices')}
+            icon={SettingsIcon}
+            size="small"
+            title={t('gateway.manageDevices')}
+            onClick={() => {
+              setOpen(false);
+              navigate('/settings/devices', { escape: true });
+            }}
+          />
+          <Switch
+            checked={isConnected || isConnecting}
+            loading={isConnecting}
+            size="small"
+            onChange={handleSwitchChange}
+          />
+        </Flexbox>
       </Flexbox>
 
       {gatewayError && <span className={styles.errorText}>{gatewayError}</span>}
@@ -156,11 +189,19 @@ const DeviceGateway = memo(() => {
           onChange={(e) => setLocalDescription(e.target.value)}
         />
       </Flexbox>
+      <span className={styles.scopeHint}>{connectionHint}</span>
     </Flexbox>
   );
 
   return (
-    <Popover arrow={false} content={popoverContent} placement="bottomRight" trigger="click">
+    <Popover
+      arrow={false}
+      content={popoverContent}
+      open={open}
+      placement="bottomRight"
+      trigger="click"
+      onOpenChange={setOpen}
+    >
       <div style={{ position: 'relative' }}>
         <ActionIcon
           icon={HardDrive}
@@ -177,8 +218,9 @@ const DeviceGateway = memo(() => {
 
 const DeviceGatewayWithAuth = memo(() => {
   const isSyncActive = useElectronStore(electronSyncSelectors.isSyncActive);
+  const activeWorkspaceSlug = useActiveWorkspaceSlug();
 
-  if (!isSyncActive) return null;
+  if (!isSyncActive || activeWorkspaceSlug) return null;
 
   return <DeviceGateway />;
 });

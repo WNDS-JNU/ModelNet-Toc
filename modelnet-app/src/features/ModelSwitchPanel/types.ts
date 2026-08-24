@@ -4,15 +4,9 @@ import { type ComponentType } from 'react';
 
 import { type EnabledProviderWithModels } from '@/types/aiProvider';
 
-import { type PricingMode } from './components/ModelDetailPanel';
-
 export type GroupMode = 'byModel' | 'byProvider';
 
-export interface ModelChangeParams {
-  model: string;
-  params?: Partial<LLMParams>;
-  provider: string;
-}
+export type PricingMode = 'image' | 'video';
 
 export interface ModelWithProviders {
   displayName: string;
@@ -52,6 +46,12 @@ export type ListItem =
     };
 
 export type DropdownPlacement = DropdownMenuPlacement;
+
+export interface ModelChangeParams {
+  model: string;
+  params?: LLMParams;
+  provider: string;
+}
 
 export interface ModelSwitchPanelProps {
   children?: React.ReactNode;

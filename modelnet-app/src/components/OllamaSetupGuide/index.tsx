@@ -1,5 +1,6 @@
 import { ProviderCombine } from '@lobehub/icons';
-import { Flexbox, Highlighter, Snippet, Tabs } from '@lobehub/ui';
+import { Flexbox, Highlighter, Snippet } from '@lobehub/ui';
+import { Tabs } from '@lobehub/ui/base-ui';
 import { Steps } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { readableColor } from 'polished';

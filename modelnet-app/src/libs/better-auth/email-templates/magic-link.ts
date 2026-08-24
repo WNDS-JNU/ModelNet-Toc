@@ -1,3 +1,5 @@
+import { getEmailSupportHtml } from '@/libs/email/support';
+
 /**
  * Magic link sign-in email template
  * Sent when user requests passwordless login
@@ -84,6 +86,9 @@ export const getMagicLinkEmailTemplate = (params: { expiresInSeconds: number; ur
 
     <!-- Footer -->
     <div style="text-align: center; margin-top: 32px;">
+      <p style="font-size: 13px; margin: 0 0 8px 0;">
+        ${getEmailSupportHtml()}
+      </p>
       <p style="color: #a1a1aa; font-size: 13px; margin: 0;">
         © ${new Date().getFullYear()} ModelNet. All rights reserved.
       </p>

@@ -7,3 +7,10 @@ export const DEFAULT_MINI_PROVIDER = DEFAULT_PROVIDER;
 
 export const DEFAULT_ONBOARDING_MODEL = DEFAULT_MODEL;
 export const DEFAULT_ONBOARDING_PROVIDER = DEFAULT_PROVIDER;
+
+/**
+ * The vision-capable model used by Verify to review evidence screenshots.
+ * Keep the ModelNet defaults above while exposing the new upstream contract.
+ */
+export const DEFAULT_REVIEW_PREDICT_MODEL = DEFAULT_MODEL;
+export const DEFAULT_REVIEW_PREDICT_PROVIDER = DEFAULT_PROVIDER;

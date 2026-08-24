@@ -34,29 +34,34 @@ ModelNet 采用 Monorepo 架构（`@lobechat/` 命名空间），顶层目录结
 
 ```bash
 lobehub/
-├── apps/desktop/          # Electron 桌面应用
+├── apps/
+│   ├── cli/               # ModelNet CLI
+│   ├── desktop/           # Electron 桌面应用
+│   └── server/            # 独立服务端（tRPC routers、services、modules）
 ├── packages/              # 共享包（@lobechat/*）
 │   ├── database/          # 数据库 schemas、models、repositories
 │   ├── agent-runtime/     # Agent 运行时
 │   ├── model-runtime/     # 模型运行时
+│   ├── app-config/        # 应用配置文件，包含客户端与服务端环境变量
+│   ├── env/               # 环境变量定义和校验（分析、认证、LLM 等）
+│   ├── locales/           # 国际化默认语言文件
+│   ├── builtin-tools/     # 内置工具注册表（inspectors、interventions 等）
 │   └── ...                # 更多共享包
 ├── src/                   # 主应用源码
-│   ├── app/               # Next.js App Router，包含路由组和 API 路由
+│   ├── app/               # Next.js App Router：后端 API 路由 + SPA/认证页 HTML 外壳服务
 │   ├── components/        # 可复用的 UI 组件
-│   ├── config/            # 应用配置文件，包含客户端与服务端环境变量
 │   ├── const/             # 应用常量和枚举
-│   ├── envs/              # 环境变量定义和校验（分析、认证、LLM 等）
 │   ├── features/          # 业务功能模块，如 Agent 设置、插件开发弹窗等
 │   ├── helpers/           # 工具辅助函数
 │   ├── hooks/             # 全应用复用的自定义 Hooks
 │   ├── layout/            # 布局组件（AuthProvider、GlobalProvider 等）
 │   ├── libs/              # 第三方集成（better-auth、OIDC、tRPC 等）
-│   ├── locales/           # 国际化的语言文件
-│   ├── server/            # 服务端模块、路由和服务
+│   ├── routes/            # SPA 页面片段，按平台分组（(main)/(mobile)/(desktop)/(popup)）
+│   ├── server/            # 尚未迁移到 apps/server 的剩余服务端模块
 │   ├── services/          # 客户端服务接口
+│   ├── spa/               # SPA 入口和 React Router 配置
 │   ├── store/             # zustand 状态管理
 │   ├── styles/            # 全局样式和 CSS-in-JS 配置
-│   ├── tools/             # 内置工具（artifacts、inspectors、interventions 等）
 │   ├── types/             # TypeScript 类型定义
 │   └── utils/             # 通用工具函数
 ├── locales/               # 国际化翻译文件（zh-CN、en-US 等）
@@ -87,9 +92,9 @@ lobehub/
 
 ModelNet 采用 `react-i18next` 实现多语言支持，确保用户全球化体验。
 
-默认语言文件位于 `src/locales/default/`（英文），
+默认语言文件位于 `packages/locales/src/default/`（英文），
 翻译文件位于 `locales/` 目录。
-开发时只需编辑 `src/locales/default/` 中的 key，
+开发时只需编辑 `packages/locales/src/default/` 中的 key，
 CI 会自动生成其他语言的翻译文件。
 
 如果要添加新语种，需遵循特定步骤，详见 [新语种添加指南](/zh/docs/development/internationalization/add-new-locale)。 我们鼓励你参与我们的国际化努力，共同为全球用户提供更好的服务。

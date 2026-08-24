@@ -1,4 +1,5 @@
-import { Flexbox, Tag, Tabs } from '@lobehub/ui';
+import { Flexbox, Tag } from '@lobehub/ui';
+import { Tabs } from '@lobehub/ui/base-ui';
 import { type ReactNode } from 'react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';

@@ -8,10 +8,8 @@ import {
   Icon,
   Text,
   Tooltip,
-  Tabs,
 } from '@lobehub/ui';
-import { confirmModal } from '@lobehub/ui/base-ui';
-import { App } from 'antd';
+import { confirmModal, Tabs, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import {
   Archive,
@@ -214,7 +212,6 @@ const FilterChip = memo<FilterChipProps>(({ icon, label, value, items, onClear }
 
 const Toolbar = memo<ToolbarProps>(({ projects, statusCounts }) => {
   const { t } = useTranslation('topic');
-  const { message } = App.useApp();
 
   const topics = useChatStore(topicSelectors.agentTopicsViewTopics);
   const updateTopicStatus = useChatStore((s) => s.updateTopicStatus);
@@ -356,7 +353,7 @@ const Toolbar = memo<ToolbarProps>(({ projects, statusCounts }) => {
     });
 
     if (stale.length === 0) {
-      message.info(t('management.actionsMenu.archiveStale.noneFound'));
+      toast.info(t('management.actionsMenu.archiveStale.noneFound'));
       return;
     }
 
@@ -367,11 +364,11 @@ const Toolbar = memo<ToolbarProps>(({ projects, statusCounts }) => {
         for (const topic of stale) {
           await updateTopicStatus({ status: 'completed', topicId: topic.id });
         }
-        message.success(t('management.actionsMenu.archiveStale.done', { count: stale.length }));
+        toast.success(t('management.actionsMenu.archiveStale.done', { count: stale.length }));
       },
       title: t('management.actionsMenu.archiveStale.title'),
     });
-  }, [topics, updateTopicStatus, message, t]);
+  }, [topics, updateTopicStatus, t]);
 
   const overflowItems: DropdownItem[] = useMemo(() => {
     const items: DropdownItem[] = [

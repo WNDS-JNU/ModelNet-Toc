@@ -1,7 +1,8 @@
 'use client';
 
 import { Flexbox, Icon, Popover, SearchBar } from '@lobehub/ui';
-import { Button, message } from 'antd';
+import { Button } from '@lobehub/ui/base-ui';
+import { message } from 'antd';
 import { createStaticStyles, cx } from 'antd-style';
 import { ArrowDownIcon, ArrowUpIcon, LinkIcon, PlusIcon, Trash2Icon } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';

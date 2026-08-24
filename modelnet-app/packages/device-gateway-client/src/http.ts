@@ -1,7 +1,7 @@
 import type {
   DeviceSystemInfo,
   GatewayDevice,
-  GatewayMcpStdioParams,
+  GatewayMcpParams,
   GatewayToolCallType,
 } from './types';
 
@@ -131,7 +131,7 @@ export class GatewayHttpClient {
     deviceId?: string;
     identifier: string;
     operationId?: string;
-    params: GatewayMcpStdioParams;
+    params: GatewayMcpParams;
     timeout?: number;
     userId: string;
     workspaceId?: string;
@@ -155,7 +155,7 @@ export class GatewayHttpClient {
       apiName: string;
       arguments: string;
       identifier: string;
-      params?: GatewayMcpStdioParams;
+      params?: GatewayMcpParams;
       type?: GatewayToolCallType;
     },
   ): Promise<DeviceToolCallResult> {
@@ -237,6 +237,7 @@ export class GatewayHttpClient {
 
   async dispatchAgentRun(params: {
     agentType: string;
+    assistantMessageId: string;
     args?: string[];
     cwd?: string;
     deviceId?: string;
@@ -244,12 +245,20 @@ export class GatewayHttpClient {
     jwt: string;
     operationId: string;
     prompt: string;
+    resumeFallbackSystemContext?: string;
     resumeSessionId?: string;
     systemContext?: string;
     timeout?: number;
     topicId: string;
     userId: string;
     workspaceId?: string;
+    /**
+     * Topic/run workspace for device-side ingest. Distinct from
+     * {@link workspaceId}, which routes the request to a device pool. A
+     * workspace topic dispatched to a personal device still needs this so
+     * `lh hetero exec` can write back under the topic's scope.
+     */
+    ingestWorkspaceId?: string;
   }): Promise<{ success: boolean; error?: string }> {
     const response = await this.post('/api/device/agent/run', params);
     if (!response.ok) {

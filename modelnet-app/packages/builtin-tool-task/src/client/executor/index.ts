@@ -21,6 +21,7 @@ import debug from 'debug';
 
 import { getActiveWorkspaceSlug } from '@/business/client/hooks/useActiveWorkspaceSlug';
 import { taskService } from '@/services/task';
+import { verifyService } from '@/services/verify';
 import { getChatStoreState } from '@/store/chat';
 import { getTaskStoreState } from '@/store/task';
 import { findSubtaskParentId } from '@/store/task/slices/detail/reducer';
@@ -58,6 +59,7 @@ const LIST_MUTATING_APIS = new Set<string>([
   TaskApiName.runTasks,
   TaskApiName.setTaskSchedule,
   TaskApiName.updateTaskStatus,
+  TaskApiName.createGoal,
 ]);
 
 const DETAIL_MUTATING_APIS = new Set<string>([
@@ -70,6 +72,7 @@ const DETAIL_MUTATING_APIS = new Set<string>([
   TaskApiName.updateTaskComment,
   TaskApiName.updateTaskStatus,
   TaskApiName.viewTask,
+  TaskApiName.createGoal,
 ]);
 
 const extractIdentifier = (params: unknown, result: BuiltinToolResult): string | undefined => {
@@ -174,10 +177,23 @@ class TaskExecutor extends BaseExecutor<typeof TaskApiName> {
     }
   };
 
-  createTask = async (
+  /**
+   * Shared single-task create used by both `createTask` and the `createTasks`
+   * batch loop. Returns the raw {@link BuiltinToolResult}; Work registration is
+   * driven by the manifest `work` config at the tool-execution dispatch layer
+   * (`invokeExecutor`), not here.
+   */
+  #createTask = async (
     params: {
       instruction: string;
       assigneeAgentId?: string;
+      // Bind a goal entity to the created task (see TaskService.createTask).
+      goal?: {
+        maxRounds?: number | null;
+        maxTotalCost?: number | null;
+        requirement?: string | null;
+        title?: string;
+      };
       name: string;
       parentIdentifier?: string;
       priority?: number;
@@ -193,6 +209,7 @@ class TaskExecutor extends BaseExecutor<typeof TaskApiName> {
         assigneeAgentId:
           params.assigneeAgentId ?? (ctx?.scope === 'task' ? undefined : ctx?.agentId),
         createdByAgentId: ctx?.agentId,
+        goal: params.goal,
         instruction: params.instruction,
         name: params.name,
         parentTaskId: parentIdentifier,
@@ -228,6 +245,7 @@ class TaskExecutor extends BaseExecutor<typeof TaskApiName> {
           priority: task.priority,
           status: task.status as TaskStatus,
           success: true,
+          taskId: task.id,
         },
         success: true,
       };
@@ -240,6 +258,128 @@ class TaskExecutor extends BaseExecutor<typeof TaskApiName> {
       return {
         content,
         error: { message, type: 'CreateTaskFailed' },
+        success: false,
+      };
+    }
+  };
+
+  createTask = async (
+    params: {
+      instruction: string;
+      assigneeAgentId?: string;
+      name: string;
+      parentIdentifier?: string;
+      priority?: number;
+      sortOrder?: number;
+    },
+    ctx?: BuiltinToolContext,
+  ): Promise<BuiltinToolResult> => this.#createTask(params, ctx);
+
+  createGoal = async (
+    params: {
+      criteria: Array<{
+        description?: string;
+        instruction?: string;
+        onFail?: 'auto_repair' | 'manual';
+        required?: boolean;
+        title: string;
+        verifierConfig?: Record<string, unknown>;
+        verifierType?: 'agent' | 'llm' | 'program';
+      }>;
+      instruction: string;
+      maxIterations?: number | null;
+      maxTotalCost?: number | null;
+      name: string;
+    },
+    ctx?: BuiltinToolContext,
+  ): Promise<BuiltinToolResult> => {
+    if (!ctx?.agentId) {
+      return {
+        content: 'A goal needs the current agent as its assignee.',
+        error: { message: 'agentId is required', type: 'MissingAgent' },
+        success: false,
+      };
+    }
+
+    const criteria = (params.criteria ?? []).filter((item) => item.title?.trim());
+    if (criteria.length === 0) {
+      return {
+        content: 'A goal needs at least one acceptance criterion.',
+        error: { message: 'criteria array is empty', type: 'EmptyCriteria' },
+        success: false,
+      };
+    }
+
+    const created = await this.#createTask(
+      {
+        assigneeAgentId: ctx.agentId,
+        // The goals row is created together with the task, so the "is a goal"
+        // marker can never race the verify-config write below.
+        goal: {
+          maxRounds: params.maxIterations,
+          maxTotalCost: params.maxTotalCost ?? null,
+          requirement: params.name,
+          title: params.name,
+        },
+        instruction: params.instruction,
+        name: params.name,
+      },
+      ctx,
+    );
+    const identifier = (created.state as { identifier?: string } | undefined)?.identifier;
+    const taskId = (created.state as { taskId?: string } | undefined)?.taskId;
+    if (!created.success || !identifier) return created;
+
+    try {
+      const verifyCriteriaIds = await verifyService.createCriteria(
+        criteria.map((item) => ({
+          description: item.description,
+          instruction: item.verifierType === 'program' ? undefined : item.instruction,
+          onFail: item.onFail ?? 'auto_repair',
+          required: item.required ?? true,
+          title: item.title,
+          verifierConfig: item.verifierConfig,
+          verifierType: item.verifierType ?? 'agent',
+        })),
+      );
+      const maxIterations = Math.min(10, Math.max(2, params.maxIterations ?? 3));
+
+      await taskService.updateVerifyConfig({
+        id: identifier,
+        verify: {
+          enabled: true,
+          maxIterations,
+          requirement: params.name,
+          verifyCriteriaIds,
+        },
+      });
+
+      const started = await this.runTask({ identifier }, ctx);
+      if (!started.success) return started;
+      const state = started.state as {
+        operationId?: string;
+        topicId?: string;
+      };
+
+      return {
+        content: `Goal task ${identifier} created and started with ${criteria.length} acceptance criteria. Execution continues in its separate task topic; do not perform or reproduce the task in this conversation.`,
+        state: {
+          identifier,
+          name: params.name,
+          operationId: state.operationId,
+          startedAt: new Date().toISOString(),
+          success: true,
+          taskId,
+          topicId: state.topicId,
+        },
+        success: true,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to start goal';
+      return {
+        content: `Goal task ${identifier} was created but could not be started: ${message}`,
+        error: { message, type: 'CreateGoalFailed' },
+        state: { identifier, name: params.name, success: false },
         success: false,
       };
     }
@@ -263,16 +403,13 @@ class TaskExecutor extends BaseExecutor<typeof TaskApiName> {
     const results: CreateTasksItemResult[] = [];
 
     for (const item of items) {
-      const result = await this.createTask(item, ctx);
+      const result = await this.#createTask(item, ctx);
       const success = result.success === true;
-      const identifier =
-        success && result.state && typeof result.state.identifier === 'string'
-          ? (result.state.identifier as string)
-          : undefined;
       const error = success
         ? undefined
         : result.error?.message ||
           (typeof result.content === 'string' ? result.content : 'Unknown error');
+      const identifier = (result.state as { identifier?: string } | undefined)?.identifier;
 
       results.push({ error, identifier, name: item.name, success });
     }
@@ -303,7 +440,11 @@ class TaskExecutor extends BaseExecutor<typeof TaskApiName> {
 
       return {
         content: formatTaskDeleted(label, deleted?.name),
-        state: { identifier: label, success: true },
+        // Surface the deleted task's internal id so the manifest-driven dispatch
+        // layer (`work: { action: 'delete' }`) can delete its Work + refresh the
+        // conversation caches — the task row is gone, so the Work can only be
+        // located by `works.resourceId = taskId`.
+        state: { identifier: label, success: true, taskId: deleted?.id },
         success: true,
       };
     } catch (error) {
@@ -402,7 +543,10 @@ class TaskExecutor extends BaseExecutor<typeof TaskApiName> {
       }
 
       if (Object.keys(updateData).length > 0) {
-        ops.push(store.updateTask(identifier, updateData));
+        // `external` is the default, but keep it explicit because editTask must
+        // bump the mounted editor's content revision rather than look like an
+        // autosave echo.
+        ops.push(store.updateTask(identifier, updateData, { source: 'external' }));
       }
 
       if (addDependencies?.length) {
@@ -824,6 +968,9 @@ class TaskExecutor extends BaseExecutor<typeof TaskApiName> {
       const id = await getTaskStoreState().updateTaskStatus(identifier, params.status, {
         error: params.error,
       });
+      // Work chips read live task status via the message-list summary join;
+      // settle-time refresh (WorksSection / gateway tool_end) picks it up —
+      // avoid a full `message:list` revalidate on every status tool call.
 
       return {
         content:

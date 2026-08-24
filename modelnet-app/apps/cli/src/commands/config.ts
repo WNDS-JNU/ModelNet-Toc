@@ -2,6 +2,7 @@ import type { Command } from 'commander';
 import pc from 'picocolors';
 
 import { getTrpcClient } from '../api/client';
+import { resolveWorkspaceId } from '../api/workspace';
 import {
   type BoxTableRow,
   formatCost,
@@ -22,9 +23,21 @@ export function registerConfigCommand(program: Command) {
       const client = await getTrpcClient();
       const state = await client.user.getUserState.query();
 
+      // Every command resolves its scope the same way, so reporting it here is
+      // what lets a caller (usually an agent editing its own config) tell a
+      // genuine "not found" from "I'm looking in the wrong workspace".
+      const workspaceId = resolveWorkspaceId();
+
       if (options.json !== undefined) {
         const fields = typeof options.json === 'string' ? options.json : undefined;
-        outputJson(state, fields);
+        outputJson(
+          {
+            ...(state as any),
+            scope: workspaceId ? 'workspace' : 'personal',
+            workspaceId: workspaceId ?? null,
+          },
+          fields,
+        );
         return;
       }
 
@@ -35,6 +48,9 @@ export function registerConfigCommand(program: Command) {
       if (s.email) console.log(`  Email:    ${s.email}`);
       if (s.userId) console.log(`  User ID:  ${s.userId}`);
       if (s.subscriptionPlan) console.log(`  Plan:     ${s.subscriptionPlan}`);
+      console.log(
+        `  Scope:    ${workspaceId ? `workspace ${workspaceId}` : pc.dim('personal (no workspace scope)')}`,
+      );
     });
 
   // ── usage ─────────────────────────────────────────────

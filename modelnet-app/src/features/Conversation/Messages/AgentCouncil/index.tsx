@@ -1,7 +1,8 @@
 'use client';
 
 import { type UIChatMessage } from '@lobechat/types';
-import { Flexbox, Icon, Tabs } from '@lobehub/ui';
+import { Flexbox, Icon } from '@lobehub/ui';
+import { Tabs } from '@lobehub/ui/base-ui';
 import isEqual from 'fast-deep-equal';
 import { BotIcon, Columns2, Layers } from 'lucide-react';
 import { memo, useState } from 'react';

@@ -1,3 +1,4 @@
+import { withOtelMetricsForUpstashWorkflows } from '@lobechat/observability-otel/modules/upstash-workflow';
 import { serve } from '@upstash/workflow/nextjs';
 import debug from 'debug';
 
@@ -6,6 +7,7 @@ import { getServerDB } from '@/database/server';
 import { qstashClient } from '@/libs/qstash';
 import { AgentEvalRunWorkflow, type RunBenchmarkPayload } from '@/server/workflows/agentEvalRun';
 import { resolveAgentEvalRunWorkspace } from '@/server/workflows/agentEvalRun/utils';
+import { runStep } from '@/server/workflows/step';
 
 const log = debug('lobe-server:workflows:run-benchmark');
 
@@ -19,7 +21,7 @@ const log = debug('lobe-server:workflows:run-benchmark');
  * 6. Trigger paginate-test-cases workflow
  */
 export const { POST } = serve<RunBenchmarkPayload>(
-  async (context) => {
+  withOtelMetricsForUpstashWorkflows(async (context) => {
     const { runId, dryRun, force, userId } = context.requestPayload ?? {};
 
     log('Starting: runId=%s dryRun=%s force=%s', runId, dryRun, force);
@@ -33,7 +35,7 @@ export const { POST } = serve<RunBenchmarkPayload>(
     const runModel = new AgentEvalRunModel(db, userId, wsId);
 
     // Get run info
-    const run = await context.run('agent-eval-run:get-run', () => runModel.findById(runId));
+    const run = await runStep(context, 'agent-eval-run:get-run', () => runModel.findById(runId));
 
     if (!run) {
       return { error: 'Run not found', success: false };
@@ -46,7 +48,7 @@ export const { POST } = serve<RunBenchmarkPayload>(
 
     // Get all test cases
     const testCaseModel = new AgentEvalTestCaseModel(db, userId, wsId);
-    const allTestCases = await context.run('agent-eval-run:get-test-cases', () =>
+    const allTestCases = await runStep(context, 'agent-eval-run:get-test-cases', () =>
       testCaseModel.findByDatasetId(run.datasetId),
     );
 
@@ -63,7 +65,7 @@ export const { POST } = serve<RunBenchmarkPayload>(
     }
 
     // Filter test cases that need execution
-    const testCaseIds = await context.run('agent-eval-run:filter-existing', () =>
+    const testCaseIds = await runStep(context, 'agent-eval-run:filter-existing', () =>
       AgentEvalRunWorkflow.filterTestCasesNeedingExecution(db, {
         runId,
         testCaseIds: allTestCaseIds,
@@ -102,7 +104,7 @@ export const { POST } = serve<RunBenchmarkPayload>(
     }
 
     // Update run status to 'running'
-    await context.run('agent-eval-run:update-status', () =>
+    await runStep(context, 'agent-eval-run:update-status', () =>
       runModel.update(runId, {
         metrics: {
           averageScore: 0,
@@ -118,7 +120,7 @@ export const { POST } = serve<RunBenchmarkPayload>(
 
     // Trigger paginate-test-cases workflow
     log('Triggering paginate-test-cases for run %s', runId);
-    await context.run('agent-eval-run:trigger-paginate', () =>
+    await runStep(context, 'agent-eval-run:trigger-paginate', () =>
       AgentEvalRunWorkflow.triggerPaginateTestCases({ runId, userId }),
     );
 
@@ -126,7 +128,7 @@ export const { POST } = serve<RunBenchmarkPayload>(
       ...result,
       message: `Triggered pagination for ${testCaseIds.length} test cases`,
     };
-  },
+  }),
   {
     flowControl: { key: 'agent-eval-run.process-run', parallelism: 100, rate: 1 },
     qstashClient,

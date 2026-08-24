@@ -20,6 +20,8 @@ vi.mock('@/libs/trusted-client', () => ({
 vi.mock('@/database/models/message', () => ({
   MessageModel: vi.fn().mockImplementation(() => ({
     create: mockMessageCreate,
+    getLatestNonToolMessageId: vi.fn().mockResolvedValue(undefined),
+    getLatestSpineMessageId: vi.fn().mockResolvedValue(undefined),
     query: mockMessageQuery,
     update: vi.fn().mockResolvedValue({}),
   })),
@@ -64,6 +66,8 @@ vi.mock('@/database/models/plugin', () => ({
 
 vi.mock('@/database/models/topic', () => ({
   TopicModel: vi.fn().mockImplementation(() => ({
+    releaseTaskCallbackReservation: vi.fn().mockResolvedValue(undefined),
+    tryReserveTaskCallback: vi.fn().mockResolvedValue(true),
     create: vi.fn().mockResolvedValue({ id: 'topic-new' }),
     findById: vi.fn().mockResolvedValue(undefined),
     updateMetadata: vi.fn().mockResolvedValue(undefined),

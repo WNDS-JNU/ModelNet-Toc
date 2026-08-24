@@ -1,8 +1,15 @@
-import type { ExecAgentAppContext, ExecAgentResult, UserInterventionConfig } from '@lobechat/types';
+import type {
+  ExecAgentAppContext,
+  ExecAgentResult,
+  RuntimeMentionedAgent,
+  ScheduleAgentRunParams,
+  ScheduleAgentRunResult,
+  UserInterventionConfig,
+} from '@lobechat/types';
 
 import { lambdaClient } from '@/libs/trpc/client';
 
-export type { ExecAgentResult };
+export type { ExecAgentResult, ScheduleAgentRunParams, ScheduleAgentRunResult };
 
 /**
  * Resume instruction for an operation that hit `human_approve_required`. When
@@ -24,19 +31,67 @@ export interface ResumeApprovalParam {
   toolCallId: string;
 }
 
+/**
+ * Resume instruction for an operation that paused on a `humanIntervention:
+ * 'always'` tool (e.g. lobe-agent `askUserQuestion`) during a GATEWAY/server
+ * run. When present, the new op writes the human-provided answer as the pending
+ * tool message's result and resumes from `phase: 'tool_result'` — the tool is
+ * NOT re-executed, so the server runtime never overwrites the answer with a
+ * fresh "pending" placeholder.
+ *
+ * Kept as a top-level field (not folded into `appContext`) so the server schema
+ * can validate it independently.
+ */
+export interface ResumeToolResultParam {
+  /** The human-provided tool result (the answer text). */
+  content: string;
+  /** ID of the pending `role='tool'` message this result targets. */
+  parentMessageId: string;
+  /** Optional plugin state to persist on the tool message. */
+  pluginState?: Record<string, unknown>;
+  /** tool_call_id of the pending tool call being answered. */
+  toolCallId: string;
+}
+
 export interface ExecAgentTaskParams {
   agentId?: string;
   appContext?: ExecAgentAppContext;
   autoStart?: boolean;
+  /**
+   * Client-minted ids for the rows this run creates, honoured verbatim by the
+   * server — the gateway counterpart of `sendMessageInServer`'s
+   * `newTopic.id` / `newUserMessage.id` / `newAssistantMessage.id`. Fresh
+   * sends only; resume / regeneration must not replay them.
+   */
+  clientIds?: { assistantMessageId?: string; topicId?: string; userMessageId?: string };
   deviceId?: string;
   existingMessageIds?: string[];
   /** File IDs of already-uploaded attachments to attach to the new user message */
   fileIds?: string[];
+  localDeviceId?: string;
+  /**
+   * Agents the user @-mentioned in this message (multi-mention). The server
+   * enables the callAgent tool and injects the mentioned-agents delegation
+   * context so the supervisor run delegates to them instead of answering itself.
+   */
+  mentionedAgents?: RuntimeMentionedAgent[];
   /** Parent message ID for regeneration/continue (skip user message creation, branch from this message) */
   parentMessageId?: string;
   prompt: string;
+  /** Existing gateway operation this fresh turn atomically supersedes. */
+  replacesOperationId?: string;
   /** Resume a previous op paused on `human_approve_required` instead of starting from a fresh user prompt. */
   resumeApproval?: ResumeApprovalParam;
+  /**
+   * Batch form of `resumeApproval` — one entry per pending tool resolved in a
+   * single "approve all" action. The server applies every decision, runs all
+   * approved tools as ONE `call_tools_batch`, and continues the LLM once.
+   */
+  resumeApprovals?: ResumeApprovalParam[];
+  /** Resume a previous op paused on a human-intervention tool by carrying the human answer as the tool result. */
+  resumeToolResult?: ResumeToolResultParam;
+  /** Tool identifiers the user @-mentioned in this message; the server enables them for this run. */
+  selectedToolIds?: string[];
   slug?: string;
   /**
    * Override what initiated this operation. Server defaults to `'chat'` when
@@ -81,6 +136,11 @@ export interface InterruptTaskParams {
  */
 export interface CreateClientTaskThreadParams {
   agentId: string;
+  /**
+   * Seed an assistant placeholder for transports that stream into an existing
+   * message (for example a local heterogeneous CLI).
+   */
+  assistantMessage?: { provider: string };
   groupId?: string;
   /** Initial user message content (task instruction) */
   instruction: string;
@@ -124,6 +184,10 @@ export interface UpdateClientTaskThreadStatusParams {
 }
 
 class AiAgentService {
+  async getServerDefaultHeterogeneousCapability() {
+    return await lambdaClient.aiAgent.getServerDefaultHeterogeneousCapability.query();
+  }
+
   /**
    * Execute a single Agent task.
    * Returns the operationId needed to connect to the Agent Gateway.
@@ -133,6 +197,14 @@ class AiAgentService {
     options?: { signal?: AbortSignal },
   ): Promise<ExecAgentResult> {
     return await lambdaClient.aiAgent.execAgent.mutate(params, options);
+  }
+
+  /**
+   * Defer an agent run to a future time. Creates an empty `scheduled` topic that
+   * the backend cron fires once `runAt` passes; nothing runs now.
+   */
+  async scheduleAgentRun(params: ScheduleAgentRunParams): Promise<ScheduleAgentRunResult> {
+    return await lambdaClient.aiAgent.scheduleAgentRun.mutate(params);
   }
 
   /**
@@ -165,6 +237,17 @@ class AiAgentService {
    */
   async interruptTask(params: InterruptTaskParams) {
     return await lambdaClient.aiAgent.interruptTask.mutate(params);
+  }
+
+  /**
+   * Stop a run parked on tool approval: settle the pending tool rows and end
+   * the operation without running anything or continuing the model.
+   *
+   * Not `interruptTask` — that one assumes a live loop will persist the
+   * outcome, which a parked run does not have.
+   */
+  async stopPendingApproval(params: { toolMessageIds: string[]; topicId: string }) {
+    return await lambdaClient.aiAgent.stopPendingApproval.mutate(params);
   }
 
   /**

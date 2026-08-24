@@ -1,6 +1,6 @@
 ---
 name: agent-tracing
-description: 'Agent tracing CLI for execution snapshots. Use for agent-tracing, traces, snapshots, LLM call inspection, context engine data, agent step analysis, or execution debugging.'
+description: 'Agent tracing CLI for execution snapshots. Use for agent-tracing, traces, snapshots, LLM call inspection, context engine data, agent step analysis, execution debugging, or pulling remote/production traces ("拉线上 tracing") by operation id. Also the first stop for debugging agent tool calls — wrong or missing tool_calls, unexpected tool arguments or results, which tools were available at a step, or why a tool ran where it did.'
 user-invocable: false
 ---
 
@@ -41,7 +41,36 @@ packages/agent-tracing/
 - Completed snapshots: `.agent-tracing/{ISO-timestamp}_{traceId-short}.json`
 - Latest symlink: `.agent-tracing/latest.json`
 - In-progress partials: `.agent-tracing/_partial/{operationId}.json`
+- Downloaded remote snapshots: `.agent-tracing/_remote/{operationId}.json`
 - `FileSnapshotStore` resolves from `process.cwd()` — **run CLI from the repo root**
+
+## Remote Traces (Production / Staging)
+
+Server deployments also upload completed snapshots to object storage (zstd-compressed; the key is stored in `agent_operations.trace_s3_key`). `agent-tracing inspect <operationId>` transparently downloads, decompresses, and caches them — no manual S3 access needed.
+
+1. **Find the operation id** from a business id (users usually hand you a topic id):
+
+   ```sql
+   SELECT id, trace_s3_key FROM agent_operations WHERE topic_id = 'tpc_xxx';
+   ```
+
+   `trace_s3_key IS NULL` means no snapshot was recorded; a non-null key can still 404 in storage (retention/TTL).
+
+2. **Configure the base URL** — the bucket's public domain plus the `/agent-traces` prefix — either way:
+
+   - env var: `TRACING_BASE_URL=https://<bucket-public-domain>/agent-traces`
+   - file: `.agent-tracing/.env` in the repo root containing the same `TRACING_BASE_URL=...` line
+
+   The deployment-specific value is private to each deployment and intentionally not recorded in this repo.
+
+3. **Inspect by operation id** — auto-detected by the `op_..._agt_..._tpc_...` shape; the snapshot is cached to `.agent-tracing/_remote/<opId>.json` and every `inspect` flag works the same as for local traces:
+
+   ```bash
+   agent-tracing inspect op_xxx_agt_xxx_tpc_xxx_xxxx    # step tree of a production run
+   agent-tracing inspect op_xxx_agt_xxx_tpc_xxx_xxxx -T # tool injection (enabledToolIds, manifests)
+   ```
+
+Implementation: `packages/agent-tracing/src/store/remote-store.ts` (URL is built from the operation id as `{base}/{agentId}/{topicId}/{opId}.json.zst`).
 
 ## CLI Commands
 
@@ -103,7 +132,55 @@ agent-tracing inspect <partialOperationId> -p
 
 # Clean up stale partial snapshots
 agent-tracing partial clean
+
+# Map the context window composition of every LLM call (cm / map are aliases)
+agent-tracing ctx-map
+agent-tracing ctx-map <operationId|traceId|path.json>
+agent-tracing ctx-map --html            # standalone report under .agent-tracing/_reports/
+agent-tracing ctx-map --html out.html
 ```
+
+## ctx-map — Context Window Composition
+
+`ctx-map` renders one row per `call_llm` step: the messages that call sent to the model, split
+into typed segments (system / injected block / user / reasoning / tool call / tool result) with
+width proportional to tokens, laid against the model's context window.
+
+The second axis is what `ctx-lint` cannot show: each row is diffed against the previous call, so
+the longest identical **message prefix** — the part a provider's prefix cache can reuse — is
+marked, along with the first message that mutated and the tokens re-processed behind it. A small
+injected block carrying a relative timestamp (`1m ago` → `now`) invalidates every token after it,
+which shows up as a break marker early in the row.
+
+Reading a row:
+
+- **Block colors** encode role directly: orange system, green user, blue assistant, gray tool.
+  Assistant reasoning, content, and tool calls use different steps of the same blue scale;
+  framework-injected blocks use a lighter orange than the system prompt. Every value is a step
+  index into a ModelNet scale vendored in `viewer/contextMapScales.ts`, with assignments in
+  `viewer/contextMapPalette.ts`. The HTML report ships both themes and follows the system theme.
+- **Neutral message frames** group segments that belong to the same payload message. Every role
+  uses the same frame color: the outline communicates structure only, while the block fill carries
+  role and subtype semantics. The original framed layout uses padding inside each message and a
+  small track gap between messages, keeping each payload message visually distinct.
+- **Fill** says whether the provider reused it: shaded `▓` (HTML: 60%-opaque hatch) was served
+  from the prefix cache; solid `█` (HTML: flat) was re-processed by the model.
+- **The line under the track** is the cache ledger — a bracket / green band spanning exactly the
+  cached prefix, then the break marker (`▲` in the terminal, a red rule through the track in
+  HTML) at the column where reuse stopped, with the reason and the re-processed tokens.
+
+| Flag            | Short | Description                                                |
+| --------------- | ----- | ---------------------------------------------------------- |
+| `--html [path]` |       | Standalone HTML report (hover a segment for its content)   |
+| `--width <n>`   | `-w`  | Track width in terminal columns                            |
+| `--window <n>`  |       | Override the model context window used as the track        |
+| `--full-window` |       | Always scale to the full window, never to the largest call |
+| `--json`        | `-j`  | Per-call segments + cache stats                            |
+
+The track scales to the context window; when the window dwarfs the payloads (a 50k payload on a
+1M window) it falls back to the largest call so the composition stays readable, and the header
+says which basis is in use. Analysis lives in `analysis/contextMap.ts` and is exported as
+`buildContextMap()` for downstream corpus work.
 
 ## Inspect Flag Reference
 
@@ -112,7 +189,7 @@ agent-tracing partial clean
 | `--step <n>`      | `-s`  | Target a specific step                                                                            | —            |
 | `--messages`      | `-m`  | Messages context (CE input → params → LLM payload)                                                | —            |
 | `--tools`         | `-t`  | Tool calls & results (what agent invoked)                                                         | —            |
-| `--events`        | `-e`  | Raw events (llm_start, llm_result, etc.)                                                          | —            |
+| `--events`        | `-e`  | Raw events (llm\_start, llm\_result, etc.)                                                        | —            |
 | `--context`       | `-c`  | Runtime context & payload (raw)                                                                   | —            |
 | `--system-role`   | `-r`  | Full system role content                                                                          | 0            |
 | `--env`           |       | Environment context                                                                               | 0            |
@@ -168,12 +245,7 @@ interface ExecutionSnapshot {
   startedAt: number;
   completedAt?: number;
   completionReason?:
-    | 'done'
-    | 'error'
-    | 'interrupted'
-    | 'max_steps'
-    | 'cost_limit'
-    | 'waiting_for_human';
+    'done' | 'error' | 'interrupted' | 'max_steps' | 'cost_limit' | 'waiting_for_human';
   totalSteps: number;
   totalTokens: number;
   totalCost: number;

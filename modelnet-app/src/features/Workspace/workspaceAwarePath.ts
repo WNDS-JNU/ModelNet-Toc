@@ -16,32 +16,45 @@ export interface WorkspaceAwareNavigateOptions extends NavigateOptions {
  * llm, referral, system-tools, etc.) stays personal.
  */
 const PERSONAL_PATH_REGEX =
-  /^\/(?:invite|onboarding|me|share|devtools|desktop-onboarding)(?:[/?#]|$)/;
+  /^\/(?:apps|invite|onboarding|me|share|devtools|desktop-onboarding)(?:[/?#]|$)/;
 
 const isPersonalPath = (to: string): boolean => PERSONAL_PATH_REGEX.test(to);
 
 /**
  * Settings sub-paths that have a `/:workspaceSlug/settings/<tab>` mirror in
  * the SPA routers. Kept in sync with the workspace settings subtree in
- * `src/spa/router/{desktopRouter.config,desktopRouter.config.desktop,mobileRouter.config}.tsx`.
+ * `src/spa/router/desktopRouter.shared.tsx` and `mobileRouter.config.tsx`.
  *
- * Tabs absent from this set (profile, llm, referral, system-tools, security,
- * sync, plugin, tts, hotkey, agent, about, common, system-agent, ...) are
- * personal-only and never prefixed.
+ * Tabs absent from this set (profile, llm, messenger, referral, system-tools,
+ * security, sync, plugin, tts, hotkey, agent, about, common, system-agent, ...)
+ * are personal-only and never prefixed.
  */
 export const WORKSPACE_SETTINGS_TABS: ReadonlySet<string> = new Set([
   'apikey',
+  'audit-log',
   'billing',
+  'budget',
+  'connector',
+  'credential',
+  // Legacy alias for `credential` — the routers keep a redirect, so prefixed
+  // deep-links still land on `/:slug/settings/credential`.
   'creds',
   'credits',
+  'devices',
   'general',
+  'labels',
   'members',
-  'messenger',
+  'notification',
+  'oauth-apps',
   'plans',
   'provider',
   'service-model',
   'skill',
+  'statistics',
+  // Legacy alias for `statistics` — the routers keep a redirect, so prefixed
+  // deep-links still land on `/:slug/settings/statistics`.
   'stats',
+  'storage',
   'usage',
 ]);
 
@@ -50,13 +63,15 @@ const FIRST_SEGMENT_REGEX = /^\/([^/?#]+)/;
 
 const WORKSPACE_MIRRORED_FIRST_SEGMENTS = new Set([
   'agent',
+  'agents',
   'community',
   'eval',
-  'fleet',
   'group',
   'image',
   'memory',
   'page',
+  'project',
+  'projects',
   'resource',
   'settings',
   'task',

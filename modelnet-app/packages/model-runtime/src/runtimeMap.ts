@@ -12,6 +12,7 @@ import { LobeBailianCodingPlanAI } from './providers/bailianCodingPlan';
 import { LobeBedrockAI } from './providers/bedrock';
 import { LobeBflAI } from './providers/bfl';
 import { LobeCerebrasAI } from './providers/cerebras';
+import { LobeChatGPTAI } from './providers/chatGPT';
 import { LobeCloudflareAI } from './providers/cloudflare';
 import { LobeCohereAI } from './providers/cohere';
 import { LobeCometAPIAI } from './providers/cometapi';
@@ -64,6 +65,7 @@ import { LobeSparkAI } from './providers/spark';
 import { LobeStepfunAI } from './providers/stepfun';
 import { LobeStraicoAI } from './providers/straico';
 import { LobeStreamLakeAI } from './providers/streamlake';
+import { LobeSuperGrokAI } from './providers/superGrok';
 import { LobeTaichuAI } from './providers/taichu';
 import { LobeTencentCloudAI } from './providers/tencentcloud';
 import { LobeTogetherAI } from './providers/togetherai';
@@ -96,6 +98,7 @@ export const providerRuntimeMap = {
   bedrock: LobeBedrockAI,
   bfl: LobeBflAI,
   cerebras: LobeCerebrasAI,
+  chatgpt: LobeChatGPTAI,
   cloudflare: LobeCloudflareAI,
   cohere: LobeCohereAI,
   cometapi: LobeCometAPIAI,
@@ -149,6 +152,7 @@ export const providerRuntimeMap = {
   stepfun: LobeStepfunAI,
   straico: LobeStraicoAI,
   streamlake: LobeStreamLakeAI,
+  supergrok: LobeSuperGrokAI,
   taichu: LobeTaichuAI,
   tencentcloud: LobeTencentCloudAI,
   togetherai: LobeTogetherAI,

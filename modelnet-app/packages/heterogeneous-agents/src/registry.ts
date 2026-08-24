@@ -5,21 +5,77 @@
  * by registering here — no other code changes needed.
  */
 
-import { ClaudeCodeAdapter, CodexAdapter } from './adapters';
+import {
+  AmpAdapter,
+  ClaudeCodeAdapter,
+  ClaudeCodeSdkAdapter,
+  CodeBuddyAdapter,
+  CodexAdapter,
+  CursorAcpAdapter,
+  CursorAdapter,
+  GrokBuildAdapter,
+  KimiCodeAdapter,
+  OpenCodeAdapter,
+  PiAdapter,
+  QoderAdapter,
+  TraeAcpAdapter,
+} from './adapters';
+import type { LocalHeterogeneousAgentType } from './config';
 import type { AgentEventAdapter } from './types';
 
 interface AgentRegistryEntry {
   createAdapter: () => AgentEventAdapter;
 }
 
-const registry: Record<string, AgentRegistryEntry> = {
+const localAgentRegistry = {
+  'amp': {
+    createAdapter: () => new AmpAdapter(),
+  },
   'claude-code': {
     createAdapter: () => new ClaudeCodeAdapter(),
+  },
+  'codebuddy': {
+    createAdapter: () => new CodeBuddyAdapter(),
   },
   'codex': {
     createAdapter: () => new CodexAdapter(),
   },
+  'cursor': {
+    createAdapter: () => new CursorAdapter(),
+  },
+  'grok-build': {
+    createAdapter: () => new GrokBuildAdapter(),
+  },
+  'kimi-code': {
+    createAdapter: () => new KimiCodeAdapter(),
+  },
+  'opencode': {
+    createAdapter: () => new OpenCodeAdapter(),
+  },
+  'pi': {
+    createAdapter: () => new PiAdapter(),
+  },
+  'qoder': {
+    createAdapter: () => new QoderAdapter(),
+  },
+  'trae': {
+    createAdapter: () => new TraeAcpAdapter(),
+  },
   // 'kimi-cli': { createAdapter: () => new KimiCLIAdapter() },
+} satisfies Record<LocalHeterogeneousAgentType, AgentRegistryEntry>;
+
+const runtimeAdapterRegistry = {
+  'claude-code-sdk': {
+    createAdapter: () => new ClaudeCodeSdkAdapter(),
+  },
+  'cursor-acp': {
+    createAdapter: () => new CursorAcpAdapter(),
+  },
+} satisfies Record<string, AgentRegistryEntry>;
+
+const registry: Record<string, AgentRegistryEntry> = {
+  ...localAgentRegistry,
+  ...runtimeAdapterRegistry,
 };
 
 /**
@@ -39,3 +95,7 @@ export const createAdapter = (agentType: string): AgentEventAdapter => {
  * List all registered agent types.
  */
 export const listAgentTypes = (): string[] => Object.keys(registry);
+
+/** Local CLI adapters that must match the shared descriptor catalog. */
+export const listLocalAgentTypes = (): LocalHeterogeneousAgentType[] =>
+  Object.keys(localAgentRegistry) as LocalHeterogeneousAgentType[];

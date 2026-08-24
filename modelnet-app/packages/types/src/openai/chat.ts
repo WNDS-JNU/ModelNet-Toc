@@ -1,5 +1,5 @@
 import type { LLMRoleType } from '../llm';
-import type { MessageToolCall } from '../message';
+import type { MessageToolCall, ModelReasoning } from '../message';
 import type { OpenAIFunctionCall } from './functionCall';
 
 export type ChatResponseFormat =
@@ -38,7 +38,12 @@ interface UserMessageContentPartVideo {
   video_url: { url: string };
 }
 interface UserMessageContentPartAudio {
-  audio_url: { url: string };
+  audio_url: {
+    codec?: string;
+    durationMs?: number;
+    mimeType?: string;
+    url: string;
+  };
   type: 'audio_url';
 }
 
@@ -59,11 +64,10 @@ export interface OpenAIChatMessage {
    * @deprecated
    */
   function_call?: OpenAIFunctionCall;
+  model?: string;
   name?: string;
-  reasoning?: {
-    content?: string;
-    duration?: number;
-  };
+  provider?: string;
+  reasoning?: ModelReasoning;
   reasoning_content?: string;
   /**
    * Role
@@ -104,14 +108,37 @@ export interface ChatStreamPayload {
    */
   model: string;
   modelnet?: {
+    candidate_aliases?: string[];
     collaboration_plan: {
-      aggregator: 'synthesize';
-      models: string[];
-      runner: 'response.parallel';
+      aggregator: 'auto' | 'judge_refine' | 'synthesize';
+      models?: string[];
+      runner: 'auto.network' | 'response.parallel' | 'response.serial';
       runner_config: {
-        allow_degraded: boolean;
+        allow_degraded?: boolean;
+        serial_recovery_max_tokens?: number;
+        serial_reserved_output_tokens?: number;
+        serial_topology?: {
+          edges?: unknown[];
+          nodes?: { id?: unknown; modelId?: unknown }[];
+          version: 'modelnet.serial.v1';
+        };
+        show_auto_flow?: boolean;
+        show_parallel_flow?: boolean;
+        show_serial_flow?: boolean;
       };
     };
+    runtime_candidates?: Record<string, unknown>[];
+    stream_options?: { include_trace?: boolean };
+  };
+  /** UI-only ModelNet automatic-network candidate aliases; removed before transport. */
+  modelnetAutoCandidateIds?: string[];
+  /** UI-only ModelNet parallel member IDs; removed before transport. */
+  modelnetParallelModelIds?: string[];
+  /** UI-only ModelNet serial topology; removed before transport. */
+  modelnetSerialTopology?: {
+    edges: { source: string; target: string }[];
+    nodes: { id: string; modelId: string }[];
+    version: 'modelnet.serial.v1';
   };
   /**
    * @title Number of texts to return
@@ -127,6 +154,14 @@ export interface ChatStreamPayload {
    * @default openai
    */
   provider?: string;
+  /**
+   * Responses API reasoning configuration.
+   */
+  reasoning?: {
+    effort?: string;
+    mode?: 'standard' | 'pro';
+    summary?: string;
+  };
   response_format?: ChatResponseFormat;
   responseMode?: 'stream' | 'json';
   /**

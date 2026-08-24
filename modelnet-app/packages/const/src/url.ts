@@ -32,6 +32,8 @@ export const TERMS_URL = OFFICIAL_SITE;
 
 export const PLUGINS_INDEX_URL = 'https://www.jnu.edu.cn';
 
+export const OPS_ASSETS_BASE_URL = 'https://chat-cloud.lobeobjects.space/dc/ops-assets';
+
 export const MORE_MODEL_PROVIDER_REQUEST_URL = 'https://www.jnu.edu.cn';
 
 export const MORE_FILE_PREVIEW_REQUEST_URL = 'https://www.jnu.edu.cn';
@@ -68,7 +70,7 @@ export const GROUP_CHAT_TOPIC_URL = (groupId: string, topicId: string) =>
 
 export const LIBRARY_URL = (id: string) => urlJoin('/resource/library', id);
 
-export const imageUrl = (filename: string) => `/images/${filename}`;
+export const imageUrl = (filename: string) => `/app-images/${filename}`;
 
 export const LOBE_URL_IMPORT_NAME = 'settings';
 
@@ -85,4 +87,10 @@ export const DOWNLOAD_URL = {
   android: 'https://www.jnu.edu.cn',
   default: OFFICIAL_SITE,
   ios: 'https://www.jnu.edu.cn',
+  mobile: OFFICIAL_SITE,
 } as const;
+
+export const channelDocUrl = (platform: string) => urlJoin(USAGE_DOCUMENTS, 'channels', platform);
+
+export const discoverUrl = (type: string, identifier: string) =>
+  urlJoin(OFFICIAL_SITE, 'discover', type, identifier);

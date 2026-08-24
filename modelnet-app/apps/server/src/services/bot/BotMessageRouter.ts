@@ -3,11 +3,14 @@ import { DEFAULT_BOT_DEBOUNCE_MS } from '@lobechat/const';
 import { Chat, ConsoleLogger, type Message, type MessageContext } from 'chat';
 import debug from 'debug';
 
+import { getBotFeatureAccessState } from '@/business/server/bot/featureAccess';
 import { getServerDB } from '@/database/core/db-adaptor';
+import { AgentModel } from '@/database/models/agent';
 import type { DecryptedBotProvider } from '@/database/models/agentBotProvider';
 import { AgentBotProviderModel } from '@/database/models/agentBotProvider';
 import type { LobeChatDatabase } from '@/database/type';
 import { appEnv } from '@/envs/app';
+import { resolveToolMode } from '@/helpers/executionTarget';
 import { getAgentRuntimeRedisClient } from '@/server/modules/AgentRuntime/redis';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { emitAgentSignalSourceEvent } from '@/server/services/agentSignal';
@@ -57,10 +60,15 @@ import {
   renderFeedbackSubmitted,
   renderGroupRejected,
   renderInlineError,
+  renderModeStatus,
   renderSenderRejected,
 } from './replyTemplate';
 
 const log = debug('lobe-server:bot:message-router');
+const WECHAT_PRO_FEATURE_NOTICE =
+  '提示：由于 WeChat 渠道通信成本过高，ModelNet 微信渠道能力将于近期调整为付费功能。预告期内已有连接可继续使用，但新建或重新连接微信渠道需要升级到个人付费 Plan。';
+const WECHAT_PRO_FEATURE_NOTICE_WORKSPACE =
+  '提示：由于 WeChat 渠道通信成本过高，ModelNet 微信渠道能力将于近期调整为付费功能。预告期内已有连接可继续使用，但新建或重新连接微信渠道需要将所属工作区升级到付费 Plan。';
 
 /**
  * Compact summary of a Chat SDK Message's attachments for debug logging.
@@ -116,6 +124,10 @@ interface CommandContext {
   /** Display name of the invoking user. Optional because some platforms
    *  surface only the ID, not a friendly label. */
   authorUserName?: string;
+  /** Read the conversation's persisted state (topicId / toolMode / …).
+   *  Wired to `thread.state` on text dispatch and `channel.state` on native
+   *  slash dispatch — the same store `setState` writes to on each path. */
+  getState: () => Promise<Record<string, any> | null>;
   post: (text: string) => Promise<any>;
   /**
    * Post a reply visible only to the invoker.
@@ -562,6 +574,37 @@ export class BotMessageRouter {
      */
     const watchKeywordEntries = extractWatchKeywordEntries(info.settings);
     const watchKeywords: ReadonlyArray<string> = watchKeywordEntries.map((e) => e.keyword);
+
+    /**
+     * Watch-keyword wakes ride on passive channel monitoring, which is a
+     * gated feature (`messageMonitoring` — see the business featureAccess
+     * slot). Checked lazily, only when a keyword (not a mention / DM /
+     * command) is the sole wake reason, so access changes take effect on
+     * the next message without any cache invalidation. Mentions, DMs,
+     * replies, and commands never hit this gate.
+     */
+    const isMessageMonitoringAllowed = async (
+      caller: string,
+      threadId: string,
+    ): Promise<boolean> => {
+      const access = await getBotFeatureAccessState({
+        action: 'runtime',
+        applicationId,
+        feature: 'messageMonitoring',
+        platform,
+        userId,
+        workspaceId: workspaceId ?? undefined,
+      });
+      if (access.allowed) return true;
+      log(
+        '%s: watch-keyword wake dropped (messageMonitoring not allowed), agent=%s, platform=%s, thread=%s',
+        caller,
+        agentId,
+        platform,
+        threadId,
+      );
+      return false;
+    };
     /**
      * The provider's owner platform user ID. Only consulted under the
      * `pairing` policy, where the gate gives the owner a free pass so they
@@ -775,6 +818,7 @@ export class BotMessageRouter {
         id: string;
         post: (t: string) => Promise<any>;
         setState: (s: Record<string, any>, o?: { replace?: boolean }) => Promise<any>;
+        state: Promise<Record<string, any> | null>;
       },
       text: string | undefined,
       author: { userId?: string; userName?: string } | undefined,
@@ -787,6 +831,7 @@ export class BotMessageRouter {
         args: result.args,
         authorUserId: author?.userId,
         authorUserName: author?.userName,
+        getState: () => thread.state,
         post: (t) => thread.post(t),
         replyLocale,
         setState: (s, o) => thread.setState(s, o),
@@ -801,6 +846,37 @@ export class BotMessageRouter {
     const looksLikeCommand = (text: string | undefined): boolean => {
       const sanitized = client.sanitizeUserInput?.(text ?? '') ?? text;
       return BotMessageRouter.dispatchTextCommand(sanitized, commands) !== null;
+    };
+
+    const notifyFeatureNoticeOnce = async (
+      thread: { post: (t: string) => Promise<unknown> },
+      author: { userId?: string },
+      noticeId: string,
+      caller: string,
+    ): Promise<void> => {
+      if (platform !== 'wechat') return;
+
+      const authorUserId = author.userId?.trim();
+      if (!authorUserId) return;
+
+      const key = `bot-feature-notice:${noticeId}:${authorUserId}`;
+      try {
+        const fresh = await bot.getState().setIfNotExists(key, '1');
+        if (!fresh) return;
+      } catch (error) {
+        log('%s: feature notice dedupe failed, continuing without notice: %O', caller, error);
+        return;
+      }
+
+      try {
+        // Workspace-owned channels upgrade at the workspace, not the owner's
+        // personal plan — keep the notice copy consistent with the channel UI.
+        await thread.post(
+          workspaceId ? WECHAT_PRO_FEATURE_NOTICE_WORKSPACE : WECHAT_PRO_FEATURE_NOTICE,
+        );
+      } catch (error) {
+        log('%s: failed to post feature notice: %O', caller, error);
+      }
     };
 
     /**
@@ -820,6 +896,53 @@ export class BotMessageRouter {
       replyLocale: BotReplyLocale,
       caller: string,
     ): Promise<boolean> => {
+      /**
+       * Group-scope rejection notices land in the platform's reply thread
+       * (on Discord, the auto-created thread under the @mention). The
+       * rejected sender is never added to that thread — only the success
+       * path (`AgentBridgeService.executeWithCallback`) calls
+       * `ensureThreadMember` — so they get no notification and perceive
+       * the rejection as the bot silently ignoring them. Pull them into
+       * the thread before posting so the notice is actually seen.
+       * DM threads deliver in place; platforms without the hook no-op.
+       */
+      const ensureRejectionVisible = async (): Promise<void> => {
+        if (thread.isDM === true || !author.userId || !client.ensureThreadMember) return;
+        try {
+          await client.ensureThreadMember(thread.id, author.userId);
+        } catch (error) {
+          log('%s: ensureThreadMember for rejection notice failed: %O', caller, error);
+        }
+      };
+
+      const featureAccess = await getBotFeatureAccessState({
+        action: 'runtime',
+        applicationId,
+        platform,
+        userId,
+        workspaceId: workspaceId ?? undefined,
+      });
+
+      // Plan state must not leak to senders/groups the bot is configured to
+      // ignore: both the enforce-mode denial and the rollout notice are only
+      // posted after every gate below passes — rejected callers get the
+      // regular rejection copy (or silence) instead.
+      const finishFeatureAccess = async (): Promise<boolean> => {
+        if (!featureAccess.allowed) {
+          try {
+            await ensureRejectionVisible();
+            await thread.post(featureAccess.blockedMessage ?? 'This bot channel is unavailable.');
+          } catch (error) {
+            log('%s: failed to post paid-feature notice: %O', caller, error);
+          }
+          return false;
+        }
+        if (featureAccess.notice) {
+          await notifyFeatureNoticeOnce(thread, author, featureAccess.notice.id, caller);
+        }
+        return true;
+      };
+
       // Owner override. The bot's operator (`settings.userId`) sets the
       // policies for *other* users — locking themselves out of their own
       // bot is a footgun. Without this branch:
@@ -834,7 +957,7 @@ export class BotMessageRouter {
       // implicit-merge of `settings.userId` into `extractUserAllowlist`,
       // which already treats the operator as always-allowed.
       if (operatorUserId && author.userId === operatorUserId) {
-        return true;
+        return finishFeatureAccess();
       }
       // Pairing redefines what `allowFrom` means: it's the *post-approval*
       // list (managed by `/approve`), not a hard identity gate. A stranger
@@ -856,6 +979,7 @@ export class BotMessageRouter {
           thread.id,
           author.userName ?? author.userId,
         );
+        await ensureRejectionVisible();
         await handleSenderRejected(thread, replyLocale);
         return false;
       }
@@ -868,11 +992,14 @@ export class BotMessageRouter {
           thread.id,
           groupSettings.policy,
         );
+        await ensureRejectionVisible();
         await notifyGroupRejected(thread, replyLocale);
         return false;
       }
       const dmDecision = passesDmPolicy(thread, { author });
-      if (dmDecision === 'allow') return true;
+      if (dmDecision === 'allow') {
+        return finishFeatureAccess();
+      }
       log(
         '%s: DM gate=%s, agent=%s, platform=%s, thread=%s, author=%s, policy=%s',
         caller,
@@ -1101,6 +1228,7 @@ export class BotMessageRouter {
       }
 
       if (matchesWatchKeyword && !isAddressedToBot && !isCommand) {
+        if (!(await isMessageMonitoringAllowed('onSubscribedMessage', thread.id))) return;
         log(
           'onSubscribedMessage: keyword match wakes bot, agent=%s, platform=%s, author=%s, thread=%s, keywords=%o',
           agentId,
@@ -1282,6 +1410,11 @@ export class BotMessageRouter {
         if (!(isDM && dmCatchAllEnabled) && !matchesWatchKeyword) return;
 
         if (matchesWatchKeyword) {
+          if (
+            !(await isMessageMonitoringAllowed(`onNewMessage (${platform} catch-all)`, thread.id))
+          ) {
+            return;
+          }
           log(
             'onNewMessage (%s catch-all): keyword match wakes bot in channel, agent=%s, author=%s, thread=%s, keywords=%o',
             platform,
@@ -1484,10 +1617,83 @@ export class BotMessageRouter {
         description: 'Start a new conversation',
         handler: async (ctx) => {
           log('command /new: agent=%s, platform=%s', agentId, platform);
-          await ctx.setState({ topicId: undefined }, { replace: true });
+          // `replace: true` wipes the whole state (that's how topicId gets
+          // reliably cleared — a merged `undefined` is dropped by the JSON
+          // round-trip). Carry the `/mode` choice over: it's a conversation
+          // preference, and starting a new topic shouldn't silently revert it.
+          let toolMode: unknown;
+          try {
+            toolMode = (await ctx.getState())?.toolMode;
+          } catch (error) {
+            log('command /new: getState failed (mode not preserved): %O', error);
+          }
+          await ctx.setState(toolMode ? { toolMode, topicId: undefined } : { topicId: undefined }, {
+            replace: true,
+          });
           await ctx.post(renderCommandReply('cmdNewReset', ctx.replyLocale));
         },
         name: 'new',
+      },
+      {
+        description: 'Show or switch the conversation mode (agent | chat)',
+        // Declared so Discord/Slack surface a `/mode <mode>` argument in the
+        // slash picker; the no-arg form shows the current mode.
+        options: [
+          {
+            description: "Target mode: 'agent' or 'chat'; omit to show the current mode",
+            name: 'mode',
+            required: false,
+          },
+        ],
+        handler: async (ctx) => {
+          log('command /mode: agent=%s, platform=%s, args=%s', agentId, platform, ctx.args);
+          const arg = ctx.args.trim().toLowerCase();
+          if (!arg) {
+            let override: 'agent' | 'chat' | undefined;
+            try {
+              const state = await ctx.getState();
+              override =
+                state?.toolMode === 'agent' || state?.toolMode === 'chat'
+                  ? state.toolMode
+                  : undefined;
+            } catch (error) {
+              log('command /mode: getState failed: %O', error);
+            }
+            // No explicit override → report the EFFECTIVE mode (the agent's
+            // configured default) instead of an ambiguous "default" answer.
+            // Best-effort: a config lookup failure falls back to `agent` (the
+            // product default) rather than blocking the status reply.
+            let current = override;
+            if (!current) {
+              try {
+                const agent = await new AgentModel(
+                  serverDB,
+                  userId,
+                  info.workspaceId ?? undefined,
+                ).getAgentConfigById(agentId);
+                const chatConfig = (agent as any)?.chatConfig ?? undefined;
+                current = resolveToolMode(chatConfig) === 'chat' ? 'chat' : 'agent';
+              } catch (error) {
+                log('command /mode: agent config lookup failed: %O', error);
+                current = 'agent';
+              }
+            }
+            await ctx.post(renderModeStatus(current, ctx.replyLocale));
+            return;
+          }
+          if (arg !== 'agent' && arg !== 'chat') {
+            await ctx.post(renderCommandReply('cmdModeUsage', ctx.replyLocale));
+            return;
+          }
+          await ctx.setState({ toolMode: arg });
+          await ctx.post(
+            renderCommandReply(
+              arg === 'agent' ? 'cmdModeSetAgent' : 'cmdModeSetChat',
+              ctx.replyLocale,
+            ),
+          );
+        },
+        name: 'mode',
       },
       {
         description: 'Stop the current execution',
@@ -1764,6 +1970,7 @@ export class BotMessageRouter {
           args: event.text,
           authorUserId: authorLike.userId,
           authorUserName: authorLike.userName,
+          getState: () => event.channel.state,
           post: (text) => event.channel.post(text),
           // Wire chat-sdk's `postEphemeral` so commands that want a private
           // reply (e.g. `/feedback`) can opt in. `fallbackToDM: true` so
@@ -1809,6 +2016,7 @@ export class BotMessageRouter {
         args: result.args,
         authorUserId: message.author?.userId,
         authorUserName: message.author?.userName,
+        getState: () => thread.state,
         post: (text) => thread.post(text),
         replyLocale,
         setState: (state, opts) => thread.setState(state, opts),

@@ -1,3 +1,5 @@
+import { getEmailSupportHtml } from '@/libs/email/support';
+
 /**
  * Workspace invitation email template
  * Sent when a workspace owner invites someone (by email) to join their workspace.
@@ -94,6 +96,9 @@ export const getWorkspaceInviteEmailTemplate = (params: {
 
     <!-- Footer -->
     <div style="text-align: center; margin-top: 32px;">
+      <p style="font-size: 13px; margin: 0 0 8px 0;">
+        ${getEmailSupportHtml()}
+      </p>
       <p style="color: #a1a1aa; font-size: 13px; margin: 0;">
         If you weren't expecting this invitation, you can safely ignore this email.
       </p>

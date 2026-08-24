@@ -1,9 +1,12 @@
 /**
  * @vitest-environment happy-dom
  */
-import { render } from '@testing-library/react';
+import type { TaskDetailActivity } from '@lobechat/types';
+import { fireEvent, render } from '@testing-library/react';
 import type { CSSProperties, ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { useGatewayReconnect } from '@/hooks/useGatewayReconnect';
 
 import TopicChatDrawer from './index';
 
@@ -19,6 +22,7 @@ const mocks = vi.hoisted(() => ({
     allowed: true,
     reason: 'requires member',
   },
+  navigate: vi.fn(),
   serverConfigState: {
     serverConfig: {
       enableBusinessFeatures: false,
@@ -39,7 +43,7 @@ const mocks = vi.hoisted(() => ({
             title: 'Topic 1',
             type: 'topic',
           },
-        ],
+        ] as TaskDetailActivity[],
         agentId: 'agt_assignee',
         identifier: 'T-1',
         instruction: 'Do the task',
@@ -81,32 +85,24 @@ vi.mock('@lobehub/ui', () => ({
     </button>
   ),
   copyToClipboard: vi.fn(),
-  Drawer: ({
+  DropdownMenu: ({
     children,
-    closeIconProps,
-    extra,
-    open,
-    styles,
-    title,
+    items,
   }: {
     children?: ReactNode;
-    closeIconProps?: { size?: unknown };
-    extra?: ReactNode;
-    open?: boolean;
-    styles?: { title?: CSSProperties };
-    title?: ReactNode;
-  }) =>
-    open ? (
-      <div data-testid="topic-drawer">
-        <div data-testid="drawer-title-slot" style={styles?.title}>
-          {title}
-        </div>
-        {extra}
-        <button data-size={serializeSize(closeIconProps?.size)} data-testid="drawer-close-icon" />
-        {children}
-      </div>
-    ) : null,
-  DropdownMenu: ({ children }: { children?: ReactNode }) => <>{children}</>,
+    items?: { key: string; label?: ReactNode; onClick?: () => void; type?: string }[];
+  }) => (
+    <>
+      {children}
+      {items?.map((item) =>
+        item.type === 'divider' ? null : (
+          <button key={item.key} onClick={item.onClick}>
+            {item.label}
+          </button>
+        ),
+      )}
+    </>
+  ),
   Flexbox: ({
     children,
     flex,
@@ -122,10 +118,54 @@ vi.mock('@lobehub/ui', () => ({
   ),
 }));
 
-vi.mock('antd-style', () => ({
-  cssVar: {
-    colorBorderSecondary: '#ddd',
-  },
+vi.mock('@lobehub/ui/base-ui', () => ({
+  FloatingPanel: ({
+    actions,
+    children,
+    height,
+    minHeight,
+    minWidth,
+    open,
+    placement,
+    resizable = true,
+    styles,
+    title,
+    width,
+  }: {
+    actions?: ReactNode;
+    children?: ReactNode;
+    height?: unknown;
+    minHeight?: number;
+    minWidth?: number;
+    open?: boolean;
+    placement?: string;
+    resizable?: boolean;
+    styles?: { body?: CSSProperties; panel?: CSSProperties; title?: CSSProperties };
+    title?: ReactNode;
+    width?: unknown;
+  }) =>
+    open ? (
+      <div
+        data-height={serializeSize(height)}
+        data-min-height={serializeSize(minHeight)}
+        data-min-width={serializeSize(minWidth)}
+        data-panel-background={serializeSize(styles?.panel?.background)}
+        data-placement={placement}
+        data-resizable={String(resizable)}
+        data-testid="topic-panel"
+        data-width={serializeSize(width)}
+        style={styles?.panel}
+      >
+        <div data-testid="panel-title-slot" style={styles?.title}>
+          {title}
+        </div>
+        <div data-testid="panel-actions-slot">{actions}</div>
+        <button data-testid="panel-close-icon" />
+        <div data-testid="panel-body-slot" style={styles?.body}>
+          {children}
+        </div>
+      </div>
+    ) : null,
 }));
 
 vi.mock('next/dynamic', () => ({
@@ -141,10 +181,16 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
-vi.mock('@/features/Conversation', () => ({
-  ChatList: () => <div data-testid="chat-list" />,
+vi.mock('@/features/Conversation/ChatList', () => ({
+  default: () => <div data-testid="chat-list" />,
+}));
+
+vi.mock('@/features/Conversation/ConversationProvider', () => ({
   ConversationProvider: ({ children }: { children?: ReactNode }) => <>{children}</>,
-  MessageItem: ({ id }: { id: string }) => <div data-testid="message-item">{id}</div>,
+}));
+
+vi.mock('@/features/Conversation/Messages', () => ({
+  default: ({ id }: { id: string }) => <div data-testid="message-item">{id}</div>,
 }));
 
 vi.mock('@/features/Conversation/Markdown/plugins/Task', () => ({
@@ -155,6 +201,10 @@ vi.mock('@/features/ShareModal', () => ({
   useShareModal: () => ({
     openShareModal: vi.fn(),
   }),
+}));
+
+vi.mock('@/features/Workspace/useWorkspaceAwareNavigate', () => ({
+  useWorkspaceAwareNavigate: () => mocks.navigate,
 }));
 
 vi.mock('@/hooks/useGatewayReconnect', () => ({
@@ -195,28 +245,80 @@ vi.mock('@/store/chat/utils/messageMapKey', () => ({
   messageMapKey: () => 'topic-chat-key',
 }));
 
-vi.mock('../TopicStatusIcon', () => ({
-  default: () => <span data-testid="topic-status-icon" />,
+vi.mock('../../features/AssigneeAvatar', () => ({
+  default: ({ agentId, size }: { agentId?: string; size?: number }) => (
+    <span data-agent-id={agentId} data-size={size} data-testid="assignee-avatar" />
+  ),
 }));
 
 vi.mock('./FeedbackInput', () => ({
-  default: () => <div data-testid="feedback-input" />,
+  default: ({
+    defaultExpanded,
+    disableCollapse,
+  }: {
+    defaultExpanded?: boolean;
+    disableCollapse?: boolean;
+  }) => (
+    <div
+      data-default-expanded={String(Boolean(defaultExpanded))}
+      data-disable-collapse={String(Boolean(disableCollapse))}
+      data-testid="feedback-input"
+    />
+  ),
 }));
 
 describe('TopicChatDrawer', () => {
   beforeEach(() => {
     mocks.agentState.useHydrateAgentConfig.mockClear();
     mocks.chatState.replaceMessages.mockClear();
+    mocks.navigate.mockClear();
     mocks.taskState.closeTopicDrawer.mockClear();
     mocks.taskState.activeTopicDrawerTopicId = 'topic-1';
+    mocks.taskState.taskDetailMap['T-1'].activities[0] = {
+      id: 'topic-1',
+      status: 'completed',
+      time: '2026-04-29T00:00:00.000Z',
+      title: 'Topic 1',
+      type: 'topic',
+    };
     mocks.permission.allowed = true;
     mocks.serverConfigState.serverConfig.enableBusinessFeatures = false;
+    vi.mocked(useGatewayReconnect).mockClear();
+  });
+
+  // The run drawer also mounts on the home inbox, where the chat store has no
+  // active agent — reconnecting against it would stream the run into a bucket
+  // this panel never reads, so the run's own agent has to be passed down.
+  it('reconnects a running topic against the drawer agent', () => {
+    mocks.taskState.taskDetailMap['T-1'].activities[0] = {
+      id: 'topic-1',
+      runningOperation: { assistantMessageId: 'ast-1', operationId: 'op-1' },
+      status: 'running',
+      time: '2026-04-29T00:00:00.000Z',
+      title: 'Topic 1',
+      type: 'topic',
+    };
+
+    render(<TopicChatDrawer />);
+
+    expect(useGatewayReconnect).toHaveBeenCalledWith(
+      'topic-1',
+      expect.objectContaining({ operationId: 'op-1' }),
+      'agt_assignee',
+    );
   });
 
   it('hydrates the task assignee agent config for drawer messages', () => {
     render(<TopicChatDrawer />);
 
     expect(mocks.agentState.useHydrateAgentConfig).toHaveBeenCalledWith(true, 'agt_assignee');
+  });
+
+  it('keeps the floating drawer reply input collapsed by default', () => {
+    const { getByTestId } = render(<TopicChatDrawer />);
+
+    expect(getByTestId('feedback-input')).toHaveAttribute('data-default-expanded', 'false');
+    expect(getByTestId('feedback-input')).toHaveAttribute('data-disable-collapse', 'false');
   });
 
   it('disables topic sharing for workspace viewers', () => {
@@ -228,30 +330,86 @@ describe('TopicChatDrawer', () => {
     expect(getByTitle('requires member')).toBeDisabled();
   });
 
-  it('constrains long drawer titles before the header actions', () => {
+  it('constrains long panel titles before the header actions', () => {
     const { getByTestId, getByText } = render(<TopicChatDrawer />);
 
     const title = getByText('Topic 1');
 
     expect(title).toHaveStyle({ flex: '0 1 auto', minWidth: '0' });
     expect(title.parentElement).toHaveStyle({ maxWidth: '100%', overflow: 'hidden' });
-    expect(getByTestId('drawer-title-slot')).toHaveStyle({
+    expect(getByTestId('panel-title-slot')).toHaveStyle({
       boxSizing: 'border-box',
       maxWidth: '100%',
       overflow: 'hidden',
-      paddingInlineEnd: '48px',
     });
   });
 
-  it('keeps the share button box aligned with the default close button', () => {
+  it('shows the assignee avatar in the topic header', () => {
+    const { getByTestId } = render(<TopicChatDrawer />);
+
+    expect(getByTestId('assignee-avatar')).toHaveAttribute('data-agent-id', 'agt_assignee');
+    expect(getByTestId('assignee-avatar')).toHaveAttribute('data-size', '20');
+  });
+
+  it('uses the container background for the conversation panel', () => {
+    const { getByTestId } = render(<TopicChatDrawer />);
+
+    expect(getByTestId('topic-panel')).toHaveAttribute(
+      'data-panel-background',
+      'var(--ant-color-bg-container)',
+    );
+  });
+
+  it('renders the share button in the floating panel actions slot', () => {
     const { getAllByTestId, getByTestId } = render(<TopicChatDrawer />);
 
     const icons = getAllByTestId('header-action-icon');
     const moreIcon = icons.find((icon) => !icon.getAttribute('title'));
+    const expandIcon = icons.find(
+      (icon) => icon.getAttribute('title') === 'taskDetail.topicDrawer.expand',
+    );
     const shareIcon = icons.find((icon) => icon.getAttribute('title') === 'share');
 
-    expect(moreIcon).toHaveAttribute('data-size', 'small');
-    expect(shareIcon).toHaveAttribute('data-size', JSON.stringify({ blockSize: 36, size: 18 }));
-    expect(getByTestId('drawer-close-icon')).toHaveAttribute('data-size', '');
+    expect(moreIcon).toBeDefined();
+    expect(expandIcon).toBeDefined();
+    expect(shareIcon).toBeDefined();
+    expect(moreIcon!).toHaveAttribute('data-size', 'small');
+    expect(shareIcon!).toHaveAttribute('data-size', JSON.stringify({ blockSize: 32, size: 16 }));
+    expect(getByTestId('panel-actions-slot')).toContainElement(shareIcon!);
+    expect(getByTestId('panel-close-icon')).toBeInTheDocument();
+  });
+
+  it('expands the conversation into a full-height reading panel', () => {
+    const { getByTestId, getByTitle } = render(<TopicChatDrawer />);
+
+    fireEvent.click(getByTitle('taskDetail.topicDrawer.expand'));
+
+    expect(getByTestId('topic-panel')).toHaveAttribute(
+      'data-width',
+      'min(960px, calc(100vw - 16px))',
+    );
+    expect(getByTestId('topic-panel')).toHaveAttribute('data-height', 'calc(100dvh - 16px)');
+    expect(getByTitle('taskDetail.topicDrawer.collapse')).toBeInTheDocument();
+  });
+
+  it('opens the run in its Agent conversation', () => {
+    const { getByText } = render(<TopicChatDrawer />);
+
+    fireEvent.click(getByText('taskDetail.topicMenu.openAgentTopic'));
+
+    expect(mocks.taskState.closeTopicDrawer).toHaveBeenCalledOnce();
+    expect(mocks.navigate).toHaveBeenCalledWith('/agent/agt_assignee/topic-1');
+  });
+
+  it('uses a resizable bottom-right floating panel', () => {
+    const { getByTestId } = render(<TopicChatDrawer />);
+
+    expect(getByTestId('topic-panel')).toHaveAttribute('data-placement', 'bottomRight');
+    expect(getByTestId('topic-panel')).toHaveAttribute('data-resizable', 'true');
+    expect(getByTestId('topic-panel')).toHaveAttribute('data-width', '640');
+    expect(getByTestId('topic-panel')).toHaveAttribute(
+      'data-height',
+      'min(640px, calc(100dvh - 16px))',
+    );
   });
 });

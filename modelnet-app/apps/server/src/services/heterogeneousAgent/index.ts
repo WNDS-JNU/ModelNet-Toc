@@ -1,6 +1,12 @@
 import type { AgentStreamEvent } from '@lobechat/agent-gateway-client';
 import { type ISnapshotStore, parseOperationId } from '@lobechat/agent-tracing';
 import type { LobeChatDatabase } from '@lobechat/database';
+import {
+  classifyHeteroProcessFailure,
+  isHeteroStatusGuideErrorData,
+  type LocalHeterogeneousAgentType,
+} from '@lobechat/heterogeneous-agents';
+import { ThreadStatus } from '@lobechat/types';
 import debug from 'debug';
 
 import { AgentOperationModel } from '@/database/models/agentOperation';
@@ -22,7 +28,7 @@ import { HeteroTraceRecorder } from './HeteroTraceRecorder';
 
 const log = debug('lobe-server:hetero-agent-service');
 
-export type HeterogeneousAgentType = 'claude-code' | 'codex';
+export type HeterogeneousAgentType = LocalHeterogeneousAgentType;
 
 export type HeterogeneousFinishResult = 'success' | 'error' | 'cancelled';
 
@@ -39,7 +45,16 @@ export interface HeterogeneousIngestParams {
 
 export interface HeterogeneousFinishParams {
   agentType: HeterogeneousAgentType;
-  error?: { message: string; type: string };
+  /** Initial assistant placeholder supplied by the producer. This remains
+   * usable when gateway completion wins the race and clears runningOperation
+   * before the CLI's terminal callback reaches the server. */
+  assistantMessageId?: string;
+  /**
+   * CLI-reported failure. `body`, when present, is the structured status-guide
+   * error (`agentType` + `code` + details) persisted verbatim as the
+   * `ChatMessageError.body`.
+   */
+  error?: { body?: Record<string, unknown>; message: string; type: string };
   operationId: string;
   result: HeterogeneousFinishResult;
   /**
@@ -50,6 +65,39 @@ export interface HeterogeneousFinishParams {
   sessionId?: string;
   topicId: string;
 }
+
+type HeterogeneousFinishError = NonNullable<HeterogeneousFinishParams['error']>;
+
+/**
+ * Older or partially upgraded `lh hetero exec` producers can flatten an
+ * adapter-classified terminal error before calling `heteroFinish`. Reclassify
+ * the final payload at the server boundary so a recognizable authentication
+ * failure always reaches the message row as the structured status-guide shape
+ * (`body.agentType + body.code`) the web client renders.
+ */
+export const normalizeHeterogeneousFinishError = (
+  agentType: HeterogeneousAgentType,
+  error: HeterogeneousFinishError | undefined,
+): HeterogeneousFinishError | undefined => {
+  if (!error || isHeteroStatusGuideErrorData(error.body)) return error;
+
+  const body = error.body;
+  const bodyDetails = body
+    ? [body.message, body.error, body.stderr]
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        .join('\n')
+    : '';
+  const detail = [error.message, bodyDetails].filter(Boolean).join('\n');
+  const classified = classifyHeteroProcessFailure({ agentType, detail });
+
+  if (!classified) return error;
+
+  return {
+    body: { ...classified },
+    message: classified.message,
+    type: 'AgentRuntimeError',
+  };
+};
 
 export interface HeterogeneousAgentServiceOptions {
   /** Inject a pre-built persistence handler (used by tests). */
@@ -69,7 +117,8 @@ export interface HeterogeneousAgentServiceOptions {
 
 /**
  * Server-side ingest handler for heterogeneous agent CLIs (`lh hetero exec`
- * for Claude Code / Codex). Receives `AgentStreamEvent` batches from the
+ * for Amp / Claude Code / CodeBuddy / Codex / OpenCode / Pi / Qoder / TRAE). Receives
+ * `AgentStreamEvent` batches from the
  * producer and republishes them through the existing `StreamEventManager`
  * fanout, so renderer-side gateway WS subscribers see the same wire shape
  * regardless of whether the run came from the agent gateway or a CLI process.
@@ -145,10 +194,24 @@ export class HeterogeneousAgentService {
       throw err;
     }
 
-    // Sequential publish preserves stepIndex ordering — Redis XADD itself is
-    // serialized but awaiting in-order avoids interleaving with concurrent
-    // ingest batches sharing the same operationId.
-    for (const event of events) {
+    // Publish only events not yet delivered to the stream. The publish gate
+    // (`publishedKeys`, peer of the persistence dedupe) makes a BatchIngester
+    // retry invisible to live subscribers: a batch that fully succeeded but
+    // lost its tRPC response republishes nothing, while one that died
+    // mid-publish resumes from the first unpublished event — each event is
+    // latched only after its own XADD succeeds. Sequential publish preserves
+    // stepIndex ordering — Redis XADD itself is serialized but awaiting
+    // in-order avoids interleaving with concurrent ingest batches sharing the
+    // same operationId.
+    const unpublished = this.persistenceHandler.filterUnpublishedEvents(operationId, events);
+    if (unpublished.length < events.length) {
+      log(
+        'heteroIngest: skip %d already-published events op=%s',
+        events.length - unpublished.length,
+        operationId,
+      );
+    }
+    for (const event of unpublished) {
       // Each event already carries operationId; pass through unchanged so the
       // wire shape on the WS side is identical to gateway-driven runs.
       await this.streamEventManager.publishStreamEvent(operationId, {
@@ -156,19 +219,30 @@ export class HeterogeneousAgentService {
         stepIndex: event.stepIndex,
         type: event.type,
       });
+      this.persistenceHandler.markEventPublished(operationId, event);
     }
 
     // Accumulate the execution-trace snapshot LAST. The recorder has no
     // per-event idempotency, so it must run only after every step that can throw
     // and trigger a BatchIngester retry of this same batch — otherwise a publish
     // failure above would re-fold these events and double-count the snapshot.
-    // It's the final statement and best-effort (never throws), so it folds each
-    // batch exactly once (on the attempt that gets this far).
-    await this.traceRecorder.appendBatch(operationId, events);
+    // Gating on the publish gate also skips the pure-redelivery batch (full
+    // success whose response was lost), which would otherwise double-fold here.
+    if (unpublished.length > 0) {
+      await this.traceRecorder.appendBatch(operationId, events);
+    }
   }
 
   async heteroFinish(params: HeterogeneousFinishParams): Promise<void> {
-    const { agentType, error, operationId, result, sessionId, topicId } = params;
+    const {
+      agentType,
+      assistantMessageId: seedAssistantMessageId,
+      operationId,
+      result,
+      sessionId,
+      topicId,
+    } = params;
+    const error = normalizeHeterogeneousFinishError(agentType, params.error);
 
     log(
       'heteroFinish: user=%s topic=%s op=%s type=%s result=%s sessionId=%s',
@@ -180,16 +254,68 @@ export class HeterogeneousAgentService {
       sessionId ?? '<none>',
     );
 
+    if (error?.body?.code === 'auth_required') {
+      log(
+        'heteroFinish: authentication required user=%s topic=%s op=%s type=%s detail=%s',
+        this.userId,
+        topicId,
+        operationId,
+        agentType,
+        error.body.stderr ?? error.message,
+      );
+    }
+
     // Drain any pending state in the persistence handler — flushes trailing
     // accumulated content / reasoning that the in-stream `agent_runtime_end`
     // already wrote (no-op when state is clean), persists the CLI's native
     // session id for next-turn resume, and frees the per-operation memory.
-    await this.persistenceHandler.finish({ error, operationId, result, sessionId });
+    // `topicId` lets finish() bootstrap state for a run that failed before
+    // producing any stream event (spawn ENOENT / auth-on-stderr): the terminal
+    // error must be written HERE, before the `agent_runtime_end` publish below
+    // triggers the client's message refetch.
+    await this.persistenceHandler.finish({
+      assistantMessageId: seedAssistantMessageId,
+      error,
+      operationId,
+      result,
+      sessionId,
+      topicId,
+    });
 
-    // Always emit a terminal `agent_runtime_end` so renderer subscribers shut
-    // down even if the CLI stream missed it (process killed mid-flight,
-    // network drop on last batch). Idempotent on the renderer side: the
-    // gateway event handler latches `terminalState` on first end-event.
+    let serializedHooks: SerializedHook[] | undefined;
+    let assistantMessageId = seedAssistantMessageId;
+    let isolationThreadId: string | undefined;
+    let orchestrationRole: 'member' | 'supervisor' | undefined;
+
+    // `cancelled` is only an intermediate process signal. Keep the marker for
+    // the following success/error terminal callback, which owns completion.
+    if (result !== 'cancelled') {
+      try {
+        const settled = await this.topicModel.settleRunningOperation(topicId, operationId);
+        if (settled.status === 'conflict') {
+          log(
+            'heteroFinish: ignore stale finish topic=%s op=%s; current operation is %s',
+            topicId,
+            operationId,
+            settled.activeOperationId,
+          );
+          return;
+        }
+
+        assistantMessageId = settled.assistantMessageId ?? assistantMessageId;
+        if (settled.status === 'settled') {
+          serializedHooks = settled.hooks as SerializedHook[] | undefined;
+          isolationThreadId = settled.threadId;
+          orchestrationRole = settled.orchestrationRole;
+        }
+      } catch (err) {
+        log('heteroFinish: failed to settle runningOperation (non-fatal): %O', err);
+      }
+    }
+
+    // Emit a terminal `agent_runtime_end` so renderer subscribers shut down even
+    // if the CLI stream missed it. A stale callback that belongs to neither the
+    // root operation nor one of its children returns above.
     await this.streamEventManager.publishStreamEvent(operationId, {
       data: {
         agentType,
@@ -218,26 +344,6 @@ export class HeterogeneousAgentService {
     // result lands.)
     if (result === 'cancelled') return;
 
-    let serializedHooks: SerializedHook[] | undefined;
-    let assistantMessageId: string | undefined;
-    try {
-      const topic = await this.topicModel.findById(topicId);
-      serializedHooks = topic?.metadata?.runningOperation?.hooks as SerializedHook[] | undefined;
-      // Prefer heteroCurrentMsgId — the persistence handler updates this pointer
-      // on every step boundary, so it refers to the LAST assistant message with
-      // the complete final content.  Fall back to the initial placeholder id
-      // recorded in runningOperation if the pointer is absent or belongs to a
-      // different operation (shouldn't happen, but defensive).
-      const currentMsgRef = topic?.metadata?.heteroCurrentMsgId;
-      assistantMessageId =
-        currentMsgRef?.operationId === operationId
-          ? currentMsgRef.msgId
-          : topic?.metadata?.runningOperation?.assistantMessageId;
-      await this.topicModel.updateMetadata(topicId, { runningOperation: null });
-    } catch (err) {
-      log('heteroFinish: failed to clear runningOperation (non-fatal): %O', err);
-    }
-
     // The owning agentId is authoritatively encoded in the operationId
     // (op_<ts>_agt_<id>_tpc_<id>_<suffix>, built at dispatch from the resolved
     // agent), so derive it from there. Reading it back off the final assistant
@@ -256,6 +362,40 @@ export class HeterogeneousAgentService {
         lastAssistantContent = msg?.content as string | undefined;
       } catch (err) {
         log('heteroFinish: failed to read final assistant message (non-fatal): %O', err);
+      }
+    }
+
+    // Heterogeneous device callbacks can finish on a different server instance
+    // from the one that registered the in-memory thread hooks. Finalize the
+    // isolation thread durably here as well, and project its terminal answer
+    // back onto the source assistant in the main conversation.
+    if (isolationThreadId) {
+      try {
+        const threadModel = new ThreadModel(this.db, this.userId, this.workspaceId);
+        const thread = await threadModel.findById(isolationThreadId);
+        if (thread) {
+          if (lastAssistantContent && thread.sourceMessageId) {
+            await this.messageModel.update(thread.sourceMessageId, {
+              content: lastAssistantContent,
+            });
+          }
+
+          const completedAt = new Date().toISOString();
+          const startedAt =
+            typeof thread.metadata?.startedAt === 'string' ? thread.metadata.startedAt : undefined;
+          await threadModel.update(isolationThreadId, {
+            metadata: {
+              ...thread.metadata,
+              completedAt,
+              ...(error ? { error } : {}),
+              ...(startedAt ? { duration: Date.now() - new Date(startedAt).getTime() } : undefined),
+              operationId,
+            },
+            status: result === 'success' ? ThreadStatus.Completed : ThreadStatus.Failed,
+          });
+        }
+      } catch (err) {
+        log('heteroFinish: failed to finalize isolation thread (non-fatal): %O', err);
       }
     }
 
@@ -339,6 +479,7 @@ export class HeterogeneousAgentService {
         // Backfilled executed model/provider — the verify gate bails when absent.
         model: totals?.model,
         operationId,
+        orchestrationRole,
         provider: totals?.provider,
         serializedHooks,
         stepCount: totals?.stepCount ?? null,

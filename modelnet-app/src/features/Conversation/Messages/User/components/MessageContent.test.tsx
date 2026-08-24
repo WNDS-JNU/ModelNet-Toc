@@ -23,14 +23,15 @@ vi.mock('./FileListViewer', () => ({
 vi.mock('./ImageFileListViewer', () => ({
   default: () => null,
 }));
-vi.mock('./PageSelections', () => ({
-  default: () => null,
-}));
 vi.mock('./VideoFileListViewer', () => ({
   default: () => null,
 }));
 vi.mock('./AudioFileListViewer', () => ({
-  default: ({ items }: any) => <div data-testid="audio-viewer">{items.length}</div>,
+  default: ({ items, messageId }: any) => (
+    <div data-message-id={messageId} data-testid="audio-viewer">
+      {items.length}
+    </div>
+  ),
 }));
 
 describe('User MessageContent', () => {
@@ -78,5 +79,33 @@ describe('User MessageContent', () => {
     );
 
     expect(screen.getByTestId('audio-viewer')).toHaveTextContent('1');
+    expect(screen.getByTestId('audio-viewer')).toHaveAttribute('data-message-id', 'msg-3');
+  });
+
+  it('should render code context selections in the user message body', () => {
+    render(
+      <MessageContent
+        content={'What does this selected code do?'}
+        createdAt={Date.now()}
+        id={'msg-4'}
+        role={'user'}
+        updatedAt={Date.now()}
+        metadata={{
+          contextSelections: [
+            {
+              content: 'const answer = 42;',
+              filePath: 'src/example.ts',
+              id: 'selection-1',
+              lineRange: { endLine: 7, startLine: 7 },
+              source: 'code',
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByText('src/example.ts:7-7')).toBeInTheDocument();
+    expect(screen.getByText('const answer = 42;')).toBeInTheDocument();
+    expect(screen.getByText('What does this selected code do?')).toBeInTheDocument();
   });
 });

@@ -1,11 +1,11 @@
 'use client';
 
-import { Alert, Input, Select, Spin, Tag } from 'antd';
+import { Flexbox, Icon } from '@lobehub/ui';
+import { Alert, Select } from '@lobehub/ui/base-ui';
+import { Input, Spin, Tag } from 'antd';
 import { BarChart3, Trophy } from 'lucide-react';
 import { memo, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-
-import { Flexbox, Icon } from '@lobehub/ui';
 
 import NavHeader from '@/features/NavHeader';
 
@@ -271,31 +271,31 @@ const LeaderboardPage = memo(() => {
           />
           <Select options={sourceOptions} value={source} onChange={setSource} />
           <Select
+            value={match}
             options={[
               { label: t('filters.allModels'), value: 'all' },
               { label: t('filters.modelnetOnly'), value: 'modelnet' },
               { label: t('filters.externalOnly'), value: 'external' },
             ]}
-            value={match}
             onChange={(value) => setMatch(value as MatchFilter)}
           />
           <Select
+            value={sort}
             options={[
               { label: t('sort.average'), value: 'average' },
               { label: t('sort.rank'), value: 'rank' },
               { label: t('sort.model'), value: 'model' },
               { label: t('sort.updated'), value: 'updated' },
             ]}
-            value={sort}
             onChange={(value) => setSort(value as SortKey)}
           />
         </div>
 
-        {error && <Alert message={t('status.loadFailed')} showIcon type="error" description={error} />}
+        {error && <Alert showIcon description={error} message={t('status.loadFailed')} type="error" />}
         {!error && payload?.errors?.length ? (
-          <Alert message={statusText} showIcon type="warning" />
+          <Alert showIcon message={statusText} type="warning" />
         ) : (
-          <Alert icon={<Icon icon={BarChart3} />} message={statusText} showIcon type="info" />
+          <Alert showIcon icon={<Icon icon={BarChart3} />} message={statusText} type="info" />
         )}
 
         <Spin spinning={loading}>

@@ -86,6 +86,48 @@ describe('Operation Actions', () => {
       expect(merged.filesPreview[0]).toMatchObject({ id: 'f1', name: 'a.png' });
       expect(merged.filesPreview[2]).toMatchObject({ id: 'f3', mimeType: 'application/pdf' });
     });
+
+    it('should preserve context selections from queued messages', () => {
+      const merged = mergeQueuedMessages([
+        {
+          content: 'first',
+          createdAt: 1,
+          id: 'q1',
+          interruptMode: 'soft',
+          metadata: {
+            contextSelections: [
+              {
+                content: 'const first = true;',
+                filePath: 'src/first.ts',
+                id: 'selection-1',
+                source: 'code',
+              },
+            ],
+          },
+        },
+        {
+          content: 'second',
+          createdAt: 2,
+          id: 'q2',
+          interruptMode: 'soft',
+          metadata: {
+            contextSelections: [
+              {
+                content: 'const second = true;',
+                filePath: 'src/second.ts',
+                id: 'selection-2',
+                source: 'code',
+              },
+            ],
+          },
+        },
+      ]);
+
+      expect(merged.metadata?.contextSelections).toEqual([
+        expect.objectContaining({ filePath: 'src/first.ts', id: 'selection-1' }),
+        expect.objectContaining({ filePath: 'src/second.ts', id: 'selection-2' }),
+      ]);
+    });
   });
 
   describe('startOperation', () => {
@@ -215,8 +257,6 @@ describe('Operation Actions', () => {
           context: { agentId: 'session1' },
         }).operationId;
       });
-
-      const startTime = result.current.operations[operationId!].metadata.startTime;
 
       act(() => {
         result.current.completeOperation(operationId!);
@@ -495,6 +535,50 @@ describe('Operation Actions', () => {
       });
 
       expect(result.current.operations[operationId!].status).toBe('cancelled');
+    });
+
+    it('should not cancel a creating thread when cancelling the main conversation', () => {
+      const { result } = renderHook(() => useChatStore());
+
+      let mainOperationId: string;
+      let threadOperationId: string;
+
+      act(() => {
+        mainOperationId = result.current.startOperation({
+          context: {
+            agentId: 'session1',
+            scope: 'main',
+            threadId: null,
+            topicId: 'topic1',
+          },
+          type: 'execAgentRuntime',
+        }).operationId;
+        threadOperationId = result.current.startOperation({
+          context: {
+            agentId: 'session1',
+            isNew: true,
+            scope: 'thread',
+            threadId: null,
+            topicId: 'topic1',
+          },
+          type: 'execAgentRuntime',
+        }).operationId;
+      });
+
+      act(() => {
+        const cancelled = result.current.cancelOperations({
+          agentId: 'session1',
+          scope: 'main',
+          status: 'running',
+          threadId: null,
+          topicId: 'topic1',
+          type: 'execAgentRuntime',
+        });
+        expect(cancelled).toEqual([mainOperationId!]);
+      });
+
+      expect(result.current.operations[mainOperationId!].status).toBe('cancelled');
+      expect(result.current.operations[threadOperationId!].status).toBe('running');
     });
   });
 
@@ -967,7 +1051,7 @@ describe('Operation Actions', () => {
       const { result } = renderHook(() => useChatStore());
 
       let operationId: string;
-      const asyncHandler = vi.fn(async ({ type }) => {
+      const asyncHandler = vi.fn(async () => {
         // Simulate async cleanup
         await new Promise((resolve) => setTimeout(resolve, 10));
         // Don't return anything (void)
@@ -1056,6 +1140,36 @@ describe('Operation Actions', () => {
   });
 
   describe('internal_getConversationContext', () => {
+    it('should prefer an explicit message context over the operation context', () => {
+      const { result } = renderHook(() => useChatStore());
+      const { operationId } = result.current.startOperation({
+        context: {
+          agentId: 'operation-agent',
+          isNew: true,
+          scope: 'main',
+          topicId: 'operation-topic',
+        },
+        type: 'execAgentRuntime',
+      });
+
+      const context = result.current.internal_getConversationContext({
+        context: {
+          agentId: 'projection-agent',
+          isNew: false,
+          scope: 'main',
+          topicId: 'persisted-topic',
+        },
+        operationId,
+      });
+
+      expect(context).toEqual({
+        agentId: 'projection-agent',
+        isNew: false,
+        scope: 'main',
+        topicId: 'persisted-topic',
+      });
+    });
+
     it('should return context from operationId when provided', () => {
       const { result } = renderHook(() => useChatStore());
 

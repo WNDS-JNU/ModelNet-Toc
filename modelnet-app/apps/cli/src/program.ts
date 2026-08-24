@@ -12,6 +12,7 @@ import { registerDocCommand } from './commands/doc';
 import { registerEvalCommand } from './commands/eval';
 import { registerFileCommand } from './commands/file';
 import { registerGenerateCommand } from './commands/generate';
+import { registerGoalCommand } from './commands/goal';
 import { registerHeteroCommand } from './commands/hetero';
 import { registerKbCommand } from './commands/kb';
 import { registerLoginCommand } from './commands/login';
@@ -23,6 +24,7 @@ import { registerMigrateCommand } from './commands/migrate';
 import { registerModelCommand } from './commands/model';
 import { registerNotifyCommand } from './commands/notify';
 import { registerPluginCommand } from './commands/plugin';
+import { registerProjectCommand } from './commands/project';
 import { registerProviderCommand } from './commands/provider';
 import { registerSearchCommand } from './commands/search';
 import { registerSessionGroupCommand } from './commands/session-group';
@@ -34,6 +36,7 @@ import { registerTopicCommand } from './commands/topic';
 import { registerUpdateCommand } from './commands/update';
 import { registerUserCommand } from './commands/user';
 import { registerVerifyCommand } from './commands/verify';
+import { registerAcceptanceCommands } from './commands/verifyAcceptance';
 import { cliVersion } from './pkg';
 import { executeToolCall } from './tools';
 
@@ -82,6 +85,7 @@ export function createProgram() {
   registerAgentSignalCommand(program);
   registerBotCommand(program);
   registerGenerateCommand(program);
+  registerGoalCommand(program);
   registerFileCommand(program);
   registerHeteroCommand(program);
   registerSkillCommand(program);
@@ -93,9 +97,12 @@ export function createProgram() {
   registerModelCommand(program);
   registerNotifyCommand(program);
   registerProviderCommand(program);
+  registerProjectCommand(program);
   registerPluginCommand(program);
   registerUserCommand(program);
   registerVerifyCommand(program);
+  // First-class review-loop entry: `lh acceptance list|view|feedback|accept|reject`.
+  registerAcceptanceCommands(program);
   registerConfigCommand(program);
   registerEvalCommand(program);
   registerMigrateCommand(program);

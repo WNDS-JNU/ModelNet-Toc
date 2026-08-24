@@ -10,7 +10,9 @@ import type {
   ChatVideoItem,
   CreateMessageParams,
   DBMessageItem,
+  HeterogeneousToolStateSnapshot,
   IThreadType,
+  MessageMetadata,
   MessagePluginItem,
   ModelRankItem,
   ModelUsage,
@@ -21,14 +23,17 @@ import type {
   UIChatMessage,
   UpdateMessageParams,
   UpdateMessageRAGParams,
+  WorkSummaryItem,
 } from '@lobechat/types';
 import { MessageGroupType, ThreadType } from '@lobechat/types';
 import type { TimingSink } from '@lobechat/utils';
 import {
   getDurationMs,
   logTimingSink as logTiming,
+  readAudioDurationMs,
   runTimedSinkStage as runTimedStage,
 } from '@lobechat/utils';
+import { isPlainRecord } from '@lobechat/utils/object';
 import type { HeatmapsProps } from '@lobehub/charts';
 import dayjs from 'dayjs';
 import type { SQL } from 'drizzle-orm';
@@ -44,6 +49,7 @@ import {
   isNotNull,
   isNull,
   lte,
+  ne,
   not,
   or,
   sql,
@@ -69,13 +75,27 @@ import {
   messageTranslates,
   messageTTS,
   threads,
+  users,
 } from '../schemas';
 import type { LobeChatDatabase, Transaction } from '../type';
 import { sanitizeBm25Query } from '../utils/bm25';
+import { notCopiedTranscript } from '../utils/copiedTranscript';
 import { genEndDateWhere, genRangeWhere, genStartDateWhere, genWhere } from '../utils/genWhere';
 import { idGenerator } from '../utils/idGenerator';
 import { buildWorkspacePayload, buildWorkspaceWhere } from '../utils/workspace';
 import { recomputeTopicUsage } from './topicUsage';
+import { WorkModel } from './work';
+
+/**
+ * Read the operation-final Work root id stamped on a message's metadata by the
+ * Work registry (`metadata.work.rootOperationId`). Mirrors the client-side
+ * `getOperationFinalRootId` without importing from the app layer.
+ */
+const getMessageWorkRootId = (metadata: unknown): string | undefined => {
+  const rootOperationId = (metadata as { work?: { rootOperationId?: unknown } } | null)?.work
+    ?.rootOperationId;
+  return typeof rootOperationId === 'string' && rootOperationId ? rootOperationId : undefined;
+};
 
 /**
  * Options for querying messages with relations
@@ -85,6 +105,11 @@ export interface QueryMessagesOptions {
    * Current page number (0-indexed)
    */
   current?: number;
+  /**
+   * Opt-in for `file` work summaries in the payload (see
+   * `QueryMessageParams.includeFileWorks`).
+   */
+  includeFileWorks?: boolean;
   /**
    * Number of messages per page
    */
@@ -96,6 +121,10 @@ export interface QueryMessagesOptions {
     path: string | null,
     file: { fileType: string; id?: string | null },
   ) => Promise<string>;
+  /**
+   * Skip the Work-summary assembly (see `QueryMessageParams.skipWorks`).
+   */
+  skipWorks?: boolean;
   timing?: ModelTimingContext;
   /**
    * Topic ID for MessageGroup aggregation queries
@@ -107,16 +136,57 @@ export interface QueryMessagesOptions {
   where?: SQL;
 }
 
+export interface TopicTranscriptMessage {
+  content: string | null;
+  createdAt: Date;
+  id: string;
+  messageGroupId: string | null;
+  parentId: string | null;
+  role: string;
+  threadId: string | null;
+  tools: ChatToolPayload[] | null;
+}
+
+export interface TopicTranscriptResult {
+  items: TopicTranscriptMessage[];
+  total: number;
+}
+
 export interface ModelTimingContext extends TimingSink {}
 
 interface MessageRelatedFile {
   fileType: string | null;
   id: string;
   messageId: string;
+  metadata: unknown;
   name: string | null;
   size: number | null;
   url: string;
 }
+
+const materializeChatAudioItem = ({
+  fileType,
+  id,
+  metadata,
+  name,
+  url,
+}: MessageRelatedFile): ChatAudioItem => {
+  const value = isPlainRecord(metadata) ? metadata : {};
+  const durationMs = readAudioDurationMs(metadata);
+
+  return {
+    alt: name!,
+    ...(typeof value.codec === 'string' ? { codec: value.codec } : {}),
+    ...(durationMs === undefined ? {} : { durationMs }),
+    id,
+    ...(typeof value.mimeType === 'string'
+      ? { mimeType: value.mimeType }
+      : fileType
+        ? { mimeType: fileType }
+        : {}),
+    url,
+  };
+};
 
 interface MessageChunkRelation {
   fileId: string;
@@ -144,6 +214,14 @@ interface MessageThreadRelation {
   title: string | null;
 }
 
+interface ActiveBranchSnapshot {
+  activeBranchId?: string;
+  activeBranchIndex: number;
+  metadata: Record<PropertyKey, unknown>;
+  parentId: string;
+  wasOptimistic: boolean;
+}
+
 interface MessageFileRelations {
   documentsMap: Record<string, string>;
   relatedFileList: MessageRelatedFile[];
@@ -155,6 +233,19 @@ interface CreateUserAndAssistantMessagesParams {
 }
 
 interface CreateUserAndAssistantMessagesOptions {
+  /**
+   * Ids minted by the caller (the client) for the pair. Either side may be
+   * omitted, in which case this model mints that one — an older client that
+   * sends no ids keeps working unchanged.
+   *
+   * Honouring a caller-supplied id is what lets the UI render the pair under
+   * its final ids immediately, instead of showing placeholders and re-keying
+   * them once this insert returns.
+   */
+  ids?: {
+    assistantMessageId?: string;
+    userMessageId?: string;
+  };
   timing?: ModelTimingContext;
 }
 
@@ -326,6 +417,40 @@ export class MessageModel {
   // **************** Query *************** //
 
   /**
+   * The newest user message of each given topic, keyed by topic id. Used to
+   * pre-inject recent same-channel history for IM platforms that can't read
+   * chat history at runtime (e.g. WeChat). Only `role = 'user'` rows with
+   * non-empty text are considered.
+   */
+  queryLastUserMessageByTopics = async (topicIds: string[]): Promise<Map<string, string>> => {
+    if (topicIds.length === 0) return new Map();
+
+    const rows = await this.db
+      .selectDistinctOn([messages.topicId], {
+        content: messages.content,
+        topicId: messages.topicId,
+      })
+      .from(messages)
+      .where(
+        and(
+          this.ownership(),
+          inArray(messages.topicId, topicIds),
+          eq(messages.role, 'user'),
+          isNotNull(messages.content),
+          ne(messages.content, ''),
+        ),
+      )
+      .orderBy(messages.topicId, desc(messages.createdAt));
+
+    const result = new Map<string, string>();
+    for (const row of rows) {
+      const content = (row.content ?? '').trim();
+      if (row.topicId && content) result.set(row.topicId, content);
+    }
+    return result;
+  };
+
+  /**
    * Query messages by params (high-level API)
    *
    * This is the main query method that handles common query patterns.
@@ -335,8 +460,10 @@ export class MessageModel {
     {
       agentId,
       current = 0,
+      includeFileWorks,
       pageSize = 1000,
       sessionId,
+      skipWorks,
       topicId,
       groupId,
       threadId,
@@ -382,13 +509,18 @@ export class MessageModel {
         () => this.buildThreadQueryCondition(threadId),
         { hasThreadId: true },
       );
+      // A topic thread may contain replies from delegated agents. When the topic is known,
+      // scope the complete thread to it instead of filtering those replies by the parent agent.
+      const threadScopeCondition = topicId ? this.matchTopic(topicId) : agentCondition;
       const messageItems = await this.queryWithWhere({
         current,
+        includeFileWorks,
         pageSize,
         postProcessUrl: options.postProcessUrl,
+        skipWorks,
         timing,
-        // Thread queries optionally add agent/session scope if provided
-        where: agentCondition ? and(agentCondition, threadCondition) : threadCondition,
+        topicId: topicId ?? undefined,
+        where: threadScopeCondition ? and(threadScopeCondition, threadCondition) : threadCondition,
       });
       logTiming(timing, 'db.message.query:done', {
         messageCount: messageItems.length,
@@ -409,8 +541,10 @@ export class MessageModel {
 
       const messageItems = await this.queryWithWhere({
         current,
+        includeFileWorks,
         pageSize,
         postProcessUrl: options.postProcessUrl,
+        skipWorks,
         timing,
         topicId: topicId ?? undefined,
         where: whereCondition,
@@ -422,18 +556,26 @@ export class MessageModel {
       return messageItems;
     }
 
-    // Standard query with session/topic/group filters
+    // A concrete topic is the conversation boundary and may legitimately
+    // contain messages from multiple agents (for example callAgent replies).
+    // Inbox queries have no topic, so they still require agent/session scope.
+    const conversationCondition = topicId
+      ? this.matchTopic(topicId)
+      : and(agentCondition ?? this.matchSession(sessionId), this.matchTopic(topicId));
+
+    // Standard query with conversation/topic/group filters
     const whereCondition = and(
-      agentCondition ?? this.matchSession(sessionId),
-      this.matchTopic(topicId),
+      conversationCondition,
       this.matchGroup(groupId),
       this.matchThread(threadId),
     );
 
     const messageItems = await this.queryWithWhere({
       current,
+      includeFileWorks,
       pageSize,
       postProcessUrl: options.postProcessUrl,
+      skipWorks,
       timing,
       topicId: topicId ?? undefined,
       where: whereCondition,
@@ -443,6 +585,57 @@ export class MessageModel {
       stageMs: getDurationMs(queryStartedAt),
     });
     return messageItems;
+  };
+
+  /**
+   * Return a lightweight, ownership-scoped transcript for a topic.
+   *
+   * Unlike the conversation query, this intentionally does not infer missing
+   * session, group, or thread filters as `IS NULL`, and it does not replace raw
+   * message-group members with synthetic nodes. Consumers such as the CLI need
+   * the complete persisted transcript and exact database pagination.
+   */
+  queryTopicTranscript = async ({
+    limit,
+    offset,
+    topicId,
+  }: {
+    limit: number;
+    offset: number;
+    topicId: string;
+  }): Promise<TopicTranscriptResult> => {
+    const where = and(this.ownership(), eq(messages.topicId, topicId));
+
+    const [items, totalResult] = await Promise.all([
+      this.db
+        .select({
+          content: messages.content,
+          createdAt: messages.createdAt,
+          id: messages.id,
+          messageGroupId: messages.messageGroupId,
+          parentId: messages.parentId,
+          role: messages.role,
+          threadId: messages.threadId,
+          tools: messages.tools,
+        })
+        .from(messages)
+        .where(where)
+        .orderBy(asc(messages.createdAt), asc(messages.id))
+        .limit(limit)
+        .offset(offset),
+      this.db
+        .select({ count: count(messages.id) })
+        .from(messages)
+        .where(where),
+    ]);
+
+    return {
+      items: items.map(({ tools, ...message }) => ({
+        ...message,
+        tools: Array.isArray(tools) ? (tools as ChatToolPayload[]) : null,
+      })),
+      total: totalResult[0]?.count ?? 0,
+    };
   };
 
   /**
@@ -489,7 +682,16 @@ export class MessageModel {
    * @returns Messages with all related data, including MessageGroup nodes
    */
   queryWithWhere = async (options: QueryMessagesOptions = {}): Promise<UIChatMessage[]> => {
-    const { where, current = 0, pageSize = 1000, postProcessUrl, topicId, timing } = options;
+    const {
+      where,
+      current = 0,
+      includeFileWorks,
+      pageSize = 1000,
+      postProcessUrl,
+      skipWorks,
+      topicId,
+      timing,
+    } = options;
     const totalStartedAt = Date.now();
     const offset = current * pageSize;
 
@@ -525,6 +727,17 @@ export class MessageModel {
             groupId: messages.groupId,
             agentId: messages.agentId,
             targetId: messages.targetId,
+
+            sender: {
+              // `id` MUST be the first selected field: drizzle decides whether a
+              // left-joined nested selection is null from its first column, so
+              // leading with a nullable column (avatar) collapsed every
+              // avatar-less sender to `sender: null`.
+              id: users.id,
+              avatar: users.avatar,
+              fullName: users.fullName,
+              username: users.username,
+            },
 
             tools: messages.tools,
             tool_call_id: messagePlugins.toolCallId,
@@ -562,12 +775,47 @@ export class MessageModel {
           .leftJoin(messagePlugins, eq(messagePlugins.id, messages.id))
           .leftJoin(messageTranslates, eq(messageTranslates.id, messages.id))
           .leftJoin(messageTTS, eq(messageTTS.id, messages.id))
-          .orderBy(asc(messages.createdAt))
+          .leftJoin(users, eq(users.id, messages.userId))
+          // Page from the NEWEST messages, not the oldest. `desc` + limit/offset
+          // fetches the most recent `pageSize` rows, so a topic with more than
+          // `pageSize` mainline messages keeps its latest turns (including the
+          // final answer) instead of silently dropping them — the previous
+          // `asc + limit` truncated exactly the newest batch, which is the worst
+          // possible slice for a chat transcript. The page is reversed back to
+          // ascending immediately below, so every downstream consumer is
+          // unaffected; only *which* rows are fetched changed. See.
+          .orderBy(desc(messages.createdAt), desc(messages.id))
           .limit(pageSize)
           .offset(offset),
       { current, pageSize },
     );
     logTiming(timing, 'db.message.queryWithWhere.baseSelect:rows', { rowCount: result.length });
+
+    // Restore ascending (createdAt, id) order so downstream assembly — the
+    // MessageGroup time window, work-summary anchoring, and the final merge sort —
+    // behaves exactly as before the newest-first fetch above.
+    result.reverse();
+
+    // When the newest page is truncated (it filled `pageSize`), its oldest rows
+    // may sit mid-round. The renderer roots a slice at a single parent, so a slice
+    // cut inside a round can strand sibling chains and drop them from the screen.
+    // Align the lower boundary to a round start — a mainline `user` message — so
+    // the slice is one contiguous chain. Never trim to empty: an oversized single
+    // round with no user message in view is kept whole (the proper fix for those
+    // is lazy step loading). Thread queries pass no `topicId` and are untouched.
+    //
+    // Scope: this only serves the single "most recent page" load (`current === 0`),
+    // which is the only page the chat read path ever requests — `current`/`pageSize`
+    // offset paging is dead code here (the very premise of). The trim is
+    // deliberately NOT offset-exact: the rows it drops from page 0 also fall outside
+    // page 1's `offset = pageSize` window, so a hypothetical offset walk would skip
+    // them. That is acceptable because nothing offset-walks this path; loading older
+    // history is round-cursor based (see the follow-up), which supersedes offset
+    // paging entirely and closes that gap by construction.
+    if (topicId && current === 0 && result.length >= pageSize) {
+      const firstRoundStart = result.findIndex((message) => message.role === 'user');
+      if (firstRoundStart > 0) result.splice(0, firstRoundStart);
+    }
 
     const messageIds = result.map((message) => message.id as string);
 
@@ -591,12 +839,16 @@ export class MessageModel {
       chunksList,
       messageQueriesList,
       threadData,
+      worksByMessageId,
     ] = await Promise.all([
       messageGroupNodesPromise,
       this.queryMessageFileRelations(messageIds, postProcessUrl, timing),
       this.queryMessageChunkRelations(messageIds, timing),
       this.queryMessageQueryRelations(messageIds, timing),
       this.queryMessageThreadRelations(taskMessageIds, timing),
+      skipWorks
+        ? ({} as Record<string, WorkSummaryItem[]>)
+        : this.queryMessageWorkSummaries(result, includeFileWorks, timing),
     ]);
 
     if (messageIds.length === 0 && messageGroupNodes.length === 0) {
@@ -626,12 +878,27 @@ export class MessageModel {
       'db.message.queryWithWhere.transform',
       () =>
         result.map(
-          ({ model, provider, translate, ttsId, ttsFile, ttsContentMd5, ttsVoice, ...item }) => {
+          ({
+            model,
+            provider,
+            translate,
+            ttsId,
+            ttsFile,
+            ttsContentMd5,
+            ttsVoice,
+            sender,
+            ...item
+          }) => {
             const messageQuery = messageQueriesList.find(
               (relation) => relation.messageId === item.id,
             );
             return {
               ...item,
+              // LEFT JOIN → users row is null only when the sender account was
+              // deleted (rare, since `messages.user_id` cascades on user delete).
+              // Collapse a null-id sender to `null` so the client can rely on
+              // `sender?.id` as the presence check.
+              sender: sender?.id ? sender : null,
               chunksList: chunksList
                 .filter((relation) => relation.messageId === item.id)
                 .map((c) => ({
@@ -654,14 +921,21 @@ export class MessageModel {
               fileList: fileList
                 .filter((relation) => relation.messageId === item.id)
 
-                .map<ChatFileItem>(({ id, url, size, fileType, name }) => ({
-                  content: documentsMap[id],
-                  fileType: fileType!,
-                  id,
-                  name: name!,
-                  size: size!,
-                  url,
-                })),
+                .map<ChatFileItem>(({ id, url, size, fileType, name }) =>
+                  // Nulled by the visibility guard: the viewer lost access to
+                  // the referenced file. Emit a tombstone (id only) so the UI
+                  // renders a no-access placeholder.
+                  name === null
+                    ? { fileType: '', id, inaccessible: true, name: '', size: 0, url: '' }
+                    : {
+                        content: documentsMap[id],
+                        fileType: fileType!,
+                        id,
+                        name,
+                        size: size!,
+                        url,
+                      },
+                ),
               imageList: imageList
                 .filter((relation) => relation.messageId === item.id)
 
@@ -682,10 +956,12 @@ export class MessageModel {
                 .filter((relation) => relation.messageId === item.id)
 
                 .map<ChatVideoItem>(({ id, url, name }) => ({ alt: name!, id, url })),
+              // Work summaries for this message's root operation, resolved
+              // server-side (attached only to the round's anchor message).
+              works: worksByMessageId[item.id as string],
               audioList: audioList
                 .filter((relation) => relation.messageId === item.id)
-
-                .map<ChatAudioItem>(({ id, url, name }) => ({ alt: name!, id, url })),
+                .map<ChatAudioItem>(materializeChatAudioItem),
             } as unknown as UIChatMessage;
           },
         ),
@@ -789,12 +1065,25 @@ export class MessageModel {
             fileType: files.fileType,
             id: messagesFiles.fileId,
             messageId: messagesFiles.messageId,
+            metadata: files.metadata,
             name: files.name,
             size: files.size,
             url: files.url,
           })
           .from(messagesFiles)
-          .leftJoin(files, eq(files.id, messagesFiles.fileId))
+          // Guard the referenced file, not just the relation: in a shared
+          // conversation (chat group / workspace task) the message is visible
+          // to every member, but a file its owner switched back to private
+          // must degrade to a tombstone (id only) instead of leaking
+          // name/size/url. Same anti-leak join pattern as the agent knowledge
+          // reads in agent.ts.
+          .leftJoin(
+            files,
+            and(
+              eq(files.id, messagesFiles.fileId),
+              buildWorkspaceWhere({ userId: this.userId, workspaceId: this.workspaceId }, files),
+            ),
+          )
           .where(inArray(messagesFiles.messageId, messageIds)),
       { messageCount: messageIds.length },
     );
@@ -807,20 +1096,29 @@ export class MessageModel {
       'db.message.queryWithWhere.relatedFiles.postProcess',
       () =>
         Promise.all(
-          rawRelatedFileList.map(async (file) => ({
-            ...file,
-            url: postProcessUrl
-              ? await postProcessUrl(
-                  file.url,
-                  file as unknown as { fileType: string; id?: string | null },
-                )
-              : (file.url as string),
-          })),
+          rawRelatedFileList.map(async (file) => {
+            // Tombstoned by the visibility guard above — nothing to presign.
+            if (file.name === null) return { ...file, url: '' };
+            return {
+              ...file,
+              url: postProcessUrl
+                ? await postProcessUrl(
+                    file.url,
+                    file as unknown as { fileType: string; id?: string | null },
+                  )
+                : (file.url as string),
+            };
+          }),
         ),
       { fileCount: rawRelatedFileList.length },
     );
 
-    const fileIds = relatedFileList.map((file) => file.id).filter(Boolean);
+    // Exclude tombstoned files — their parsed document content must not leak
+    // through the unguarded documents join below.
+    const fileIds = relatedFileList
+      .filter((file) => file.name !== null)
+      .map((file) => file.id)
+      .filter(Boolean);
 
     if (fileIds.length === 0) return { documentsMap: {}, relatedFileList };
 
@@ -873,7 +1171,17 @@ export class MessageModel {
           .from(messageQueryChunks)
           .leftJoin(chunks, eq(chunks.id, messageQueryChunks.chunkId))
           .leftJoin(fileChunks, eq(fileChunks.chunkId, chunks.id))
-          .innerJoin(files, eq(fileChunks.fileId, files.id))
+          // Guard the referenced file like queryMessageFileRelations: in a
+          // shared conversation, RAG reference chunks of a file its owner
+          // switched back to private must not leak filename/url/text to other
+          // members. The inner join drops those chunk rows entirely.
+          .innerJoin(
+            files,
+            and(
+              eq(fileChunks.fileId, files.id),
+              buildWorkspaceWhere({ userId: this.userId, workspaceId: this.workspaceId }, files),
+            ),
+          )
           .where(inArray(messageQueryChunks.messageId, messageIds)),
       { messageCount: messageIds.length },
     );
@@ -882,6 +1190,50 @@ export class MessageModel {
     });
 
     return chunksList;
+  };
+
+  /**
+   * Resolve Work summaries for a page of messages and key them by anchor
+   * message id — the LAST message (rows are createdAt-asc, so last occurrence)
+   * carrying each `metadata.work.rootOperationId`. Works ride the message-list
+   * payload so the in-message Works chips and the sidebar summary read from one
+   * source instead of a dedicated work-summary fetch. Attaching only to the
+   * round's last message (not every row sharing the operation) keeps the
+   * payload flat — the client re-keys by `rootOperationId`, so which row
+   * physically carries it doesn't matter.
+   */
+  private queryMessageWorkSummaries = async (
+    rows: { id: unknown; metadata: unknown }[],
+    includeFileWorks?: boolean,
+    timing?: ModelTimingContext,
+  ): Promise<Record<string, WorkSummaryItem[]>> => {
+    const anchorByRootId = new Map<string, string>();
+    for (const row of rows) {
+      const rootOperationId = getMessageWorkRootId(row.metadata);
+      if (rootOperationId) anchorByRootId.set(rootOperationId, row.id as string);
+    }
+    if (anchorByRootId.size === 0) return {};
+
+    const summaryMap = await runTimedStage(
+      timing,
+      'db.message.queryWithWhere.workSummaries',
+      () =>
+        new WorkModel(this.db, this.userId, this.workspaceId).listSummariesByRootOperations({
+          includeFileWorks,
+          rootOperationIds: Array.from(anchorByRootId.keys()),
+        }),
+      { rootOperationCount: anchorByRootId.size },
+    );
+
+    const worksByMessageId: Record<string, WorkSummaryItem[]> = {};
+    for (const [rootOperationId, messageId] of anchorByRootId) {
+      const works = summaryMap[rootOperationId];
+      if (works && works.length > 0) worksByMessageId[messageId] = works;
+    }
+    logTiming(timing, 'db.message.queryWithWhere.workSummaries:rows', {
+      messageCount: Object.keys(worksByMessageId).length,
+    });
+    return worksByMessageId;
   };
 
   private queryMessageQueryRelations = async (
@@ -1014,6 +1366,15 @@ export class MessageModel {
         agentId: messages.agentId,
         targetId: messages.targetId,
 
+        sender: {
+          // `id` MUST be the first selected field — see queryWithWhere's sender
+          // selection for why (drizzle left-join nested-object nullification).
+          id: users.id,
+          avatar: users.avatar,
+          fullName: users.fullName,
+          username: users.username,
+        },
+
         tools: messages.tools,
         tool_call_id: messagePlugins.toolCallId,
 
@@ -1043,6 +1404,7 @@ export class MessageModel {
       .leftJoin(messagePlugins, eq(messagePlugins.id, messages.id))
       .leftJoin(messageTranslates, eq(messageTranslates.id, messages.id))
       .leftJoin(messageTTS, eq(messageTTS.id, messages.id))
+      .leftJoin(users, eq(users.id, messages.userId))
       .orderBy(asc(messages.createdAt));
 
     if (result.length === 0) return [];
@@ -1057,31 +1419,25 @@ export class MessageModel {
           fileType: files.fileType,
           id: messagesFiles.fileId,
           messageId: messagesFiles.messageId,
+          metadata: files.metadata,
           name: files.name,
           size: files.size,
           url: files.url,
         })
         .from(messagesFiles)
-        .leftJoin(files, eq(files.id, messagesFiles.fileId))
+        // Same anti-leak guard as queryMessageFileRelations: tombstone files
+        // the viewer lost access to instead of leaking name/size/url.
+        .leftJoin(
+          files,
+          and(
+            eq(files.id, messagesFiles.fileId),
+            buildWorkspaceWhere({ userId: this.userId, workspaceId: this.workspaceId }, files),
+          ),
+        )
         .where(inArray(messagesFiles.messageId, messageIds)),
 
-      // 2b. Get related file chunks
-      this.db
-        .select({
-          fileId: files.id,
-          fileType: files.fileType,
-          fileUrl: files.url,
-          filename: files.name,
-          id: chunks.id,
-          messageId: messageQueryChunks.messageId,
-          similarity: messageQueryChunks.similarity,
-          text: chunks.text,
-        })
-        .from(messageQueryChunks)
-        .leftJoin(chunks, eq(chunks.id, messageQueryChunks.chunkId))
-        .leftJoin(fileChunks, eq(fileChunks.chunkId, chunks.id))
-        .innerJoin(files, eq(fileChunks.fileId, files.id))
-        .where(inArray(messageQueryChunks.messageId, messageIds)),
+      // 2b. Get related file chunks (visibility-guarded like queryWithWhere)
+      this.queryMessageChunkRelations(messageIds),
 
       // 2c. Get related message queries (RAG)
       this.db
@@ -1119,19 +1475,27 @@ export class MessageModel {
 
     // 3. Process file results
     const relatedFileList = await Promise.all(
-      rawRelatedFileList.map(async (file) => ({
-        ...file,
-        url: postProcessUrl
-          ? await postProcessUrl(
-              file.url,
-              file as unknown as { fileType: string; id?: string | null },
-            )
-          : (file.url as string),
-      })),
+      rawRelatedFileList.map(async (file) => {
+        // Tombstoned by the visibility guard above — nothing to presign.
+        if (file.name === null) return { ...file, url: '' };
+        return {
+          ...file,
+          url: postProcessUrl
+            ? await postProcessUrl(
+                file.url,
+                file as unknown as { fileType: string; id?: string | null },
+              )
+            : (file.url as string),
+        };
+      }),
     );
 
-    // Get associated document content
-    const fileIds = relatedFileList.map((file) => file.id).filter(Boolean);
+    // Get associated document content. Exclude tombstoned files — their parsed
+    // document content must not leak through the unguarded documents join.
+    const fileIds = relatedFileList
+      .filter((file) => file.name !== null)
+      .map((file) => file.id)
+      .filter(Boolean);
 
     let documentsMap: Record<string, string> = {};
 
@@ -1186,10 +1550,23 @@ export class MessageModel {
 
     // 6. Transform messages to UIChatMessage format
     return result.map(
-      ({ model, provider, translate, ttsId, ttsFile, ttsContentMd5, ttsVoice, ...item }) => {
+      ({
+        model,
+        provider,
+        translate,
+        ttsId,
+        ttsFile,
+        ttsContentMd5,
+        ttsVoice,
+        sender,
+        ...item
+      }) => {
         const messageQuery = messageQueriesList.find((relation) => relation.messageId === item.id);
         return {
           ...item,
+          // Same presence contract as queryWithWhere: collapse a null-id sender
+          // (deleted account) to `null` so clients can rely on `sender?.id`.
+          sender: sender?.id ? sender : null,
           chunksList: chunksList
             .filter((relation) => relation.messageId === item.id)
             .map((c) => ({
@@ -1211,14 +1588,21 @@ export class MessageModel {
           },
           fileList: fileList
             .filter((relation) => relation.messageId === item.id)
-            .map<ChatFileItem>(({ id, url, size, fileType, name }) => ({
-              content: documentsMap[id],
-              fileType: fileType!,
-              id,
-              name: name!,
-              size: size!,
-              url,
-            })),
+            .map<ChatFileItem>(({ id, url, size, fileType, name }) =>
+              // Nulled by the visibility guard: the viewer lost access to the
+              // referenced file. Emit a tombstone (id only) so the UI renders
+              // a no-access placeholder.
+              name === null
+                ? { fileType: '', id, inaccessible: true, name: '', size: 0, url: '' }
+                : {
+                    content: documentsMap[id],
+                    fileType: fileType!,
+                    id,
+                    name,
+                    size: size!,
+                    url,
+                  },
+            ),
           imageList: imageList
             .filter((relation) => relation.messageId === item.id)
             .map<ChatImageItem>(({ id, url, name }) => ({ alt: name!, id, url })),
@@ -1239,7 +1623,7 @@ export class MessageModel {
             .map<ChatVideoItem>(({ id, url, name }) => ({ alt: name!, id, url })),
           audioList: audioList
             .filter((relation) => relation.messageId === item.id)
-            .map<ChatAudioItem>(({ id, url, name }) => ({ alt: name!, id, url })),
+            .map<ChatAudioItem>(materializeChatAudioItem),
         } as unknown as UIChatMessage;
       },
     );
@@ -1459,6 +1843,32 @@ export class MessageModel {
       where: and(eq(messages.id, id), this.ownership()),
     });
   };
+
+  findByClientId = async (clientId: string) => {
+    return this.db.query.messages.findFirst({
+      where: and(eq(messages.clientId, clientId), this.ownership()),
+    });
+  };
+
+  findLatestAssistantMessageByThread = async ({
+    agentId,
+    threadId,
+    topicId,
+  }: {
+    agentId: string;
+    threadId: string;
+    topicId: string;
+  }) =>
+    this.db.query.messages.findFirst({
+      orderBy: [desc(messages.createdAt), desc(messages.id)],
+      where: and(
+        this.ownership(),
+        eq(messages.agentId, agentId),
+        eq(messages.topicId, topicId),
+        eq(messages.threadId, threadId),
+        eq(messages.role, 'assistant'),
+      ),
+    });
 
   /**
    * Resolve the `role='verify'` delivery-checker card for an Agent Run (created
@@ -1720,7 +2130,7 @@ export class MessageModel {
         id: messages.model,
       })
       .from(messages)
-      .where(and(this.ownership(), isNotNull(messages.model)))
+      .where(and(this.ownership(), isNotNull(messages.model), notCopiedTranscript()))
       .having(({ count }) => gt(count, 0))
       .groupBy(messages.model)
       .orderBy(desc(sql`count`), asc(messages.model))
@@ -1808,6 +2218,7 @@ export class MessageModel {
         genWhere([
           this.ownership(),
           eq(messages.role, 'assistant'),
+          notCopiedTranscript(),
           genRangeWhere(
             [startDate.format('YYYY-MM-DD'), endDate.add(1, 'day').format('YYYY-MM-DD')],
             messages.createdAt,
@@ -1915,6 +2326,8 @@ export class MessageModel {
   ) => {
     // Ensure group message does not populate sessionId
     const normalizedMessage = message.groupId ? { ...message, sessionId: null } : message;
+    const { usage: legacyUsage, ...metadata } =
+      (normalizedMessage.metadata as Record<string, any> | undefined) || {};
 
     return buildWorkspacePayload(
       { userId: this.userId, workspaceId: this.workspaceId },
@@ -1925,14 +2338,13 @@ export class MessageModel {
         // TODO: remove this when the client is updated
         createdAt: createdAt ? new Date(createdAt) : undefined,
         id,
+        metadata: normalizedMessage.metadata ? metadata : undefined,
         model: fromModel,
         provider: fromProvider,
         updatedAt: updatedAt ? new Date(updatedAt) : undefined,
         // Promote token usage into the dedicated `usage` column, preferring a
         // top-level `usage` over the legacy `metadata.usage`.
-        usage:
-          normalizedMessage.usage ??
-          (normalizedMessage.metadata as { usage?: ModelUsage } | undefined)?.usage,
+        usage: normalizedMessage.usage ?? (legacyUsage as ModelUsage | undefined),
       },
     );
   };
@@ -2064,10 +2476,10 @@ export class MessageModel {
 
   createUserAndAssistantMessages = async (
     { userMessage, assistantMessage }: CreateUserAndAssistantMessagesParams,
-    { timing }: CreateUserAndAssistantMessagesOptions = {},
+    { ids, timing }: CreateUserAndAssistantMessagesOptions = {},
   ): Promise<{ assistantMessage: DBMessageItem; userMessage: DBMessageItem }> => {
-    const userMessageId = this.genId();
-    const assistantMessageId = this.genId();
+    const userMessageId = ids?.userMessageId ?? this.genId();
+    const assistantMessageId = ids?.assistantMessageId ?? this.genId();
     const createdAt = Date.now();
     const defaultUserCreatedAt = createdAt;
     const defaultAssistantCreatedAt = createdAt + 1;
@@ -2176,19 +2588,15 @@ export class MessageModel {
     { imageList, metadata, usage, ...message }: Partial<UpdateMessageParams>,
     timing?: ModelTimingContext,
   ): Promise<{ success: boolean }> => {
-    // Promote token usage into the dedicated `usage` column. Prefer a top-level
-    // `usage` payload, falling back to `metadata.usage` so existing writers
-    // (Gateway / hetero-agent executors) keep populating the column without
-    // changes. `metadata.usage` is still written for backward-compatible reads.
-    const usageToWrite = usage ?? (metadata as { usage?: ModelUsage } | undefined)?.usage;
-    // Keep `metadata.usage` dual-written even when usage arrives as a top-level
-    // param (with no metadata payload) — legacy readers / rollback paths still
-    // consume it during the transition. Folding the resolved usage into the
-    // patch also keeps it consistent with the column when both are sent.
-    const metadataPatch =
-      metadata || usageToWrite
-        ? { ...metadata, ...(usageToWrite && { usage: usageToWrite }) }
-        : undefined;
+    // Accept legacy callers that still send `metadata.usage`, but persist usage
+    // exclusively in the dedicated top-level column.
+    const { usage: legacyUsage, ...metadataPatch } = (metadata as Record<string, any>) || {};
+    const usageToWrite = usage ?? (legacyUsage as ModelUsage | undefined);
+    const shouldUpdateMetadata = !!metadata || !!usageToWrite;
+    // A patch that matches no row is a lost write, not a no-op: the caller asked
+    // to persist content onto `id` and it went nowhere. Batched writers key their
+    // retry ledger off this flag, so reporting success here silently drops data.
+    let matchedRow = false;
     try {
       await runTimedStage(
         timing,
@@ -2213,10 +2621,10 @@ export class MessageModel {
               );
             }
 
-            // 2. Handle metadata merge if there's a metadata payload or a
-            // top-level usage to fold back into `metadata.usage`.
+            // 2. Merge non-usage metadata. A usage-bearing update also removes
+            // any legacy `metadata.usage` left on the existing row.
             let mergedMetadata: Record<string, any> | undefined;
-            if (metadataPatch) {
+            if (shouldUpdateMetadata) {
               const [existingMessage] = await runTimedStage(
                 timing,
                 'db.message.update.metadata.select',
@@ -2227,7 +2635,9 @@ export class MessageModel {
                     .where(and(eq(messages.id, id), this.ownership())),
               );
               mergedMetadata = merge(existingMessage?.metadata || {}, metadataPatch);
+              if (usageToWrite && mergedMetadata) delete mergedMetadata.usage;
             }
+            const metadataToWrite = mergedMetadata;
 
             const [updated] = await runTimedStage(
               timing,
@@ -2237,13 +2647,15 @@ export class MessageModel {
                   .update(messages)
                   .set({
                     ...message,
-                    ...(mergedMetadata && { metadata: mergedMetadata }),
+                    ...(metadataToWrite && { metadata: metadataToWrite }),
                     ...(usageToWrite && { usage: usageToWrite }),
                   })
                   .where(and(eq(messages.id, id), this.ownership()))
                   .returning({ topicId: messages.topicId }),
               { hasMetadata: !!metadataPatch, valueKeys: Object.keys(message) },
             );
+
+            matchedRow = !!updated;
 
             if (
               updated?.topicId && // When this write carries token usage (assistant finalize / hetero
@@ -2262,10 +2674,15 @@ export class MessageModel {
           }),
         {
           hasImageList: !!imageList?.length,
-          hasMetadata: !!metadataPatch,
+          hasMetadata: shouldUpdateMetadata,
           valueKeys: Object.keys(message),
         },
       );
+
+      if (!matchedRow) {
+        console.error(`Update message error: no message matched id ${id}`);
+        return { success: false };
+      }
 
       return { success: true };
     } catch (error) {
@@ -2281,10 +2698,9 @@ export class MessageModel {
 
     if (!item) return;
 
-    const mergedMetadata = merge(item.metadata || {}, metadata);
-    // Keep the dedicated `usage` column in sync when the merged metadata carries
-    // token usage, preferring it over the existing column value.
-    const usageToWrite = (metadata as { usage?: ModelUsage } | undefined)?.usage;
+    const { usage: usageToWrite, ...metadataPatch } = metadata as Record<string, any>;
+    const mergedMetadata = merge(item.metadata || {}, metadataPatch);
+    if (usageToWrite) delete mergedMetadata.usage;
 
     return this.db
       .update(messages)
@@ -2353,7 +2769,9 @@ export class MessageModel {
    * This is used by onboarding analytics to reconstruct successful assistant
    * creation results before the topic is moved into inbox.
    */
-  listMessagePluginsByTopic = async (topicId: string): Promise<MessagePluginItem[]> => {
+  listMessagePluginsByTopic = async (
+    topicId: string,
+  ): Promise<Array<MessagePluginItem & { metadata?: MessageMetadata }>> => {
     const rows = await this.db
       .select({
         apiName: messagePlugins.apiName,
@@ -2363,6 +2781,7 @@ export class MessageModel {
         id: messagePlugins.id,
         identifier: messagePlugins.identifier,
         intervention: messagePlugins.intervention,
+        metadata: messages.metadata,
         state: messagePlugins.state,
         toolCallId: messagePlugins.toolCallId,
         type: messagePlugins.type,
@@ -2381,11 +2800,243 @@ export class MessageModel {
       id: row.id,
       identifier: row.identifier ?? undefined,
       intervention: row.intervention ?? undefined,
+      metadata: row.metadata ?? undefined,
       state: row.state ?? undefined,
       toolCallId: row.toolCallId ?? undefined,
       type: row.type ?? 'default',
       userId: row.userId,
     }));
+  };
+
+  /**
+   * List the tool/plugin rows produced by ONE agent operation, for the
+   * per-operation file-edit scan.
+   *
+   * An operation has no direct foreign key on `message_plugins`, so its rows are
+   * bracketed two ways, OR-ed together:
+   * 1. Time window — same `topicId` + `threadId`, with the owning message's
+   *    `createdAt` inside `[startedAt, completedAt]` (`completedAt` falls back to
+   *    now for an op still finalizing). The primary path for in-process runs.
+   * 2. Heterogeneous match — the message carries
+   *    `metadata.heterogeneousToolStateOperationId === operationId` directly,
+   *    which a CLI-backed run stamps regardless of when the row lands. Mirrors
+   *    the jsonb predicate in {@link findVerifyMessageByOperationId}.
+   *
+   * TRADE-OFF (v1): the time window is racy — two operations running
+   * concurrently in the SAME topic+thread can bleed each other's tool calls into
+   * the window. Accepted for now; the heterogeneous path is exact where it
+   * applies. Rows carry `createdAt` so the caller can globally order tool calls
+   * merged across an operation tree before folding them.
+   */
+  listMessagePluginsForOperation = async (params: {
+    completedAt?: Date | null;
+    operationId: string;
+    startedAt: Date;
+    threadId?: string | null;
+    topicId: string;
+  }): Promise<Array<MessagePluginItem & { content?: string; createdAt: Date }>> => {
+    const completedAt = params.completedAt ?? new Date();
+
+    const withinWindow = and(
+      eq(messages.topicId, params.topicId),
+      params.threadId ? eq(messages.threadId, params.threadId) : isNull(messages.threadId),
+      gte(messages.createdAt, params.startedAt),
+      lte(messages.createdAt, completedAt),
+    );
+
+    // The two branches are resolved SEPARATELY — never OR-ed into one WHERE (an
+    // `... AND (withinWindow OR heteroMatch)` is unindexable and seq-scans every
+    // plugin row the user owns). They are also SHAPED differently on purpose:
+    //
+    // - Time window: one index-friendly range scan joined to its plugin rows.
+    // - Heterogeneous match: resolved id-FIRST, not as a plugin JOIN. The
+    //   `metadata->>'heterogeneousToolStateOperationId'` predicate carries a 0.5%
+    //   default selectivity estimate, so joining it to `message_plugins` makes the
+    //   planner scan / nested-loop the user's ENTIRE plugin history (100k+ rows,
+    //   100s+ per call for heavy users — it returns ~0 rows but pays the full scan
+    //   every time, since most ops never stamp the key). Looking up the few
+    //   matching message ids in a JOIN-free query first, then fetching those rows
+    //   by primary key, leaves the planner no join to mis-order: the lookup is
+    //   single-table (index-served once the metadata expression is indexed; a
+    //   bounded scan otherwise) and the fetch is a pure PK access. Kept
+    //   topic-agnostic to preserve the prior behaviour exactly — a late CLI row
+    //   can land outside the op's window (and, rarely, its topic).
+    const projection = {
+      apiName: messagePlugins.apiName,
+      arguments: messagePlugins.arguments,
+      clientId: messagePlugins.clientId,
+      // The tool message's text body. Heterogeneous CLI adapters (claude-code
+      // Bash) persist the command's stdout here rather than in a structured
+      // `state` field, and the completion-time github Work scan reads the gh
+      // CLI's printed entity URL from it.
+      content: messages.content,
+      createdAt: messages.createdAt,
+      error: messagePlugins.error,
+      id: messagePlugins.id,
+      identifier: messagePlugins.identifier,
+      intervention: messagePlugins.intervention,
+      state: messagePlugins.state,
+      toolCallId: messagePlugins.toolCallId,
+      type: messagePlugins.type,
+      userId: messagePlugins.userId,
+    };
+
+    const scan = (condition: SQL | undefined) =>
+      this.db
+        .select(projection)
+        .from(messagePlugins)
+        .innerJoin(messages, eq(messagePlugins.id, messages.id))
+        .where(and(this.ownership(), this.pluginsOwnership(), condition));
+
+    const fetchHeterogeneous = async () => {
+      const idRows = await this.db
+        .select({ id: messages.id })
+        .from(messages)
+        .where(
+          and(
+            this.ownership(),
+            sql`${messages.metadata}->>'heterogeneousToolStateOperationId' = ${params.operationId}`,
+          ),
+        );
+      const ids = idRows.map((row) => row.id);
+      if (ids.length === 0) return [];
+      return scan(inArray(messagePlugins.id, ids));
+    };
+
+    const [windowRows, heterogeneousRows] = await Promise.all([
+      scan(withinWindow),
+      fetchHeterogeneous(),
+    ]);
+
+    const byId = new Map<string, (typeof windowRows)[number]>();
+    for (const row of windowRows) byId.set(row.id, row);
+    for (const row of heterogeneousRows) if (!byId.has(row.id)) byId.set(row.id, row);
+
+    const rows = [...byId.values()].sort(
+      (a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id),
+    );
+
+    return rows.map((row) => ({
+      apiName: row.apiName ?? undefined,
+      arguments: row.arguments ?? undefined,
+      clientId: row.clientId ?? undefined,
+      content: row.content ?? undefined,
+      createdAt: row.createdAt,
+      error: row.error ?? undefined,
+      id: row.id,
+      identifier: row.identifier ?? undefined,
+      intervention: row.intervention ?? undefined,
+      state: row.state ?? undefined,
+      toolCallId: row.toolCallId ?? undefined,
+      type: row.type ?? 'default',
+      userId: row.userId,
+    }));
+  };
+
+  /**
+   * Load specific tool-call rows by their message ids, ownership-scoped and
+   * pinned to one topic. Serves the LOCAL hetero run work scan
+   * (`work.registerShellWorksForRun`): a desktop-local CLI run has no
+   * `agent_operations` row, so the client reports the exact tool message ids it
+   * persisted instead of the server reconstructing an operation window. The
+   * topic pin means a caller can never scan rows outside the conversation it
+   * claims to complete.
+   */
+  listMessagePluginsByIds = async (params: {
+    ids: string[];
+    topicId: string;
+  }): Promise<Array<MessagePluginItem & { content?: string; createdAt: Date }>> => {
+    if (params.ids.length === 0) return [];
+
+    const rows = await this.db
+      .select({
+        apiName: messagePlugins.apiName,
+        arguments: messagePlugins.arguments,
+        clientId: messagePlugins.clientId,
+        // The tool message's text body — claude-code Bash persists the
+        // command's stdout here (see listMessagePluginsForOperation).
+        content: messages.content,
+        createdAt: messages.createdAt,
+        error: messagePlugins.error,
+        id: messagePlugins.id,
+        identifier: messagePlugins.identifier,
+        intervention: messagePlugins.intervention,
+        state: messagePlugins.state,
+        toolCallId: messagePlugins.toolCallId,
+        type: messagePlugins.type,
+        userId: messagePlugins.userId,
+      })
+      .from(messagePlugins)
+      .innerJoin(messages, eq(messagePlugins.id, messages.id))
+      .where(
+        and(
+          inArray(messagePlugins.id, params.ids),
+          eq(messages.topicId, params.topicId),
+          this.ownership(),
+          this.pluginsOwnership(),
+        ),
+      );
+
+    const sorted = [...rows].sort(
+      (a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id),
+    );
+
+    return sorted.map((row) => ({
+      apiName: row.apiName ?? undefined,
+      arguments: row.arguments ?? undefined,
+      clientId: row.clientId ?? undefined,
+      content: row.content ?? undefined,
+      createdAt: row.createdAt,
+      error: row.error ?? undefined,
+      id: row.id,
+      identifier: row.identifier ?? undefined,
+      intervention: row.intervention ?? undefined,
+      state: row.state ?? undefined,
+      toolCallId: row.toolCallId ?? undefined,
+      type: row.type ?? 'default',
+      userId: row.userId,
+    }));
+  };
+
+  /**
+   * Resolve the tool result message id for a toolCallId — the stable identifier
+   * the model emitted for the call. Lets server-side services push async state
+   * onto a tool card when all they hold is the call id recorded at creation
+   * time (e.g. the goal loop updating the `createGoal` card via
+   * `task.context.origin.toolCallId`).
+   */
+  findToolMessageIdByToolCallId = async (
+    toolCallId: string,
+    /**
+     * Restrict the match to calls made by one assistant message.
+     *
+     * `tool_call_id` is provider-supplied and only unique in practice — the
+     * column carries a plain index, not a unique constraint. Callers that act
+     * on the row (rather than just reading it) should scope the match, or a
+     * reused id from another turn resolves to an unrelated historical result.
+     */
+    parentId?: string,
+  ): Promise<string | null> => {
+    const rows = parentId
+      ? await this.db
+          .select({ id: messagePlugins.id })
+          .from(messagePlugins)
+          .innerJoin(messages, eq(messages.id, messagePlugins.id))
+          .where(
+            and(
+              eq(messagePlugins.toolCallId, toolCallId),
+              eq(messages.parentId, parentId),
+              this.pluginsOwnership(),
+            ),
+          )
+          .limit(1)
+      : await this.db
+          .select({ id: messagePlugins.id })
+          .from(messagePlugins)
+          .where(and(eq(messagePlugins.toolCallId, toolCallId), this.pluginsOwnership()))
+          .limit(1);
+
+    return rows[0]?.id ?? null;
   };
 
   /**
@@ -2396,36 +3047,89 @@ export class MessageModel {
     id: string,
     params: {
       content?: string;
+      heterogeneousToolState?: HeterogeneousToolStateSnapshot;
       metadata?: Record<string, any>;
       pluginError?: any;
       pluginState?: Record<string, any>;
     },
-  ): Promise<{ success: boolean }> => {
-    const { content, metadata, pluginState, pluginError } = params;
+  ): Promise<{ applied: boolean; snapshotSeq?: number; success: boolean }> => {
+    const { content, heterogeneousToolState, metadata, pluginState, pluginError } = params;
+
+    // `undefined` while no branch has looked for the row yet; see `update` above
+    // for why a write that matches nothing must not report success.
+    let matchedRow: boolean | undefined;
+    let applied = true;
+    let snapshotSeq: number | undefined;
 
     try {
       await this.db.transaction(async (trx) => {
+        let existingMetadata: Record<string, any> | undefined;
+
+        if (metadata !== undefined || heterogeneousToolState !== undefined) {
+          const baseQuery = trx
+            .select({ metadata: messages.metadata })
+            .from(messages)
+            .where(and(eq(messages.id, id), this.ownership()))
+            .limit(1);
+          const [existingMessage] = heterogeneousToolState
+            ? await baseQuery.for('update')
+            : await baseQuery;
+
+          matchedRow = !!existingMessage;
+          if (!existingMessage) return;
+
+          existingMetadata = (existingMessage.metadata ?? {}) as Record<string, any>;
+
+          if (heterogeneousToolState) {
+            const currentOperationId = existingMetadata.heterogeneousToolStateOperationId;
+            const rawCurrentSeq = existingMetadata.heterogeneousToolStateSeq;
+            const currentSeq =
+              currentOperationId === heterogeneousToolState.operationId &&
+              typeof rawCurrentSeq === 'number' &&
+              Number.isFinite(rawCurrentSeq)
+                ? rawCurrentSeq
+                : 0;
+
+            if (heterogeneousToolState.snapshotSeq <= currentSeq) {
+              applied = false;
+              snapshotSeq = currentSeq;
+              return;
+            }
+
+            snapshotSeq = heterogeneousToolState.snapshotSeq;
+          }
+        }
+
         // Update messages table (content, metadata)
-        if (content !== undefined || metadata !== undefined) {
+        if (
+          content !== undefined ||
+          metadata !== undefined ||
+          heterogeneousToolState !== undefined
+        ) {
           const messageUpdateData: Record<string, any> = {};
 
           if (content !== undefined) {
             messageUpdateData.content = content;
           }
 
-          if (metadata !== undefined) {
-            // Need to merge with existing metadata
-            const existingMessage = await trx.query.messages.findFirst({
-              where: and(eq(messages.id, id), this.ownership()),
-            });
-            messageUpdateData.metadata = merge(existingMessage?.metadata || {}, metadata);
+          if (metadata !== undefined || heterogeneousToolState !== undefined) {
+            const mergedMetadata = merge(existingMetadata || {}, metadata || {});
+            messageUpdateData.metadata = heterogeneousToolState
+              ? merge(mergedMetadata, {
+                  heterogeneousToolStateOperationId: heterogeneousToolState.operationId,
+                  heterogeneousToolStateSeq: heterogeneousToolState.snapshotSeq,
+                })
+              : mergedMetadata;
           }
 
           if (Object.keys(messageUpdateData).length > 0) {
-            await trx
+            const [updated] = await trx
               .update(messages)
               .set(messageUpdateData)
-              .where(and(eq(messages.id, id), this.ownership()));
+              .where(and(eq(messages.id, id), this.ownership()))
+              .returning({ id: messages.id });
+
+            matchedRow = !!updated;
           }
         }
 
@@ -2435,11 +3139,17 @@ export class MessageModel {
             where: and(eq(messagePlugins.id, id), this.pluginsOwnership()),
           });
 
+          // A plugin-only patch never touches `messages`, so the plugin row is
+          // the only evidence the tool message exists.
+          if (matchedRow === undefined) matchedRow = !!pluginItem;
+
           if (pluginItem) {
             const pluginUpdateData: Record<string, any> = {};
 
             if (pluginState !== undefined) {
-              pluginUpdateData.state = merge(pluginItem.state || {}, pluginState);
+              pluginUpdateData.state = heterogeneousToolState
+                ? pluginState
+                : merge(pluginItem.state || {}, pluginState);
             }
 
             if (pluginError !== undefined) {
@@ -2452,14 +3162,21 @@ export class MessageModel {
                 .set(pluginUpdateData)
                 .where(and(eq(messagePlugins.id, id), this.pluginsOwnership()));
             }
+          } else if (heterogeneousToolState) {
+            throw new Error(`No tool plugin matched id ${id}`);
           }
         }
       });
 
-      return { success: true };
+      if (matchedRow === false) {
+        console.error(`Update tool message error: no tool message matched id ${id}`);
+        return { applied: false, success: false };
+      }
+
+      return { applied, snapshotSeq, success: true };
     } catch (error) {
       console.error('Update tool message error:', error);
-      return { success: false };
+      return { applied: false, success: false };
     }
   };
 
@@ -2551,13 +3268,49 @@ export class MessageModel {
    * needed: a topic runs at most one operation at a time, so the latest spine
    * message IS this run's continuation point.
    *
-   * Excludes `role:'tool'` (inline children) and signal-tagged assistants
-   * (`metadata->'signal'`), which are tool-child callbacks — anchoring a normal
-   * turn onto a callback would orphan it under the read side's tool-only signal
-   * collection.
+   * Excludes `role:'tool'` (inline children) and TOOLLESS signal-tagged
+   * assistants (`metadata->'signal'` with no tools), which are tool-child
+   * callbacks — anchoring a normal turn onto a callback would orphan it under
+   * the read side's tool-only signal collection. A signal turn that DID emit
+   * tools is back on the main chain and stays a spine candidate.
    */
   getLastMainThreadSpineMessageId = async (topicId: string): Promise<string | undefined> =>
     this.getLatestSpineMessageId({ topicId, threadId: null });
+
+  /**
+   * Whether `descendantId` belongs to the branch rooted at `ancestorId`.
+   *
+   * Used when reconciling a client-selected conversation tail with the latest
+   * server row: a newer row may be a sibling from a historical callback fork,
+   * not an advancement of the branch the user is viewing.
+   */
+  isMessageDescendantOf = async ({
+    ancestorId,
+    descendantId,
+    topicId,
+  }: {
+    ancestorId: string;
+    descendantId: string;
+    topicId: string;
+  }): Promise<boolean> => {
+    const result = await this.db.execute(sql`
+      WITH RECURSIVE ancestors(id, parent_id) AS (
+        SELECT id, parent_id
+        FROM messages
+        WHERE id = ${descendantId}
+          AND topic_id = ${topicId}
+          AND ${this.ownership()}
+        UNION
+        SELECT parent.id, parent.parent_id
+        FROM messages parent
+        JOIN ancestors child ON parent.id = child.parent_id
+        WHERE parent.topic_id = ${topicId}
+      )
+      SELECT 1 AS hit FROM ancestors WHERE id = ${ancestorId} LIMIT 1
+    `);
+
+    return result.rows.length > 0;
+  };
 
   /**
    * Thread-aware variant of {@link getLastMainThreadSpineMessageId}: the id of
@@ -2565,10 +3318,11 @@ export class MessageModel {
    * NOT a signal-tagged reactive turn) in a topic, scoped to the main thread
    * (`threadId IS NULL`) or to a specific thread.
    *
-   * Like the main-thread query it EXCLUDES `role:'tool'` and signal-tagged
-   * assistants: tools are inline children of their assistant turn, so the
-   * conversation head a new turn parents off is the assistant, never the tool
-   * result that landed under it.
+   * Like the main-thread query it EXCLUDES `role:'tool'` and TOOLLESS
+   * signal-tagged assistants: tools are inline children of their assistant turn,
+   * so the conversation head a new turn parents off is the assistant, never the
+   * tool result that landed under it. A tools-bearing signal turn is main-chain
+   * and remains a spine candidate.
    *
    * Used by `sendMessageInServer` to make `parentId` server-authoritative and
    * close the concurrent-append race: the client computes `parentId` from a
@@ -2592,7 +3346,63 @@ export class MessageModel {
           eq(messages.topicId, topicId),
           not(eq(messages.role, 'tool')),
           threadId ? eq(messages.threadId, threadId) : isNull(messages.threadId),
-          sql`${messages.metadata} -> 'signal' IS NULL`,
+          // Exclude signal-tagged assistants — BUT only the toolless ones. The
+          // writer tags a turn `signal` at stream_start before it knows the turn
+          // will call tools; a signal turn that DOES emit a tool_use is really
+          // back on the main chain (see `reduceToolsChunk`'s spine promotion),
+          // so it must stay a spine candidate or a cold replica re-forks the
+          // wire off the pre-signal turn. Match the read side, which likewise
+          // treats a tools-bearing message as non-signal (`getMessageSignal`).
+          //
+          // Key existence (`jsonb_exists`) is used instead of `metadata -> 'signal'
+          // IS NULL`, which crashes the serverless Postgres engine as a WHERE
+          // predicate (rt_fetch out-of-bounds, SQLSTATE XX000 — the `->` operator
+          // only survives in SELECT/ORDER BY). Toolless is expressed with plain
+          // jsonb equality (`= '[]'` / IS NULL) rather than `jsonb_array_length`,
+          // which is unproven on this engine as a qual.
+          sql`NOT (
+            COALESCE(jsonb_exists(${messages.metadata}, 'signal'), false)
+            AND (${messages.tools} IS NULL OR ${messages.tools} = '[]'::jsonb)
+          )`,
+          this.ownership(),
+        ),
+      )
+      .orderBy(desc(messages.createdAt))
+      .limit(1);
+
+    return row?.id;
+  };
+
+  /**
+   * Fallback anchor for {@link getLatestSpineMessageId}: the latest non-tool
+   * message in a topic/thread, WITHOUT the toolless-signal exclusion.
+   *
+   * A topic whose main thread holds nothing but toolless signal turns has no
+   * spine candidate, so the spine lookup returns undefined and the caller would
+   * persist the new turn with `parentId: undefined` — a second root that forks
+   * the conversation tree. The renderer walks that forest depth-first, so an
+   * earlier root's long-running subtree gets emitted before a later root and the
+   * newest reply surfaces ABOVE older messages.
+   *
+   * `role:'tool'` stays excluded: tool results are inline children of their
+   * assistant turn, and anchoring a normal turn onto one orphans it under the
+   * read side's tool-only signal collection.
+   */
+  getLatestNonToolMessageId = async ({
+    topicId,
+    threadId,
+  }: {
+    threadId?: string | null;
+    topicId: string;
+  }): Promise<string | undefined> => {
+    const [row] = await this.db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.topicId, topicId),
+          not(eq(messages.role, 'tool')),
+          threadId ? eq(messages.threadId, threadId) : isNull(messages.threadId),
           this.ownership(),
         ),
       )
@@ -2625,18 +3435,22 @@ export class MessageModel {
   };
 
   updateTTS = async (id: string, tts: Partial<ChatTTS>) => {
+    const { contentMd5, file, voice } = tts;
+    // Older clients sent an empty payload when starting TTS, so keep this backward-compatible.
+    if ([contentMd5, file, voice].every((value) => value === undefined)) return;
+
     const result = await this.db.query.messageTTS.findFirst({
       where: and(eq(messageTTS.id, id), this.ttsOwnership()),
     });
 
-    // If the message does not exist in the translate table, insert it
+    // If the message does not exist in the TTS table, insert it
     if (!result) {
       return this.db.insert(messageTTS).values({
-        contentMd5: tts.contentMd5,
-        fileId: tts.file,
+        contentMd5,
+        fileId: file,
         id,
         userId: this.userId,
-        voice: tts.voice,
+        voice,
         workspaceId: this.workspaceId ?? null,
       });
     }
@@ -2644,7 +3458,7 @@ export class MessageModel {
     // or just update the existing one
     return this.db
       .update(messageTTS)
-      .set({ contentMd5: tts.contentMd5, fileId: tts.file, voice: tts.voice })
+      .set({ contentMd5, fileId: file, voice })
       .where(and(eq(messageTTS.id, id), this.ttsOwnership()));
   };
 
@@ -2663,6 +3477,105 @@ export class MessageModel {
 
   // **************** Delete *************** //
 
+  /**
+   * Preserve the selected branch by identity across a deletion. Branch metadata
+   * stores a positional index, while deleting or reparenting children can change
+   * that index space. If the selected branch itself is deleted, remove the stale
+   * index so conversation-flow can infer the remaining active branch instead of
+   * mistaking `index === branchCount` for an optimistic branch creation.
+   */
+  private captureActiveBranchSnapshots = async (
+    tx: Transaction,
+    parentIds: string[],
+  ): Promise<ActiveBranchSnapshot[]> => {
+    const uniqueParentIds = [...new Set(parentIds)];
+    if (uniqueParentIds.length === 0) return [];
+
+    const parentRows = await tx
+      .select({ id: messages.id, metadata: messages.metadata })
+      .from(messages)
+      .where(and(this.ownership(), inArray(messages.id, uniqueParentIds)));
+    const branchIdsByParent = await this.queryDirectBranchIds(tx, uniqueParentIds);
+    const snapshots: ActiveBranchSnapshot[] = [];
+
+    for (const parent of parentRows) {
+      if (!isPlainRecord(parent.metadata)) continue;
+
+      const activeBranchIndex = parent.metadata.activeBranchIndex;
+      if (typeof activeBranchIndex !== 'number' || activeBranchIndex < 0) continue;
+
+      const branchIds = branchIdsByParent.get(parent.id) ?? [];
+      snapshots.push({
+        activeBranchId: branchIds[activeBranchIndex],
+        activeBranchIndex,
+        metadata: parent.metadata,
+        parentId: parent.id,
+        wasOptimistic: activeBranchIndex === branchIds.length,
+      });
+    }
+
+    return snapshots;
+  };
+
+  private queryDirectBranchIds = async (tx: Transaction, parentIds: string[]) => {
+    const branchRows = await tx
+      .select({ id: messages.id, parentId: messages.parentId })
+      .from(messages)
+      .where(
+        and(
+          this.ownership(),
+          inArray(messages.parentId, parentIds),
+          not(eq(messages.role, 'tool')),
+        ),
+      )
+      .orderBy(asc(messages.createdAt), asc(messages.id));
+    const branchIdsByParent = new Map<string, string[]>();
+
+    for (const branch of branchRows) {
+      if (!branch.parentId) continue;
+      const branchIds = branchIdsByParent.get(branch.parentId) ?? [];
+      branchIds.push(branch.id);
+      branchIdsByParent.set(branch.parentId, branchIds);
+    }
+
+    return branchIdsByParent;
+  };
+
+  private reconcileActiveBranchSnapshots = async (
+    tx: Transaction,
+    snapshots: ActiveBranchSnapshot[],
+  ) => {
+    if (snapshots.length === 0) return;
+
+    const branchIdsByParent = await this.queryDirectBranchIds(
+      tx,
+      snapshots.map((snapshot) => snapshot.parentId),
+    );
+
+    for (const snapshot of snapshots) {
+      const branchIds = branchIdsByParent.get(snapshot.parentId) ?? [];
+      const survivingBranchIndex = snapshot.activeBranchId
+        ? branchIds.indexOf(snapshot.activeBranchId)
+        : -1;
+      const activeBranchIndex = snapshot.wasOptimistic
+        ? branchIds.length
+        : survivingBranchIndex >= 0
+          ? survivingBranchIndex
+          : undefined;
+
+      if (activeBranchIndex === snapshot.activeBranchIndex) continue;
+
+      const metadata = { ...snapshot.metadata };
+      delete metadata.activeBranchIndex;
+      if (activeBranchIndex !== undefined) metadata.activeBranchIndex = activeBranchIndex;
+
+      await tx
+        .update(messages)
+        .set({ metadata })
+        .where(and(eq(messages.id, snapshot.parentId), this.ownership()));
+    }
+  };
+
   deleteMessage = async (id: string) => {
     return this.db.transaction(async (tx) => {
       // 1. Query the complete information of the message to be deleted
@@ -2674,6 +3587,11 @@ export class MessageModel {
 
       // If the message to be deleted is not found, return directly
       if (message.length === 0) return;
+
+      const activeBranchSnapshots = await this.captureActiveBranchSnapshots(
+        tx,
+        message[0].parentId ? [message[0].parentId] : [],
+      );
 
       // 2. Update child messages' parentId to the current message's parentId
       // This preserves the tree structure when deleting a node
@@ -2706,6 +3624,8 @@ export class MessageModel {
       await tx
         .delete(messages)
         .where(and(this.ownership(), inArray(messages.id, messageIdsToDelete)));
+
+      await this.reconcileActiveBranchSnapshots(tx, activeBranchSnapshots);
 
       // 7. Keep the topic's usage rollup in sync (pure derived — a removed
       // assistant message must drop out of the topic totals).
@@ -2763,6 +3683,11 @@ export class MessageModel {
         findFinalAncestor(id);
       }
 
+      const activeBranchSnapshots = await this.captureActiveBranchSnapshots(
+        tx,
+        [...new Set(finalAncestorMap.values())].filter((id): id is string => id !== null),
+      );
+
       // 4. Query child messages whose parentId points to messages being deleted
       const children = await tx
         .select({ id: messages.id, parentId: messages.parentId })
@@ -2783,6 +3708,8 @@ export class MessageModel {
       // 6. Delete the messages
       await tx.delete(messages).where(and(this.ownership(), inArray(messages.id, ids)));
 
+      await this.reconcileActiveBranchSnapshots(tx, activeBranchSnapshots);
+
       // 7. Recompute the usage rollup for every affected topic (pure derived).
       const affectedTopicIds = [
         ...new Set(toDelete.map((m) => m.topicId).filter(Boolean) as string[]),
@@ -2799,6 +3726,12 @@ export class MessageModel {
    */
   addFiles = async (messageId: string, fileIds: string[]): Promise<{ success: boolean }> => {
     if (fileIds.length === 0) return { success: true };
+
+    // The insert below has no ownership predicate of its own, so verify the
+    // target message is actually visible to this user/workspace first —
+    // otherwise a caller could attach files to another tenant's message.
+    const message = await this.findById(messageId);
+    if (!message) return { success: false };
 
     try {
       await this.db.insert(messagesFiles).values(

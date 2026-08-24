@@ -7,9 +7,13 @@ import { TaskModel } from '@/database/models/task';
 import { TaskTopicModel } from '@/database/models/taskTopic';
 import { UserModel } from '@/database/models/user';
 import type { LobeChatDatabase } from '@/database/type';
-import { BriefService } from '@/server/services/brief';
 
 import { TaskService } from './index';
+
+const { cancelScheduled, scheduleNextTopic } = vi.hoisted(() => ({
+  cancelScheduled: vi.fn(),
+  scheduleNextTopic: vi.fn(),
+}));
 
 vi.mock('@/database/models/agent', () => ({
   AgentModel: vi.fn(),
@@ -31,12 +35,31 @@ vi.mock('@/database/models/user', () => ({
   UserModel: { findByIds: vi.fn().mockResolvedValue([]) },
 }));
 
+const { goalCreate, goalFindBySubject } = vi.hoisted(() => ({
+  goalCreate: vi.fn(),
+  goalFindBySubject: vi.fn().mockResolvedValue(undefined),
+}));
+
+const { resolveTaskAcceptance } = vi.hoisted(() => ({
+  resolveTaskAcceptance: vi.fn(),
+}));
+
+vi.mock('@/database/models/goal', () => ({
+  GoalModel: vi.fn(() => ({ create: goalCreate, findBySubject: goalFindBySubject })),
+}));
+
+vi.mock('@/server/services/verify/taskAcceptance', () => ({ resolveTaskAcceptance }));
+
 // AiAgentService pulls in ~14 sub-dependencies in its constructor; mock it so
 // the running-status branch in updateStatus doesn't drag them in.
 vi.mock('@/server/services/aiAgent', () => ({
   AiAgentService: vi.fn().mockImplementation(() => ({
     interruptTask: vi.fn(),
   })),
+}));
+
+vi.mock('@/server/services/taskScheduler', () => ({
+  createTaskSchedulerModule: () => ({ cancelScheduled, scheduleNextTopic }),
 }));
 
 // Attachment resolver hits FileModel + DocumentService + FileService — stub it
@@ -61,6 +84,7 @@ describe('TaskService', () => {
 
   const mockTaskModel = {
     create: vi.fn(),
+    delete: vi.fn(),
     findById: vi.fn(),
     findByIds: vi.fn(),
     findAllDescendants: vi.fn(),
@@ -95,6 +119,9 @@ describe('TaskService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    cancelScheduled.mockResolvedValue(undefined);
+    scheduleNextTopic.mockResolvedValue('tick-new');
+    resolveTaskAcceptance.mockResolvedValue(undefined);
     mockTaskTopicModel.findRunningByTaskIds.mockResolvedValue([]);
     (AgentModel as any).mockImplementation(() => mockAgentModel);
     (TaskModel as any).mockImplementation(() => mockTaskModel);
@@ -129,6 +156,7 @@ describe('TaskService', () => {
         name: 'Task One',
         parentTaskId: null,
         priority: 'normal',
+        startedAt: new Date('2024-01-01T00:02:00Z'),
         status: 'todo',
         totalTopics: 0,
       };
@@ -156,11 +184,49 @@ describe('TaskService', () => {
       expect(result?.agentId).toBe('agent-1');
       expect(result?.userId).toBe('user-1');
       expect(result?.createdAt).toBe('2024-01-01T00:00:00.000Z');
+      expect(result?.startedAt).toBe('2024-01-01T00:02:00.000Z');
       expect(result?.subtasks).toEqual([]);
       expect(result?.dependencies).toEqual([]);
       expect(result?.activities).toBeUndefined();
       expect(result?.workspace).toBeUndefined();
       expect(result?.parent).toBeNull();
+    });
+
+    it('surfaces the effective inherited Acceptance policy', async () => {
+      const task = {
+        createdAt: null,
+        heartbeatInterval: null,
+        heartbeatTimeout: null,
+        id: 'task_001',
+        identifier: 'TASK-1',
+        instruction: 'Do something',
+        lastHeartbeatAt: null,
+        parentTaskId: 'task_parent',
+        priority: 'normal',
+        status: 'todo',
+      };
+      mockTaskModel.resolve.mockResolvedValue(task);
+      mockTaskModel.findAllDescendants.mockResolvedValue([]);
+      mockTaskModel.getDependencies.mockResolvedValue([]);
+      mockTaskTopicModel.findWithHandoff.mockResolvedValue([]);
+      mockTaskModel.getComments.mockResolvedValue([]);
+      mockTaskModel.getTreePinnedDocuments.mockResolvedValue({ nodeMap: {}, tree: [] });
+      mockTaskModel.findByIds.mockResolvedValue([]);
+      mockTaskModel.findById.mockResolvedValue(null);
+      mockTaskModel.getCheckpointConfig.mockReturnValue({});
+      resolveTaskAcceptance.mockResolvedValue({
+        acceptance: { id: 'acceptance-child' },
+        config: { enabled: true, maxIterations: 2 },
+        requirement: 'Inherited contract',
+      });
+
+      const result = await new TaskService(db, userId, 'workspace-1').getTaskDetail('TASK-1');
+
+      expect(result?.verify).toEqual({
+        enabled: true,
+        maxIterations: 2,
+        requirement: 'Inherited contract',
+      });
     });
 
     it('should resolve parent task info when parentTaskId is set', async () => {
@@ -558,7 +624,7 @@ describe('TaskService', () => {
       ]);
     });
 
-    it('should build activities sorted by time ascending', async () => {
+    it('should build activities sorted by time ascending and exclude briefs', async () => {
       const task = {
         assigneeAgentId: null,
         assigneeUserId: null,
@@ -623,11 +689,67 @@ describe('TaskService', () => {
       const service = new TaskService(db, userId);
       const result = await service.getTaskDetail('TASK-1');
 
-      expect(result?.activities).toHaveLength(3);
-      // sorted ascending: brief (Jan 1) < comment (Jan 2) < topic (Jan 3)
-      expect(result?.activities?.[0].type).toBe('brief');
-      expect(result?.activities?.[1].type).toBe('comment');
-      expect(result?.activities?.[2].type).toBe('topic');
+      // Brief (Jan 1) is intentionally excluded from the feed, even
+      // though one exists for the task; only comment (Jan 2) + topic (Jan 3) remain.
+      expect(result?.activities).toHaveLength(2);
+      expect(result?.activities?.some((a) => a.type === 'brief')).toBe(false);
+      expect(result?.activities?.[0].type).toBe('comment');
+      expect(result?.activities?.[1].type).toBe('topic');
+    });
+
+    it('exposes the run last message (handoff.content) alongside the summary', async () => {
+      const task = {
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        createdAt: null,
+        description: null,
+        error: null,
+        heartbeatInterval: null,
+        heartbeatTimeout: null,
+        id: 'task_001',
+        identifier: 'TASK-1',
+        instruction: null,
+        lastHeartbeatAt: null,
+        name: 'Task 1',
+        parentTaskId: null,
+        priority: 'normal',
+        status: 'todo',
+        totalTopics: 0,
+      };
+
+      const topics = [
+        {
+          createdAt: new Date('2024-01-03T00:00:00Z'),
+          handoff: {
+            content: 'The raw last assistant message shown as the run result.',
+            summary: 'A short synthesized summary.',
+            title: 'Topic A',
+          },
+          seq: 1,
+          status: 'completed',
+          topicId: 'topic-1',
+        },
+      ];
+
+      mockTaskModel.resolve.mockResolvedValue(task);
+      mockTaskModel.findAllDescendants.mockResolvedValue([]);
+      mockTaskModel.getDependencies.mockResolvedValue([]);
+      mockTaskTopicModel.findWithHandoff.mockResolvedValue(topics);
+      mockBriefModel.findByTaskId.mockResolvedValue([]);
+      mockTaskModel.getComments.mockResolvedValue([]);
+      mockTaskModel.getTreePinnedDocuments.mockResolvedValue({ nodeMap: {}, tree: [] });
+      mockTaskModel.findByIds.mockResolvedValue([]);
+      mockTaskModel.getCheckpointConfig.mockReturnValue({});
+      mockTaskModel.getVerifyConfig.mockReturnValue(undefined);
+
+      const service = new TaskService(db, userId);
+      const result = await service.getTaskDetail('TASK-1');
+
+      const topicActivity = result?.activities?.find((a) => a.type === 'topic');
+      expect(topicActivity?.summary).toBe('A short synthesized summary.');
+      expect(topicActivity?.content).toBe(
+        'The raw last assistant message shown as the run result.',
+      );
     });
 
     it('should resolve author info for activities', async () => {
@@ -864,7 +986,7 @@ describe('TaskService', () => {
       });
     });
 
-    it('should propagate topic completedAt to the topic activity', async () => {
+    it('should propagate topic completedAt and cost to the topic activity', async () => {
       const task = {
         assigneeAgentId: null,
         assigneeUserId: null,
@@ -891,6 +1013,7 @@ describe('TaskService', () => {
           handoff: null,
           seq: 1,
           status: 'completed',
+          totalCost: '0.0425',
           topicId: 'topic-done',
         },
         {
@@ -899,6 +1022,7 @@ describe('TaskService', () => {
           handoff: null,
           seq: 2,
           status: 'running',
+          totalCost: null,
           topicId: 'topic-running',
         },
       ];
@@ -921,7 +1045,9 @@ describe('TaskService', () => {
       const done = topicActivities.find((a) => a.id === 'topic-done');
       const running = topicActivities.find((a) => a.id === 'topic-running');
       expect(done?.completedAt).toBe('2024-01-03T00:01:30.000Z');
+      expect(done?.cost).toBe(0.0425);
       expect(running?.completedAt).toBeUndefined();
+      expect(running?.cost).toBeNull();
     });
 
     it('should not include topicCount when no topics exist', async () => {
@@ -1040,6 +1166,7 @@ describe('TaskService', () => {
         assigneeAgentId: null,
         assigneeUserId: null,
         createdAt: null,
+        context: { scheduler: { scheduledAt: '2024-01-01T12:00:05.000Z' } },
         description: null,
         error: null,
         heartbeatInterval: 30,
@@ -1072,6 +1199,7 @@ describe('TaskService', () => {
       expect(result?.heartbeat).toEqual({
         interval: 30,
         lastAt: '2024-01-01T12:00:00.000Z',
+        scheduledAt: '2024-01-01T12:00:05.000Z',
         timeout: 60,
       });
     });
@@ -1155,204 +1283,6 @@ describe('TaskService', () => {
       expect(result?.workspace).toBeUndefined();
     });
 
-    it('should build brief activities with full BriefItem fields', async () => {
-      const task = {
-        assigneeAgentId: null,
-        assigneeUserId: null,
-        createdAt: null,
-        description: null,
-        error: null,
-        heartbeatInterval: null,
-        heartbeatTimeout: null,
-        id: 'task_001',
-        identifier: 'TASK-1',
-        instruction: null,
-        lastHeartbeatAt: null,
-        name: 'Task 1',
-        parentTaskId: null,
-        priority: 'normal',
-        status: 'todo',
-        totalTopics: 0,
-      };
-
-      const briefs = [
-        {
-          actions: [{ key: 'approve', label: '✅', type: 'resolve' }],
-          agentId: 'agent-1',
-          artifacts: ['doc_1'],
-          createdAt: new Date('2024-01-01T00:00:00Z'),
-          cronJobId: null,
-          id: 'brief-1',
-          priority: 'urgent',
-          readAt: new Date('2024-01-01T01:00:00Z'),
-          resolvedAction: 'approved',
-          resolvedAt: new Date('2024-01-01T02:00:00Z'),
-          resolvedComment: 'looks good',
-          summary: 'Review brief',
-          taskId: 'task_001',
-          title: 'Approval',
-          topicId: null,
-          type: 'decision',
-          userId: 'user-1',
-        },
-      ];
-
-      mockTaskModel.resolve.mockResolvedValue(task);
-      mockTaskModel.findAllDescendants.mockResolvedValue([]);
-      mockTaskModel.getDependencies.mockResolvedValue([]);
-      mockTaskTopicModel.findWithHandoff.mockResolvedValue([]);
-      mockBriefModel.findByTaskId.mockResolvedValue(briefs);
-      mockTaskModel.getComments.mockResolvedValue([]);
-      mockTaskModel.getTreePinnedDocuments.mockResolvedValue({ nodeMap: {}, tree: [] });
-      mockTaskModel.findByIds.mockResolvedValue([]);
-      mockTaskModel.getCheckpointConfig.mockReturnValue({});
-      mockTaskModel.getVerifyConfig.mockReturnValue(undefined);
-      mockAgentModel.getAgentAvatarsByIds.mockResolvedValue([
-        { avatar: 'avatar.png', backgroundColor: '#fff', id: 'agent-1', title: 'Agent One' },
-      ]);
-
-      const service = new TaskService(db, userId);
-      const result = await service.getTaskDetail('TASK-1');
-
-      expect(result?.activities?.[0]).toMatchObject({
-        actions: [{ key: 'approve', label: '✅', type: 'resolve' }],
-        agent: { avatar: 'avatar.png', backgroundColor: '#fff', id: 'agent-1', title: 'Agent One' },
-        agentId: 'agent-1',
-        artifacts: ['doc_1'],
-        briefType: 'decision',
-        createdAt: '2024-01-01T00:00:00.000Z',
-        id: 'brief-1',
-        priority: 'urgent',
-        readAt: '2024-01-01T01:00:00.000Z',
-        resolvedAction: 'approved',
-        resolvedAt: '2024-01-01T02:00:00.000Z',
-        resolvedComment: 'looks good',
-        summary: 'Review brief',
-        taskId: 'task_001',
-        title: 'Approval',
-        type: 'brief',
-        userId: 'user-1',
-      });
-    });
-
-    it('should keep resolvedAction and resolvedComment as separate fields', async () => {
-      const task = {
-        assigneeAgentId: null,
-        assigneeUserId: null,
-        createdAt: null,
-        description: null,
-        error: null,
-        heartbeatInterval: null,
-        heartbeatTimeout: null,
-        id: 'task_001',
-        identifier: 'TASK-1',
-        instruction: null,
-        lastHeartbeatAt: null,
-        name: 'Task 1',
-        parentTaskId: null,
-        priority: 'normal',
-        status: 'todo',
-        totalTopics: 0,
-      };
-
-      const briefs = [
-        {
-          createdAt: new Date('2024-01-01T00:00:00Z'),
-          id: 'brief-1',
-          priority: 'normal',
-          resolvedAction: 'retry',
-          resolvedComment: null,
-          summary: 'Retry brief',
-          title: 'Retry',
-          type: 'insight',
-        },
-      ];
-
-      mockTaskModel.resolve.mockResolvedValue(task);
-      mockTaskModel.findAllDescendants.mockResolvedValue([]);
-      mockTaskModel.getDependencies.mockResolvedValue([]);
-      mockTaskTopicModel.findWithHandoff.mockResolvedValue([]);
-      mockBriefModel.findByTaskId.mockResolvedValue(briefs);
-      mockTaskModel.getComments.mockResolvedValue([]);
-      mockTaskModel.getTreePinnedDocuments.mockResolvedValue({ nodeMap: {}, tree: [] });
-      mockTaskModel.findByIds.mockResolvedValue([]);
-      mockTaskModel.getCheckpointConfig.mockReturnValue({});
-      mockTaskModel.getVerifyConfig.mockReturnValue(undefined);
-
-      const service = new TaskService(db, userId);
-      const result = await service.getTaskDetail('TASK-1');
-
-      expect(result?.activities?.[0]).toMatchObject({
-        resolvedAction: 'retry',
-        resolvedComment: null,
-        type: 'brief',
-      });
-    });
-
-    it('should still return task detail when brief agent enrichment fails', async () => {
-      const task = {
-        assigneeAgentId: null,
-        assigneeUserId: null,
-        createdAt: null,
-        description: null,
-        error: null,
-        heartbeatInterval: null,
-        heartbeatTimeout: null,
-        id: 'task_001',
-        identifier: 'TASK-1',
-        instruction: null,
-        lastHeartbeatAt: null,
-        name: 'Task 1',
-        parentTaskId: null,
-        priority: 'normal',
-        status: 'todo',
-        totalTopics: 0,
-      };
-
-      const briefs = [
-        {
-          agentId: 'agent-1',
-          createdAt: new Date('2024-01-01T00:00:00Z'),
-          id: 'brief-1',
-          priority: 'normal',
-          resolvedAction: null,
-          resolvedComment: null,
-          summary: 'Brief',
-          taskId: 'task_001',
-          title: 'Brief A',
-          type: 'insight',
-        },
-      ];
-
-      mockTaskModel.resolve.mockResolvedValue(task);
-      mockTaskModel.findAllDescendants.mockResolvedValue([]);
-      mockTaskModel.getDependencies.mockResolvedValue([]);
-      mockTaskTopicModel.findWithHandoff.mockResolvedValue([]);
-      mockBriefModel.findByTaskId.mockResolvedValue(briefs);
-      mockTaskModel.getComments.mockResolvedValue([]);
-      mockTaskModel.getTreePinnedDocuments.mockResolvedValue({ nodeMap: {}, tree: [] });
-      mockTaskModel.findByIds.mockResolvedValue([]);
-      mockTaskModel.getCheckpointConfig.mockReturnValue({});
-      mockTaskModel.getVerifyConfig.mockReturnValue(undefined);
-      // Force the brief enrichment path to reject without breaking the
-      // sibling resolveAuthors call (which shares the agent model mock).
-      const enrichSpy = vi
-        .spyOn(BriefService.prototype, 'enrichBriefAgentOnly')
-        .mockRejectedValueOnce(new Error('DB error'));
-
-      const service = new TaskService(db, userId);
-      const result = await service.getTaskDetail('TASK-1');
-
-      expect(result).not.toBeNull();
-      expect(result?.activities).toHaveLength(1);
-      expect(result?.activities?.[0]).toMatchObject({
-        agent: null,
-        id: 'brief-1',
-        type: 'brief',
-      });
-      enrichSpy.mockRestore();
-    });
-
     it('should use topic handoff title with fallback to Untitled', async () => {
       const task = {
         assigneeAgentId: null,
@@ -1429,16 +1359,14 @@ describe('TaskService', () => {
         totalTopics: 0,
       };
 
-      const briefs = [
+      // A topic without a createdAt should sort to the end (time-less items last).
+      const topics = [
         {
           createdAt: null,
-          id: 'brief-1',
-          priority: 'normal',
-          resolvedAction: null,
-          resolvedComment: null,
-          summary: 'No time brief',
-          title: 'No Time',
-          type: 'insight',
+          handoff: { title: 'No Time' },
+          seq: 1,
+          status: 'completed',
+          topicId: 'topic-1',
         },
       ];
 
@@ -1453,8 +1381,8 @@ describe('TaskService', () => {
       mockTaskModel.resolve.mockResolvedValue(task);
       mockTaskModel.findAllDescendants.mockResolvedValue([]);
       mockTaskModel.getDependencies.mockResolvedValue([]);
-      mockTaskTopicModel.findWithHandoff.mockResolvedValue([]);
-      mockBriefModel.findByTaskId.mockResolvedValue(briefs);
+      mockTaskTopicModel.findWithHandoff.mockResolvedValue(topics);
+      mockBriefModel.findByTaskId.mockResolvedValue([]);
       mockTaskModel.getComments.mockResolvedValue(comments);
       mockTaskModel.getTreePinnedDocuments.mockResolvedValue({ nodeMap: {}, tree: [] });
       mockTaskModel.findByIds.mockResolvedValue([]);
@@ -1465,9 +1393,9 @@ describe('TaskService', () => {
       const result = await service.getTaskDetail('TASK-1');
 
       expect(result?.activities).toHaveLength(2);
-      // comment with time should come first, brief without time at end
+      // comment with time should come first, topic without time at end
       expect(result?.activities?.[0].type).toBe('comment');
-      expect(result?.activities?.[1].type).toBe('brief');
+      expect(result?.activities?.[1].type).toBe('topic');
     });
   });
 
@@ -1517,16 +1445,94 @@ describe('TaskService', () => {
       expect(mockTaskModel.updateContext).not.toHaveBeenCalled();
     });
 
-    it('does NOT stamp for heartbeat-mode tasks', async () => {
-      const prev = baseTask({ status: 'backlog', automationMode: 'heartbeat' });
-      const next = baseTask({ status: 'scheduled', automationMode: 'heartbeat' });
+    it('seeds the first heartbeat tick when a user starts a heartbeat schedule', async () => {
+      const prev = baseTask({
+        automationMode: 'heartbeat',
+        context: {},
+        heartbeatInterval: 3600,
+        status: 'backlog',
+      });
+      const next = baseTask({
+        automationMode: 'heartbeat',
+        heartbeatInterval: 3600,
+        status: 'scheduled',
+      });
       mockTaskModel.resolve.mockResolvedValue(prev);
       mockTaskModel.updateStatus.mockResolvedValue(next);
 
       const service = new TaskService(db, userId);
       await service.updateStatus({ id: 'T-1', status: 'scheduled' as any });
 
-      expect(mockTaskModel.updateContext).not.toHaveBeenCalled();
+      expect(scheduleNextTopic).toHaveBeenCalledWith({
+        delay: 3600,
+        taskId: 'task-1',
+        tickToken: expect.any(String),
+        userId,
+      });
+      expect(mockTaskModel.updateContext).toHaveBeenCalledWith('task-1', {
+        scheduler: {
+          consecutiveFailures: 0,
+          scheduledAt: expect.any(String),
+          tickMessageId: 'tick-new',
+          tickToken: expect.any(String),
+        },
+      });
+    });
+
+    it('replaces a stale heartbeat tick when a user restarts the schedule', async () => {
+      const prev = baseTask({
+        automationMode: 'heartbeat',
+        context: { scheduler: { consecutiveFailures: 2, tickMessageId: 'tick-old' } },
+        heartbeatInterval: 3600,
+        status: 'paused',
+      });
+      const next = baseTask({
+        automationMode: 'heartbeat',
+        heartbeatInterval: 3600,
+        status: 'scheduled',
+      });
+      mockTaskModel.resolve.mockResolvedValue(prev);
+      mockTaskModel.updateStatus.mockResolvedValue(next);
+
+      const service = new TaskService(db, userId);
+      await service.updateStatus({ id: 'T-1', status: 'scheduled' as any });
+
+      expect(cancelScheduled).toHaveBeenCalledWith('tick-old');
+      expect(mockTaskModel.updateContext).toHaveBeenCalledWith(
+        'task-1',
+        expect.objectContaining({
+          scheduler: expect.objectContaining({ consecutiveFailures: 2, tickMessageId: 'tick-new' }),
+        }),
+      );
+    });
+
+    it('restores the previous status when the first heartbeat tick cannot be published', async () => {
+      const prev = baseTask({
+        automationMode: 'heartbeat',
+        context: {},
+        heartbeatInterval: 3600,
+        status: 'paused',
+      });
+      const next = baseTask({
+        automationMode: 'heartbeat',
+        heartbeatInterval: 3600,
+        status: 'scheduled',
+      });
+      mockTaskModel.resolve.mockResolvedValue(prev);
+      mockTaskModel.updateStatus.mockResolvedValue(next);
+      scheduleNextTopic.mockRejectedValueOnce(new Error('qstash unavailable'));
+
+      const service = new TaskService(db, userId);
+
+      await expect(service.updateStatus({ id: 'T-1', status: 'scheduled' as any })).rejects.toThrow(
+        'qstash unavailable',
+      );
+      expect(mockTaskModel.updateStatus).toHaveBeenNthCalledWith(1, 'task-1', 'scheduled', {});
+      expect(mockTaskModel.updateStatus).toHaveBeenNthCalledWith(2, 'task-1', 'paused');
+      expect(mockTaskModel.updateContext).toHaveBeenCalledWith('task-1', {
+        scheduler: { tickToken: expect.any(String) },
+      });
+      expect(mockTaskModel.update).toHaveBeenCalledWith('task-1', { context: {} });
     });
 
     it('does NOT stamp when the new status is not scheduled', async () => {
@@ -1554,7 +1560,7 @@ describe('TaskService', () => {
     });
   });
 
-  describe('agent ↔ task visibility compat (LOBE-10961)', () => {
+  describe('agent ↔ task visibility compat', () => {
     beforeEach(() => {
       mockTaskModel.create.mockImplementation(async (data: any) => ({
         ...data,
@@ -1628,7 +1634,58 @@ describe('TaskService', () => {
     });
   });
 
-  describe('parent ↔ child visibility compat (LOBE-10962 #3)', () => {
+  describe('createTask goal binding', () => {
+    beforeEach(() => {
+      mockTaskModel.create.mockResolvedValue({
+        assigneeAgentId: 'agent-1',
+        id: 'task_goal_1',
+        identifier: 'T-9',
+        instruction: 'reach the goal',
+        name: 'Goal task',
+        projectId: null,
+      });
+      mockTaskModel.delete.mockResolvedValue(true);
+      goalCreate.mockReset();
+    });
+
+    it('creates the bound goals row and returns it on the task', async () => {
+      goalCreate.mockResolvedValue({ id: 'goal-1', status: 'planning' });
+
+      const service = new TaskService(db, userId);
+      const result = await service.createTask({
+        goal: { maxRounds: 4, maxTotalCost: 10, requirement: 'done means done' },
+        instruction: 'reach the goal',
+      });
+
+      expect(goalCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          maxRounds: 4,
+          maxTotalCost: 10,
+          requirement: 'done means done',
+          subjectId: 'task_goal_1',
+          subjectType: 'task',
+        }),
+      );
+      expect((result as any).goal).toEqual({ id: 'goal-1', status: 'planning' });
+      expect(mockTaskModel.delete).not.toHaveBeenCalled();
+    });
+
+    it('compensates a failed goal insert by deleting the just-created task', async () => {
+      // Regression (codex review): a task committed without its promised goal
+      // is a user-visible ghost — it never lists on goal surfaces, and a retry
+      // stacks another plain task.
+      goalCreate.mockRejectedValue(new Error('db down'));
+
+      const service = new TaskService(db, userId);
+      await expect(
+        service.createTask({ goal: { maxRounds: 3 }, instruction: 'reach the goal' }),
+      ).rejects.toThrow('db down');
+
+      expect(mockTaskModel.delete).toHaveBeenCalledWith('task_goal_1');
+    });
+  });
+
+  describe('parent ↔ child visibility compat', () => {
     beforeEach(() => {
       mockTaskModel.create.mockImplementation(async (data: any) => ({
         ...data,

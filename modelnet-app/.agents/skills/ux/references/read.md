@@ -283,6 +283,16 @@ resolved-empty. Once the user manually picks a tab, that choice wins and sticks 
 them off it. Pairs with §1.1: the empty state is the fallback _within_ a view; this rule
 is about not landing on that empty view when a better one exists.
 
+A data-aware shortcut must not erase the stable **hub** behind it. Auto-opening the only
+record can save one click, but if every visit to the collection URL redirects into that record,
+the user loses collection-level actions (create the second item, compare, search, manage) and a
+breadcrumb back becomes a loop. Keep the hub reachable, or preserve every collection-level
+action in the detail surface.
+
+> ❌ **Self-evolving expertise** redirects `/self-learning` to the sole expertise on every
+> visit, while Create exists only on the empty hub. After the first expertise is created, the
+> user cannot return to the hub or create a second one (`SelfLearning/index.tsx`).
+
 > ✅ Opening a document page by clicking a **skill** lands the right panel on the **Skills** tab; a plain document lands on **Documents**.
 > ✅ An agent with only skills (no documents) opens the panel on **Skills** instead of an empty **Documents** tab.
 
@@ -292,6 +302,7 @@ is about not landing on that empty view when a better one exists.
 - [ ] Falls back to a populated view when the default would be empty. _(Certainty)_
 - [ ] Default decided from resolved state, not mid-load. _(Certainty)_
 - [ ] A manual pick is tracked separately and sticks. _(Natural)_
+- [ ] A data-aware shortcut never makes the collection hub or its collection-level actions unreachable. _(Meaningful・Growth)_
 
 ## 1.7 Live / polling streams・Certainty・Natural
 
@@ -407,3 +418,147 @@ paths that already exist and blesses the absent ones.
 - [ ] Registry/marketplace browse cards reflect owned / installed / added state on the tile, not only on the detail page. _(Meaningful)_
 - [ ] Trust / verified / official badges applied via one card contract, consistently across sibling registries (no "official on one list, nothing on its twin"). _(Certainty・Meaningful)_
 - [ ] Class-norm capabilities (owned-state, trust badge, counts, no-results≠first-run, contribute→in-app-submit) listed from comparables up front, so an absent one is caught. _(Certainty)_
+
+## 1.10 Reuse the canonical list / nav row — don't hand-roll sidebar chrome・Certainty・Natural
+
+A navigation / list **sidebar** (topic list, report list, resource tree — any master-detail
+left panel) is a **solved surface class** in this codebase, and the polish is in the shared
+primitive, not in the individual screen. Rows go through **`NavItem`**
+(`src/features/NavPanel/components/NavItem.tsx`); collapsible groups through
+**`Accordion` / `AccordionItem`** (via the shared **`GroupedAccordion`** engine); the active
+row through **`Block variant='filled'`**; spacing through `Flexbox` / `Block` `gap` /
+`padding` props, never hand-picked px. Composing those buys — for free, and identical to every
+sibling panel — the four things bespoke rows get wrong:
+
+1. **The highlight box _is_ the padded content box.** `NavItem` makes the interactive
+   `Block` the hover/active surface, so the highlight always aligns to the row and content
+   can't bleed to the panel edge. A hand-rolled row whose list-container padding, item
+   padding, and highlight radius are chosen independently produces a highlight rectangle that
+   floats / insets differently from the text, and text that runs to the viewport edge.
+2. **The app-wide active treatment.** `variant={active ? 'filled' : 'borderless'}` is _the_
+   active row everywhere. A bespoke `data-active` + `colorFillSecondary` is a slightly-off
+   look that no longer matches the panel next to it.
+3. **A right-aligned `extra` slot + hover-revealed actions**, already solved (timestamp /
+   count on the right; `.nav-item-actions` reveal on `:hover`). Re-implementing the
+   `opacity: 0 → 1` reveal by hand is code that will drift.
+4. **Grouping at scale.** The canonical sidebar offers by-project / by-status / by-time
+   collapsible `Accordion` groups; a hand-rolled panel is almost always a **flat, ungrouped
+   dump** that has no structure once the list grows past a screen.
+
+The row is also where **Edit** (inline rename) and **Act** (delete / overflow menu) live —
+hand-rolling the row drags those into raw `<input>` / raw `<button>` too, missing the shared
+inline-edit and confirm patterns. Each miss is individually tiny; the sum is exactly what
+"做的非常不成熟 /unpolished" means. **Before building any left-panel list, grep the sibling
+surface (`NavItem`, `Accordion`, `GroupedAccordion`) and compose it**; fall to raw elements
+only for a genuinely novel row. (Component-priority _mechanics_ are in **react**; this is the
+UX consequence — a bespoke row is a visible consistency + craft regression.)
+
+> ✅ **Topic sidebar** (`routes/(main)/agent/_layout/Sidebar/Topic/**`) composes `NavItem` rows
+> inside `Accordion` groups via one shared `GroupedAccordion` engine (by-project / by-status /
+> by-time), `Block variant='filled'` for the active row, and spacing as `Flexbox` / `Block`
+> props — every row aligns to its highlight and matches every other panel in the app.
+> ❌ **Verify report sidebar** (`features/Verify/Workspace/ReportListPanel.tsx`) hand-rolls the
+> entire panel: a raw grid `<div className={styles.item}>` row with `data-active` +
+> `colorFillSecondary` (instead of `NavItem` / `Block variant`), a bordered `<label>` + `<input>`
+> search box, a raw `<input>` inline-rename, an `opacity`-toggled action reveal re-implemented in
+> CSS, and a **flat, ungrouped** list — so the hover box misaligns from the text, content bleeds
+> to the panel edge, and the surface reads as off-rhythm next to the topic sidebar it sits beside.
+
+**Checklist**
+
+- [ ] Sidebar / nav list rows go through the canonical `NavItem` (or the surface's shared row primitive), not a hand-rolled `<div>` / `<button>` — so hover/active is the app-wide treatment and the highlight box **is** the padded content box (no floating/misaligned highlight, no edge-bleed). _(Certainty)_
+- [ ] Active row uses `Block variant='filled'` (the shared active treatment), not a bespoke `data-active` + `colorFill*` re-derivation. _(Certainty)_
+- [ ] Grouping at scale reuses `Accordion` / `GroupedAccordion` (by-project / status / time), not a flat ungrouped dump once the list grows past a screen. _(Natural)_
+- [ ] Search box, inline-rename, and row actions reuse the shared input / editing / action-reveal patterns, not raw `<input>` / `<label>` + hand CSS. _(Certainty)_
+- [ ] Spacing/padding expressed as `Flexbox` / `Block` `gap` / `padding` props (inherits the sidebar rhythm), not hand-picked px constants. _(Natural)_
+
+## 1.11 A persistent composer above a list must not bury the records・Meaningful・Natural
+
+A list surface with an **always-visible create / compose affordance above the records** (an
+inline "new task" editor, a "what's on your mind" post box, a reply composer over a thread)
+is the _hero_ of the **empty** state — there, teaching + one big input is exactly right
+(§1.1, Grow onboarding). But the moment the list is **populated**, the primary content is
+the **records**, and the composer becomes secondary; it must not out-weigh them. The common
+break: an **auto-growing editor with no `max-height`** whose height tracks its content, so a
+long draft (or a pre-filled template) inflates the box until it fills the viewport and pushes
+the **entire list below the fold** — Center Stage inverted, the user scrolls past their own
+compose draft to reach the records they came to see. Fix it two ways, ideally both: **cap the
+input's height** (a `max-height` + internal scroll so a long draft scrolls _inside_ the box,
+not the page), and **default the composer to collapsed once the list is non-empty** (a
+one-click / focus expand back to the hero size), so the records keep the top of the fold. The
+empty-state hero and the populated-list composer are the **same component in two roles** —
+let the surface pick the role from whether it has data, don't render one size for both.
+
+> ✅ On an empty list the create composer is a tall autofocused hero; once records exist it
+> collapses to a single-line entry (one click / focus re-expands it), and even expanded its
+> editor caps at a few rows with internal scroll — the list stays above the fold.
+> ❌ **全部任务** (`/tasks`) renders `CreateTaskInlineEntry` persistently whenever
+> `!inlineCollapsed` (`AgentTasksPage.tsx:165`), and its Lexical editor grows to content
+> height with **no `max-height` / scroll** (`CreateTaskInlineEntry.tsx:213-231`). A long
+> instruction draft fills \~half the viewport and pushes the "进行中" group and every task
+> **below the fold** — on a populated board the composer dominates the list it sits over. The
+> collapse flag (`taskCreateInlineCollapsed`) exists but defaults to _expanded_ and the editor
+> is uncapped. ✅ Cap the editor height; default to collapsed once `!isEmptyHero`.
+
+**Checklist**
+
+- [ ] A persistent create/compose affordance above a list is the hero only while the list is **empty**; once populated it doesn't push the records below the fold. _(Meaningful)_
+- [ ] An auto-growing editor above a list has a `max-height` + internal scroll — a long draft scrolls inside the box, not the page. _(Natural)_
+- [ ] The composer defaults to collapsed / compact once the list has data (one-click / focus re-expand), so the records keep Center Stage. _(Meaningful・Natural)_
+
+## 1.12 A status group's label must be true for every member・Certainty・Meaningful
+
+When a list **groups or labels by status**, the group header _asserts a state_ — every row
+under "In Progress" claims to be actively running. So don't **fold a distinct lifecycle state
+into another** whose label then lies about it: a **scheduled-but-idle** item (a cron task
+waiting for its next fire, a queued job, a snoozed item) collapsed into a "running" / "In
+Progress" group tells the user it's executing _now_ when it's merely _waiting_. This is
+"consistency is semantic" at the label level — the header must be **true for every member**.
+The tell is a status→group map that points two different lifecycle states at one label; the
+row often already shows the real state (a schedule tag, a "next run" pill), which makes the
+group header's contradiction all the more visible. Give the distinct state its **own group /
+label** (ranked where it belongs), or relabel the shared group so it's true for both.
+
+> ✅ A "Scheduled" group (ranked above "Running") holds cron/queued tasks; "In Progress" holds
+> only what's actually executing — each header is true for every row under it.
+> ❌ **全部任务** folds `scheduled → running` in the group map (`listViewOptions.ts:107`) and
+> renders the header as `taskDetail.status.running` = "进行中 / In Progress" (`:232,237`), so a
+> daily-cron task that is **idle until 06:00** sits under "In Progress" — even though its own
+> row reads "每天 06:00 运行". The label claims a state the task isn't in. ✅ A distinct
+> "Scheduled" group; keep "In Progress" for genuinely-running tasks.
+
+**Checklist**
+
+- [ ] A status group/label is true for **every** member — no folding a distinct lifecycle state (scheduled/queued/snoozed) under a label that asserts a different one (running/in-progress). _(Certainty)_
+- [ ] The distinct state gets its own group/label (ranked appropriately), or the shared label is neutral enough to be true for both. _(Meaningful)_
+
+## 1.13 Quoted documents fold to a titled row, not a height-cropped preview・Natural・Meaningful
+
+When a surface embeds **someone else's document** as material (an evidence write-up, a log,
+an attached report, a quoted spec), two things go wrong if it renders inline like the page's
+own prose. First, **disclosure**: a "show the first N px + expand" fold assumes the opening
+lines are a summary — true for chat prose, false for structured documents, which open with
+headings and environment metadata. The cropped preview then spends a card of vertical space
+on the document's _least_ informative part, cut mid-sentence behind a fade — pure noise. The
+reader's real choice is binary: read this artifact now, or skip it. Serve that choice with a
+**one-line titled row (first meaningful line, markdown-stripped, as the label) that expands
+to the full text** — never a partial bleed. Second, **subordination**: quoted material must
+not share the host page's typographic scale. Un-contained, the document's own `##` headings
+render larger than the host's section titles and masquerade as page structure. Give it a
+quiet container and a capped heading scale (`headerMultiple` near 0) so it reads as quoted
+material, not as the page.
+
+> ✅ Each prose evidence folds to one quiet row labeled by its first line (" 声明 — 验收页的音
+> 频证据应复用对话播放器 "); expanding shows the full text in a contained block whose headings
+> stay body-sized. Two artifacts = two rows; need it → expand, don't → one line each.
+> ❌ Acceptance check evidence rendered bare `Markdown` folded at 180px behind a `MaskShadow`
+> (`MarkdownEvidence.tsx`, pre-fix): the preview showed only the document's opening headings
+> ("环境: worktree…") cut by a fade whose `size={32}` was actually **32%** (the prop is a
+> percentage, not px), masking a third of the window to blank; the evidence's `#` headings
+> rendered bigger than the check's own title, so quoted content read as page structure.
+
+**Checklist**
+
+- [ ] An embedded document folds to a **titled row** (first meaningful line as label) that expands to full text — no first-N-px cropped preview with a fade. _(Natural)_
+- [ ] Quoted/embedded content is visually subordinated: a quiet container + capped heading scale, never sharing the host page's typographic hierarchy. _(Meaningful)_
+- [ ] A mask/fade helper's `size` unit is verified against its implementation (px vs %) before shipping — a wrong unit blanks real content. _(Certainty)_

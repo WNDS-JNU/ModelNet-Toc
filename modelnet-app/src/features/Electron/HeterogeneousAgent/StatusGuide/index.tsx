@@ -8,10 +8,20 @@ import AuthRequiredState from './states/AuthRequiredState';
 import CliInstallState from './states/CliInstallState';
 import OverloadedState from './states/OverloadedState';
 import RateLimitState from './states/RateLimitState';
+import WorkingDirectoryState from './states/WorkingDirectoryState';
 import type { HeterogeneousAgentStatusGuideProps } from './types';
 
 const HeterogeneousAgentStatusGuide = memo<HeterogeneousAgentStatusGuideProps>(
-  ({ agentType = 'codex', autoRetry, error, onOpenSystemTools, onRetry, variant = 'inline' }) => {
+  ({
+    agentType = 'codex',
+    autoRetry,
+    error,
+    onDismiss,
+    onOpenSystemTools,
+    onRetry,
+    schedule,
+    variant = 'inline',
+  }) => {
     const config = resolveHeterogeneousAgentGuideConfig({
       agentType,
       errorAgentType: error?.agentType,
@@ -20,8 +30,10 @@ const HeterogeneousAgentStatusGuide = memo<HeterogeneousAgentStatusGuideProps>(
       autoRetry,
       config,
       error,
+      onDismiss,
       onOpenSystemTools,
       onRetry,
+      schedule,
       variant,
     };
 
@@ -36,6 +48,10 @@ const HeterogeneousAgentStatusGuide = memo<HeterogeneousAgentStatusGuideProps>(
 
       case HeterogeneousAgentSessionErrorCode.Overloaded: {
         return <OverloadedState {...stateProps} />;
+      }
+
+      case HeterogeneousAgentSessionErrorCode.WorkingDirectoryNotFound: {
+        return <WorkingDirectoryState {...stateProps} />;
       }
 
       default: {

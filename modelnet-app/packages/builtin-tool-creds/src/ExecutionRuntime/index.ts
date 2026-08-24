@@ -1,4 +1,8 @@
-import { getComposioAppByIdentifier, getLobehubSkillProviderById } from '@lobechat/const';
+import {
+  getComposioAppByIdentifier,
+  getLobehubSkillProviderById,
+  OFFICIAL_URL,
+} from '@lobechat/const';
 import type { BuiltinServerRuntimeOutput } from '@lobechat/types';
 
 import type {

@@ -2,6 +2,8 @@ import { getErrorCodeSpec, refineErrorCode } from '@lobechat/model-runtime';
 import { AgentRuntimeErrorType, ChatErrorType, type ChatMessageError } from '@lobechat/types';
 import { isRecord } from '@lobechat/utils';
 
+import { formatPgError, pgErrorType, unwrapPgError } from './pgError';
+
 /** Pull a usable HTTP status out of the nested upstream error object. */
 const extractHttpStatus = (body: unknown): number | undefined => {
   if (!body || typeof body !== 'object') return undefined;
@@ -92,6 +94,18 @@ const buildPayloadBody = (
     ...(sourceBody === undefined ? {} : { error: sourceBody }),
     message,
   };
+};
+
+/**
+ * Cap a stack before it lands in `agent_operations.error` / trace snapshots.
+ * The top frames identify the throw site; the rest is runtime plumbing that
+ * would only bloat every stored error row.
+ */
+const STACK_MAX_CHARS = 1000;
+
+const truncateStack = (stack: string | undefined): string | undefined => {
+  if (!stack) return undefined;
+  return stack.length > STACK_MAX_CHARS ? `${stack.slice(0, STACK_MAX_CHARS)}…` : stack;
 };
 
 /**
@@ -187,8 +201,33 @@ export const formatErrorForState = (error: unknown): ChatMessageError => {
   }
 
   if (error instanceof Error) {
+    const pg = unwrapPgError(error);
+    if (pg) {
+      return {
+        attribution: 'harness',
+        body: {
+          name: error.name,
+          pg,
+          wrappedMessage: error.message,
+        },
+        category: 'stream',
+        countAsFailure: true,
+        httpStatus: 500,
+        message: formatPgError(pg),
+        retryable: false,
+        severity: 'error',
+        type: pgErrorType(pg) as ChatMessageError['type'],
+      };
+    }
+
+    // Unclassified harness throw: nothing upstream recognized it, so `name` +
+    // `message` are all the triage signal there is — and for a `SyntaxError`
+    // out of some `JSON.parse` those two say nothing about WHERE it blew up.
+    // Persist the stack (bounded; frames are what matter, not a runaway trace)
+    // the way the pg branch already persists `pg`, so a recurring 500 is
+    // locatable from the stored operation instead of needing a live repro.
     return enrichWithSpec({
-      body: { name: error.name },
+      body: { name: error.name, stack: truncateStack(error.stack) },
       message: error.message,
       type: ChatErrorType.InternalServerError,
     });

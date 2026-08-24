@@ -5,6 +5,7 @@ import { isErrorCausedByContentFilter } from './isErrorCausedByContentFilter';
 
 const NON_RETRYABLE_ERROR_TYPES = new Set<string>([
   AgentRuntimeErrorType.ExceededContextWindow,
+  AgentRuntimeErrorType.InvalidRequestFormat,
   AgentRuntimeErrorType.ProviderContentPolicyViolation,
   AgentRuntimeErrorType.ProviderNoImageGenerated,
 ]);
@@ -72,6 +73,7 @@ const NON_RETRYABLE_MESSAGE_PATTERNS = [
   'messages with role',
   'missing required parameter',
   'prompt is too long',
+  'request body too large',
   'request too large for model',
   'response_format',
   'schema validation error',

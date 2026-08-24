@@ -1,3 +1,4 @@
+import { OFFICIAL_URL } from '@lobechat/const/url';
 import { createEnv } from '@t3-oss/env-core';
 import { memoize } from 'es-toolkit';
 import { z } from 'zod';

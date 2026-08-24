@@ -2,13 +2,14 @@
 
 import { AGENT_CHAT_TOPIC_URL } from '@lobechat/const';
 import { formatPrice, formatTokenNumber } from '@lobechat/utils/format';
-import { Block, Checkbox, Flexbox, Icon, Tag, Text } from '@lobehub/ui';
+import { Block, Flexbox, Icon, Tag, Text } from '@lobehub/ui';
+import { Checkbox } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { CircleDollarSign, FolderIcon, MessageSquare, Star, Zap } from 'lucide-react';
 import { memo, type MouseEvent, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router';
 
+import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { useActivityTime } from '@/hooks/useActivityTime';
 import type { ChatTopic } from '@/types/topic';
 
@@ -72,6 +73,11 @@ const styles = createStaticStyles(({ css }) => ({
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 1;
   `,
+  /* Reserve space for the absolutely positioned checkbox (18px + gap)
+     so long titles don't run underneath it. */
+  titleRow: css`
+    padding-inline-end: 28px;
+  `,
 }));
 
 interface TopicCardProps {
@@ -81,7 +87,7 @@ interface TopicCardProps {
 
 const TopicCard = memo<TopicCardProps>(({ topic, agentId }) => {
   const { t } = useTranslation('topic');
-  const navigate = useNavigate();
+  const navigate = useWorkspaceAwareNavigate();
 
   const selectMode = useTopicsViewStore((s) => s.selectMode);
   const selected = useTopicsViewStore((s) => s.selectedIds.includes(topic.id));
@@ -138,7 +144,7 @@ const TopicCard = memo<TopicCardProps>(({ topic, agentId }) => {
         />
       </div>
 
-      <Flexbox horizontal align={'center'} gap={6}>
+      <Flexbox horizontal align={'center'} className={styles.titleRow} gap={6}>
         {topic.favorite && (
           <Icon icon={Star} size={13} style={{ color: cssVar.colorWarning, flexShrink: 0 }} />
         )}

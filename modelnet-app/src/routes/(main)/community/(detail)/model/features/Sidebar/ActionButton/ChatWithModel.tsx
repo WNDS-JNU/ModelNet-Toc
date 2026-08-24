@@ -1,7 +1,8 @@
 'use client';
 
 import { ProviderIcon } from '@lobehub/icons';
-import { Button, DropdownMenu, Flexbox, Icon } from '@lobehub/ui';
+import { DropdownMenu, Flexbox, Icon } from '@lobehub/ui';
+import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
 import { ChevronDown } from 'lucide-react';
 import { memo } from 'react';

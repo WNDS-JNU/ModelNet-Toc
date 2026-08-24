@@ -1,3 +1,5 @@
+import { getEmailSupportHtml } from '@/libs/email/support';
+
 /**
  * Password reset email template
  * Sent to users when they request a password reset
@@ -77,6 +79,9 @@ export const getResetPasswordEmailTemplate = (params: { url: string }) => {
 
     <!-- Footer -->
     <div style="text-align: center; margin-top: 32px;">
+      <p style="font-size: 13px; margin: 0 0 8px 0;">
+        ${getEmailSupportHtml()}
+      </p>
       <p style="color: #a1a1aa; font-size: 13px; margin: 0;">
         © ${new Date().getFullYear()} ModelNet. All rights reserved.
       </p>

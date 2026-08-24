@@ -1,4 +1,5 @@
-import { Icon, Tooltip, Tabs } from '@lobehub/ui';
+import { Icon, Tooltip } from '@lobehub/ui';
+import { Tabs } from '@lobehub/ui/base-ui';
 import { SlidersHorizontal, Sparkles } from 'lucide-react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';

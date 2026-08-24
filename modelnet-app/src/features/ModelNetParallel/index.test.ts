@@ -9,9 +9,9 @@ import {
 
 import {
   createModelNetUserProviderAlias,
-  getModelNetUserProviderCandidates,
   getModelNetParallelCandidates,
   getModelNetParallelProvider,
+  getModelNetUserProviderCandidates,
   isModelNetParallelModel,
   isModelNetSerialModel,
   modelIdsToModelNetSerialTopology,

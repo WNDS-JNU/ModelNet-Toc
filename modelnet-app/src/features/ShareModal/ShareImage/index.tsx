@@ -1,5 +1,6 @@
 import { type FormItemProps } from '@lobehub/ui';
-import { Button, Flexbox, Form, Tabs } from '@lobehub/ui';
+import { Flexbox, Form } from '@lobehub/ui';
+import { Button, Tabs } from '@lobehub/ui/base-ui';
 import { Switch } from 'antd';
 import { CopyIcon } from 'lucide-react';
 import { memo, useState } from 'react';
@@ -28,7 +29,7 @@ const DEFAULT_FIELD_VALUE: FieldType = {
 };
 
 const ShareImage = memo<{ mobile?: boolean }>(() => {
-  const currentAgentTitle = useAgentStore(agentSelectors.currentAgentTitle);
+  const currentAgentTitle = useAgentStore(agentSelectors.currentAgentDisplayName);
   const [fieldValue, setFieldValue] = useState<FieldType>(DEFAULT_FIELD_VALUE);
   const { t } = useTranslation(['chat', 'common']);
   const { context, dbMessages } = useShareData();

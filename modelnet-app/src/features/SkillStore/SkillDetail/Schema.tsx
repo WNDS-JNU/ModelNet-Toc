@@ -1,7 +1,8 @@
 'use client';
 
 import { type SkillItem } from '@lobechat/types';
-import { Flexbox, Skeleton, Tag, Tabs } from '@lobehub/ui';
+import { Flexbox, Skeleton, Tag } from '@lobehub/ui';
+import { Tabs } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';

@@ -1,3 +1,4 @@
+import { withOtelMetricsForUpstashWorkflows } from '@lobechat/observability-otel/modules/upstash-workflow';
 import { serve } from '@upstash/workflow/nextjs';
 import debug from 'debug';
 
@@ -9,6 +10,7 @@ import {
   type RunThreadTrajectoryPayload,
 } from '@/server/workflows/agentEvalRun';
 import { resolveAgentEvalRunWorkspace } from '@/server/workflows/agentEvalRun/utils';
+import { runStep } from '@/server/workflows/step';
 
 const log = debug('lobe-server:workflows:run-thread-trajectory');
 
@@ -17,7 +19,7 @@ const log = debug('lobe-server:workflows:run-thread-trajectory');
  * Each thread is an independent execution of the same test case.
  */
 export const { POST } = serve<RunThreadTrajectoryPayload>(
-  async (context) => {
+  withOtelMetricsForUpstashWorkflows(async (context) => {
     const { runId, testCaseId, threadId, topicId, userId } = context.requestPayload ?? {};
 
     log('Starting: runId=%s testCaseId=%s threadId=%s', runId, testCaseId, threadId);
@@ -31,13 +33,13 @@ export const { POST } = serve<RunThreadTrajectoryPayload>(
     const service = new AgentEvalRunService(db, userId, wsId);
 
     // Step 1: Load run + testCase data
-    const data = await context.run('thread-trajectory:load-data', () =>
+    const data = await runStep(context, 'thread-trajectory:load-data', () =>
       service.loadTrajectoryData(runId, testCaseId),
     );
 
     if ('error' in data) {
       // Record thread as errored so aggregation can proceed
-      await context.run('thread-trajectory:handle-load-error', async () => {
+      await runStep(context, 'thread-trajectory:handle-load-error', async () => {
         await service.recordThreadCompletion({
           runId,
           status: 'error',
@@ -50,7 +52,7 @@ export const { POST } = serve<RunThreadTrajectoryPayload>(
       return { error: data.error, success: false };
     }
 
-    const { run, testCase, envPrompt } = data;
+    const { environment, envPrompt, run, testCase } = data;
 
     if (run.status === 'aborted') {
       log('Run aborted, skipping: runId=%s testCaseId=%s threadId=%s', runId, testCaseId, threadId);
@@ -58,7 +60,7 @@ export const { POST } = serve<RunThreadTrajectoryPayload>(
     }
 
     // Step 2: Execute agent for this thread
-    const result = await context.run('thread-trajectory:exec-agent', () =>
+    const result = await runStep(context, 'thread-trajectory:exec-agent', () =>
       service.executeThreadTrajectory({
         envPrompt,
         run,
@@ -67,13 +69,14 @@ export const { POST } = serve<RunThreadTrajectoryPayload>(
         testCaseId,
         threadId,
         topicId,
+        environment,
       }),
     );
 
     if ('error' in result) {
       // execAgent failed to start — thread metadata already written by the service.
       // Check if all threads are done and handle finalization.
-      await context.run('thread-trajectory:handle-exec-error', async () => {
+      await runStep(context, 'thread-trajectory:handle-exec-error', async () => {
         const { allRunDone } = await service.recordThreadCompletion({
           runId,
           status: 'error',
@@ -95,7 +98,7 @@ export const { POST } = serve<RunThreadTrajectoryPayload>(
     log('Thread agent started: runId=%s testCaseId=%s threadId=%s', runId, testCaseId, threadId);
 
     return { success: true, testCaseId, threadId, topicId };
-  },
+  }),
   {
     flowControl: {
       key: 'agent-eval-run.run-thread-trajectory',

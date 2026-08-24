@@ -2,8 +2,7 @@
 
 import { useEditor } from '@lobehub/editor/react';
 import { ActionIcon, Block, Flexbox, Icon, Text } from '@lobehub/ui';
-import { useModalContext } from '@lobehub/ui/base-ui';
-import { Button } from 'antd';
+import { Button, toast, useModalContext } from '@lobehub/ui/base-ui';
 import { cssVar } from 'antd-style';
 import { Minimize2, Paperclip, UserCircle2, X } from 'lucide-react';
 import { type KeyboardEvent, memo, useCallback, useEffect, useRef, useState } from 'react';
@@ -35,6 +34,7 @@ export interface CreateTaskContentProps {
    */
   lockAssignee?: boolean;
   onCreated?: (task: { agentId?: string; identifier: string }) => void;
+  projectId?: string;
   /**
    * Whether to show the "minimize to inline entry" button. Only the list view has an
    * inline entry target, so contexts like the Kanban board pass `false` to hide it.
@@ -43,7 +43,7 @@ export interface CreateTaskContentProps {
 }
 
 const CreateTaskContent = memo<CreateTaskContentProps>(
-  ({ agentId, lockAssignee, onCreated, showInlineToggle = true }) => {
+  ({ agentId, lockAssignee, onCreated, projectId, showInlineToggle = true }) => {
     const { t } = useTranslation('chat');
     const { close } = useModalContext();
     const { allowed: canCreateTask, reason } = usePermission('create_content');
@@ -61,9 +61,9 @@ const CreateTaskContent = memo<CreateTaskContentProps>(
     // In personal mode the field is irrelevant and the chip is hidden anyway.
     const [visibility, setVisibility] = useState<'private' | 'public'>('private');
 
-    // LOBE-10961: a private agent can only run a private task. When the
-    // selected agent is private we force visibility back to private and lock
-    // the chip so the user can't pick Workspace.
+    // A private agent can only run a private task. When the selected agent
+    // is private we force visibility back to private and lock the chip so
+    // the user can't pick Workspace.
     const assigneeVisibility = useAgentVisibility(assigneeAgentId);
     const isPrivateAgent = assigneeVisibility === 'private';
     useEffect(() => {
@@ -98,22 +98,29 @@ const CreateTaskContent = memo<CreateTaskContentProps>(
 
       const editorJson = editor?.getDocument?.('json') as unknown;
 
-      const result = await createTask({
-        assigneeAgentId,
-        editorData: editorJson,
-        instruction: instruction || title.trim(),
-        name: title.trim() || undefined,
-        priority: priority || undefined,
-        // Only send visibility in workspace mode; personal mode ignores it.
-        visibility: activeWorkspaceId ? visibility : undefined,
-      });
-
-      if (result) {
-        close();
-        onCreated?.({
-          agentId: result.assigneeAgentId ?? undefined,
-          identifier: result.identifier,
+      // `createTask` keeps its rejecting contract; surface the failure here so a
+      // failed create isn't silent and the modal stays open with its content.
+      try {
+        const result = await createTask({
+          assigneeAgentId,
+          editorData: editorJson,
+          instruction: instruction || title.trim(),
+          name: title.trim() || undefined,
+          priority: priority || undefined,
+          projectId,
+          // Only send visibility in workspace mode; personal mode ignores it.
+          visibility: activeWorkspaceId ? visibility : undefined,
         });
+
+        if (result) {
+          close();
+          onCreated?.({
+            agentId: result.assigneeAgentId ?? undefined,
+            identifier: result.identifier,
+          });
+        }
+      } catch {
+        toast.error(t('createTask.createFailed'));
       }
     }, [
       activeWorkspaceId,
@@ -124,6 +131,8 @@ const CreateTaskContent = memo<CreateTaskContentProps>(
       editor,
       onCreated,
       priority,
+      projectId,
+      t,
       title,
       visibility,
     ]);

@@ -30,7 +30,7 @@ const OPENCOMPASS_GROUP = {
   id: 'opencompass',
   name: {
     'en-US': 'OpenCompass',
-    'zh-CN': '\u53f8\u5357 OpenCompass',
+    'zh-CN': '\u53F8\u5357 OpenCompass',
   },
 } satisfies SourceGroup;
 
@@ -38,7 +38,7 @@ const LOCAL_GROUP = {
   id: 'local',
   name: {
     'en-US': 'ModelNet Benchmark',
-    'zh-CN': 'ModelNet \u81ea\u6d4b',
+    'zh-CN': 'ModelNet \u81EA\u6D4B',
   },
 } satisfies SourceGroup;
 
@@ -187,11 +187,11 @@ export async function GET() {
       source: {
         name: {
           'en-US': 'ModelNet leaderboard',
-          'zh-CN': 'ModelNet \u6a21\u578b\u6392\u884c',
+          'zh-CN': 'ModelNet \u6A21\u578B\u6392\u884C',
         },
         sources: [OPENCOMPASS_GROUP, local.source].map((source) => ({
           ...source,
-          count: counts[source.id] || 0,
+          count: source.id ? counts[source.id] || 0 : 0,
         })),
       },
     });

@@ -10,67 +10,74 @@ import {
   normalizeModelNetParallelModelIds,
   normalizeModelNetSerialTopology,
 } from '@/features/ModelNetParallel';
+import { usePermission } from '@/hooks/usePermission';
 import { useAgentStore } from '@/store/agent';
-import { agentSelectors } from '@/store/agent/selectors';
 import { type EnabledProviderWithModels } from '@/types/aiProvider';
 
 import { type ModelChangeParams } from '../types';
 
 interface UsePanelHandlersProps {
-  enabledList: EnabledProviderWithModels[];
+  enabledList?: EnabledProviderWithModels[];
   onModelChange?: (params: ModelChangeParams) => Promise<void>;
   onOpenChange?: (open: boolean) => void;
   runtimeConfig?: ModelNetProviderRuntimeConfigMap;
 }
 
 export const usePanelHandlers = ({
-  enabledList,
+  enabledList = [],
   onModelChange: onModelChangeProp,
   onOpenChange,
   runtimeConfig,
 }: UsePanelHandlersProps) => {
+  const { allowed: canCreateContent } = usePermission('create_content');
   const updateAgentConfig = useAgentStore((s) => s.updateAgentConfig);
-  const currentAgentParams = useAgentStore((s) => agentSelectors.currentAgentConfig(s)?.params);
+  const currentAgentParams = useAgentStore((s) => s.agentMap?.[s.activeAgentId || '']?.params);
 
   const handleModelChange = useCallback(
     (modelId: string, providerId: string) => {
-      // Defer store update so the panel close animation completes
-      // before React re-renders with new data (prevents detail panel flash).
-      setTimeout(() => {
-        const params: ModelChangeParams = { model: modelId, provider: providerId };
+      if (!canCreateContent) return;
 
-        if (isModelNetParallelModel(providerId, modelId)) {
-          const candidates = getModelNetParallelCandidates(enabledList, providerId, runtimeConfig);
-          const modelnetParallelModelIds = normalizeModelNetParallelModelIds(
-            currentAgentParams?.modelnetParallelModelIds,
-            candidates,
-          );
+      // Commit synchronously so a quick send after closing the panel uses the new model.
+      const params: ModelChangeParams = { model: modelId, provider: providerId };
 
-          if (modelnetParallelModelIds.length >= MIN_MODELNET_PARALLEL_MODELS) {
-            params.params = { ...currentAgentParams, modelnetParallelModelIds };
-          }
+      if (isModelNetParallelModel(providerId, modelId)) {
+        const candidates = getModelNetParallelCandidates(enabledList, providerId, runtimeConfig);
+        const modelnetParallelModelIds = normalizeModelNetParallelModelIds(
+          currentAgentParams?.modelnetParallelModelIds,
+          candidates,
+        );
+
+        if (modelnetParallelModelIds.length >= MIN_MODELNET_PARALLEL_MODELS) {
+          params.params = { ...currentAgentParams, modelnetParallelModelIds };
         }
+      }
 
-        if (isModelNetSerialModel(providerId, modelId)) {
-          const candidates = getModelNetParallelCandidates(enabledList, providerId, runtimeConfig);
-          const modelnetSerialTopology = normalizeModelNetSerialTopology(
-            currentAgentParams?.modelnetSerialTopology,
-            candidates,
-          );
+      if (isModelNetSerialModel(providerId, modelId)) {
+        const candidates = getModelNetParallelCandidates(enabledList, providerId, runtimeConfig);
+        const modelnetSerialTopology = normalizeModelNetSerialTopology(
+          currentAgentParams?.modelnetSerialTopology,
+          candidates,
+        );
 
-          if (modelnetSerialTopology.nodes.length >= MIN_MODELNET_SERIAL_MODELS) {
-            params.params = { ...currentAgentParams, modelnetSerialTopology };
-          }
+        if (modelnetSerialTopology.nodes.length >= MIN_MODELNET_SERIAL_MODELS) {
+          params.params = { ...currentAgentParams, modelnetSerialTopology };
         }
+      }
 
-        if (onModelChangeProp) {
-          onModelChangeProp(params);
-        } else {
-          updateAgentConfig(params);
-        }
-      }, 150);
+      if (onModelChangeProp) {
+        void onModelChangeProp(params);
+      } else {
+        void updateAgentConfig(params);
+      }
     },
-    [currentAgentParams, enabledList, onModelChangeProp, runtimeConfig, updateAgentConfig],
+    [
+      canCreateContent,
+      currentAgentParams,
+      enabledList,
+      onModelChangeProp,
+      runtimeConfig,
+      updateAgentConfig,
+    ],
   );
 
   const handleClose = useCallback(() => {
