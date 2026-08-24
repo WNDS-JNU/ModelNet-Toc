@@ -33,7 +33,7 @@ ModelNet 当前是一个部署在远端 `4A100` 机器上的 multi-model gateway
 | Host binding | `127.0.0.1:3092` |
 | Container port | `8000` |
 
-当前 router 通过 Docker Compose 单独 build/restart；通常不需要重启 LiteLLM、ModelNet、数据库或模型后端服务。
+当前 router 通过 Docker Compose 单独 build/restart；通常不需要重启 ModelNet App、数据库或模型后端服务。
 
 ### 2.2 Router endpoints
 

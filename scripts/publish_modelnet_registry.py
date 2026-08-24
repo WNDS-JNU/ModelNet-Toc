@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Publish a versioned ModelNet registry bundle.
 
-The bundle is the runtime contract shared by Router and LiteLLM.  It keeps the
-raw ModelNet registry and derived configs in one published version instead of
-binding individual files into containers.
+The bundle is the Router runtime contract. It publishes one immutable
+capability registry version with matching version and checksum metadata.
 """
 
 from __future__ import annotations
@@ -22,14 +21,10 @@ from typing import Any
 
 import yaml
 
-import sync_modelnet_litellm
-
-
 DEFAULT_SOURCE = Path("/home/duxianghe/modelnet-runtime/registry-source/capability-registry.yaml")
 DEFAULT_ROOT = Path("/home/duxianghe/modelnet-runtime/registry-dev")
 CHECKSUM_FILES = (
     "capability-registry.yaml",
-    "litellm/modelnet-config.yaml",
     "version.json",
 )
 CHAT_BACKENDS = {"llama_cpp", "ollama", "openai_compatible", "vllm_chat"}
@@ -351,35 +346,6 @@ def render_capability_registry(
     )
 
 
-def render_litellm_config(source: Path, output: Path) -> list[str]:
-    models = sync_modelnet_litellm.load_registry(source)
-    config, model_names = sync_modelnet_litellm.build_config(models)
-    if len(model_names) <= 2:
-        raise RegistryPublishError(f"No concrete backend chat models generated from {source}")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(config, encoding="utf-8")
-    validate_litellm_config(output)
-    return model_names
-
-
-def validate_litellm_config(path: Path) -> None:
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
-        raise RegistryPublishError(f"Cannot load LiteLLM config {path}: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise RegistryPublishError("LiteLLM config top-level value must be a mapping")
-    model_list = raw.get("model_list")
-    if not isinstance(model_list, list):
-        raise RegistryPublishError("LiteLLM config must contain model_list")
-    names = {item.get("model_name") for item in model_list if isinstance(item, dict)}
-    missing = {"modelnet", "modelnet-auto"} - names
-    if missing:
-        raise RegistryPublishError(f"LiteLLM config missing required entries: {sorted(missing)}")
-    concrete = names - {"modelnet", "modelnet-auto"}
-    if not concrete:
-        raise RegistryPublishError("LiteLLM config must include at least one concrete backend model")
-
 
 def write_checksums(bundle_dir: Path) -> dict[str, str]:
     checksums = {relative: sha256_file(bundle_dir / relative) for relative in CHECKSUM_FILES}
@@ -400,7 +366,6 @@ def build_bundle(source: Path, build_dir: Path, *, version: str, generated_at: s
     )
     capability_registry_target = build_dir / "capability-registry.yaml"
     capability_registry_target.write_text(capability_text, encoding="utf-8")
-    render_litellm_config(capability_registry_target, build_dir / "litellm" / "modelnet-config.yaml")
 
     version_payload = {
         "version": version,

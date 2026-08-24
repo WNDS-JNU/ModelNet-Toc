@@ -110,7 +110,7 @@ services:
       - modelnet-dev-network
 
   modelnet-router:
-    image: modelnet-toc-modelnet-router:parallel-visible-recovery-20260722
+    image: ${DEV_ROUTER_IMAGE:-modelnet-toc-dev-modelnet-router}
     container_name: modelnet-router-dev
     build:
       context: ./modelnet_router
@@ -166,31 +166,6 @@ services:
       timeout: 22s
       retries: 12
       start_period: 15s
-    networks:
-      - modelnet-dev-network
-
-  litellm:
-    image: ${DEV_LITELLM_IMAGE:-modelnet-toc-litellm-modelnet}
-    container_name: modelnet-litellm-dev
-    restart: unless-stopped
-    depends_on:
-      modelnet-router:
-        condition: service_healthy
-    environment:
-      MODELNET_LITELLM_API_KEY: ${MODELNET_LITELLM_API_KEY}
-      MODELNET_BACKEND_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
-      SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
-    volumes:
-      - type: bind
-        source: ./litellm/modelnet-config.yaml
-        target: /app/config.yaml
-        read_only: true
-    ports:
-      - "127.0.0.1:${DEV_LITELLM_PORT:-3190}:8000"
-    expose:
-      - "8000"
-    command:
-      ["--config", "/app/config.yaml", "--port", "8000", "--num_workers", "4"]
     networks:
       - modelnet-dev-network
 

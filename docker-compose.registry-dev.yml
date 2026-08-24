@@ -16,19 +16,3 @@ services:
       - type: volume
         source: modelnet_dev_claims
         target: /data/modelnet_claims
-
-  litellm:
-    volumes: !override
-      - type: bind
-        source: ${MODELNET_REGISTRY_DEV_ROOT:-/home/duxianghe/modelnet-runtime/registry-dev}
-        target: /etc/modelnet/registry
-        read_only: true
-    command:
-      [
-        "--config",
-        "/etc/modelnet/registry/current/litellm/modelnet-config.yaml",
-        "--port",
-        "8000",
-        "--num_workers",
-        "4",
-      ]

@@ -16,27 +16,25 @@
 <!-- codex-memory:modelnet-dev-stack:start -->
 ## Current Memory: Isolated TOC Dev Stack and Promotion Rule
 
-- As of 2026-06-18, the project has an isolated dev stack on `4A100` in `/home/duxianghe/ModelNet-toc`, defined by `docker-compose.dev.yml` and ignored `.env.dev`.
+- As of 2026-08-24, the project has an isolated dev stack on `4A100` in `/home/duxianghe/ModelNet-toc`, defined by `docker-compose.dev.yml` and ignored `.env.dev`.
 - Development policy: make code/config changes and test them on the dev stack first. Promote to the production stack only after dev verification passes.
-- The dev stack includes TOC/ModelNet app, `modelnet-router`, LiteLLM, and private dev dependencies: Postgres, Redis, RustFS, and searxng.
+- The dev stack includes TOC/ModelNet app, `modelnet-router`, and private dev dependencies: Postgres, Redis, RustFS, and searxng.
 - Dev stack identity:
   - Compose project/network: `modelnet-toc-dev` / `modelnet-toc-dev_modelnet-dev-network`.
-  - Main containers: `modelnet-toc-dev-app`, `modelnet-toc-dev-lb`, `modelnet-router-dev`, `modelnet-litellm-dev`.
+  - Main containers: `modelnet-toc-dev-app`, `modelnet-toc-dev-lb`, `modelnet-router-dev`.
   - Dev volumes are project-scoped under `modelnet-toc-dev_*`, separate from production volumes.
 - Dev host bindings are local-only on 4A100:
   - TOC: `127.0.0.1:3181 -> 80`.
-  - LiteLLM: `127.0.0.1:3190 -> 8000`.
   - Router: `127.0.0.1:3192 -> 8000`.
   - RustFS dev: `127.0.0.1:9180 -> 9000`, `127.0.0.1:9181 -> 9001`.
 - Dev isolation rule: do not attach the dev router to production Dify's `docker_default` network with alias `modelnet-gateway`; that alias belongs to production routing.
-- Dev TOC should point at dev services: `APP_URL=http://127.0.0.1:3181`, `OPENAI_PROXY_URL=http://litellm:8000/v1`, `REDIS_PREFIX=modelnet-toc-dev`, and `S3_ENDPOINT=http://rustfs:9000`.
-- `modelnet-litellm-dev` currently reuses the existing `modelnet-toc-litellm-modelnet` image, but runs as a separate dev container with separate port, network, and mounted config.
-- This Codex/workspace session is already on 4A100. For commands, run them directly in `/home/duxianghe/ModelNet-toc`; from another machine, use an SSH tunnel such as `ssh -N -L 3181:127.0.0.1:3181 -L 3190:127.0.0.1:3190 -L 3192:127.0.0.1:3192 4A100`, then open `http://127.0.0.1:3181`.
+- Dev TOC should point at dev services: `APP_URL=http://127.0.0.1:3181`, `OPENAI_PROXY_URL=http://modelnet-router:8000/v1`, `REDIS_PREFIX=modelnet-toc-dev`, and `S3_ENDPOINT=http://rustfs:9000`.
+- This Codex/workspace session is already on 4A100. For commands, run them directly in `/home/duxianghe/ModelNet-toc`; from another machine, use an SSH tunnel such as `ssh -N -L 3181:127.0.0.1:3181 -L 3192:127.0.0.1:3192 4A100`, then open `http://127.0.0.1:3181`.
 - Useful dev commands:
   - Status: `cd /home/duxianghe/ModelNet-toc && docker compose --env-file .env --env-file .env.dev -f docker-compose.dev.yml ps`.
   - Start after images exist: `cd /home/duxianghe/ModelNet-toc && docker compose --env-file .env --env-file .env.dev -f docker-compose.dev.yml up -d --no-build --pull never`.
   - Stop while preserving dev data: `cd /home/duxianghe/ModelNet-toc && docker compose --env-file .env --env-file .env.dev -f docker-compose.dev.yml down`.
-- Verification on 2026-06-18: dev TOC `/signin` returned `200`, dev router `/healthz` returned `status: ok`, LiteLLM liveliness/readiness returned `200`, and production `3081/3090/3092` remained healthy.
+- Verification on 2026-08-24: dev Router `/healthz` returned `status: ok` with the Router-only registry version and checksum; production `3081/3092` remained untouched.
 <!-- codex-memory:modelnet-dev-stack:end -->
 
 <!-- codex-memory:modelnet-capability-registry-v1-dev:start -->
@@ -44,23 +42,22 @@
 
 - As of 2026-06-23, the dev registry source and bundle are centered on one self-contained `capability-registry.yaml` file with schema `modelnet.capabilities.v1`. The file contains capability groups plus an embedded `models` inventory that replaces the old runtime use of `model_net.yaml`.
 - Source producer default output is `/home/duxianghe/modelnet-runtime/registry-source/capability-registry.yaml`; publisher default source is the same file. Published dev bundles no longer include `model_net.yaml`.
-- Current verified dev bundle: `/home/duxianghe/modelnet-runtime/registry-dev/versions/2026-06-23T10-09-11Z`; files are `capability-registry.yaml`, `litellm/modelnet-config.yaml`, `version.json`, and `checksums.sha256`.
-- Dev Router is configured with `MODELNET_REGISTRY_PATH=/etc/modelnet/registry/current/capability-registry.yaml`; `/healthz` returned `200` and reported registry version `2026-06-23T10-09-11Z`, 18 ready chat candidates, and registry path ending in `capability-registry.yaml`.
-- Dev LiteLLM uses `/etc/modelnet/registry/current/litellm/modelnet-config.yaml`, generated from the same capability registry.
+- Current verified dev bundle: `/home/duxianghe/modelnet-runtime/registry-dev/versions/2026-08-24T01-34-51Z`; files are `capability-registry.yaml`, `version.json`, and `checksums.sha256`.
+- Dev Router is configured with `MODELNET_REGISTRY_PATH=/etc/modelnet/registry/current/capability-registry.yaml`; `/healthz` returned `200` and reported registry version `2026-08-24T01-34-51Z`, checksum source `checksums.sha256`, and registry path ending in `capability-registry.yaml`.
 - Dev ModelNet app/TOC uses `docker-compose.router-direct-dev.yml`, so `OPENAI_PROXY_URL=http://modelnet-router:8000/v1`; `.env.modelnet` was regenerated from `/home/duxianghe/modelnet-runtime/registry-dev/current/capability-registry.yaml` for the model list.
 - Verification passed: dev Router `/v1/models` returned `200` with `modelnet-auto`, no embedding/reranker chat exposure; dev TOC `/signin` returned `200`; a minimal direct Router `modelnet-auto` chat smoke returned HTTP `200`.
-- Runtime check found no `model_net.yaml` reference in Router/LiteLLM/ModelNet app env/cmd/current bundle, and the current dev bundle has no `model_net.yaml` file.
+- Runtime check found no `model_net.yaml` reference in the Dev Router environment or current bundle; the current dev bundle has no `model_net.yaml` file.
 - Generator bug fixed during verification: reranker/score/classification/cross-encoder models are treated as non-chat, so rerankers are absent from capability candidates and chat model exposure.
 - Relevant verification commands passed:
-  - `python3 -m unittest scripts/test_publish_modelnet_registry.py scripts/test_modelnet_registry_source.py scripts/test_sync_modelnet_litellm.py scripts/test_sync_modelnet_app.py`
-  - `python3 -m py_compile scripts/publish_modelnet_registry.py scripts/modelnet_registry_source.py scripts/sync_modelnet_litellm.py scripts/sync_modelnet_app.py modelnet_router/app.py`
+  - `python3 -m unittest scripts/test_publish_modelnet_registry.py scripts/test_modelnet_registry_source.py scripts/test_sync_modelnet_app.py`
+  - `python3 -m py_compile scripts/publish_modelnet_registry.py scripts/modelnet_registry_source.py scripts/sync_modelnet_app.py modelnet_router/app.py`
 - Note: a dev Router rebuild attempt timed out while fetching Docker base-image metadata, so the running Router was recreated with the existing image plus updated compose env. The registry-path switch is verified at runtime.
 <!-- codex-memory:modelnet-capability-registry-v1-dev:end -->
 
 ## Model Deployment
 
 - Local-LAN ModelNet inference backends are deployed through Kubernetes.
-- LiteLLM is the outer OpenAI-compatible proxy. Aggregate/auto aliases such as `modelnet` and `modelnet-auto` go to `modelnet-router`; concrete backend model IDs go directly to their generated K8S backend endpoints.
+- `modelnet-router` is the OpenAI-compatible gateway. Aggregate/auto aliases and concrete backend model IDs all enter Router, which routes to generated K8S backend endpoints.
 - Do not assume model backends are local Docker Compose services when running smoke tests or debugging backend availability.
 
 ## P0 Smoke Notes
@@ -95,7 +92,7 @@
 - Aliyun Nginx config is `/etc/nginx/conf.d/toc-dify-tailscale.conf`.
   - `http://123.56.135.150/` and `http://toc.123.56.135.150.sslip.io/` proxy to `100.116.34.3:3081` (TOC).
   - `http://123.56.135.150:8080/` and `http://tob.123.56.135.150.sslip.io/` proxy to `100.116.34.3:80` (Dify / TOB).
-  - Aliyun does **not** proxy ModelNet gateway ports `3090` or `3092`; public access to `123.56.135.150:3090` and `:3092` should fail.
+  - Aliyun does **not** proxy ModelNet gateway port `3092`; public access to `123.56.135.150:3092` should fail.
 - Current 4A100 project root is `/home/duxianghe/ModelNet-toc`; all development for this project happens there.
 - TOC compose chain:
   - `modelnet-toc-lb` (`toc-lb`) publishes `0.0.0.0:3081 -> 80` and uses `haproxy.cfg`.
@@ -104,24 +101,18 @@
   - `.env` currently sets `APP_URL=http://123.56.135.150`; this was required so auth callbacks stop pointing at `http://10.154.22.10:3081`.
 - ModelNet internal chain from TOC:
   - ModelNet app code adds ModelNet payload controls in `modelnet-app/src/services/chat/index.ts` and ModelNet constants live in `modelnet-app/src/features/ModelNetParallel/index.ts`.
-  - ModelNet app calls internal `modelnet-litellm` on the compose network. LiteLLM also publishes `127.0.0.1:3090->8000` only for local debugging.
-  - LiteLLM config is `litellm/modelnet-config.yaml`. It defines `modelnet` and `modelnet-auto` as `openai/*` aliases with `api_base: http://modelnet-router:8000/v1` and `allowed_openai_params: [modelnet]`.
+  - ModelNet app calls internal `modelnet-router:8000/v1` directly on the Compose network.
   - `modelnet-router` is exposed only as `127.0.0.1:3092->8000` and as compose alias `modelnet-gateway` on `lobe-network` and `dify-default`.
   - Router registry is mounted from `/home/duxianghe/dify/api/configs/model_net.yaml` into `/app/model_net.yaml`.
   - Router source of truth is `modelnet_router/app.py`; runner aliases are registered in `modelnet_router/modelnet_gateway/plugins.py`.
 - Current model naming / API behavior:
   - `modelnet_router/app.py` defines `PUBLIC_MODEL_NAME=modelnet` and `PUBLIC_AUTO_MODEL_NAME=modelnet-auto`.
   - Current code treats `modelnet` as retired for automatic networking and says to use `modelnet-auto`.
-  - Existing LiteLLM config still contains both aliases, so UI/model selection may still send `model=modelnet`.
-- Current public-error diagnosis:
-  - The observed public URL error `litellm.MidStreamFallbackError ... Received Model Group=modelnet` is **not** caused by needing to expose LiteLLM publicly.
-  - The request reaches TOC and internal LiteLLM. Logs show LiteLLM forwarding `/v1/responses` to concrete backends such as llama.cpp endpoints, e.g. `.../v1/responses`, where some backends return `404 File Not Found`.
-  - Likely root class: Responses API compatibility / model alias selection / backend capability mismatch, not Aliyun or Tailscale routing.
-  - First debug direction: reproduce locally on this 4A100 device against `modelnet-litellm` and `modelnet-router`, compare `modelnet` vs `modelnet-auto`, and either route Responses API only to compatible backends or force chat-completions-compatible flow for incompatible llama.cpp backends.
+  - UI/model selection should use `modelnet-auto`; the retired `modelnet` automatic-network alias remains a compatibility concern in Router code only.
 - Useful verification commands:
   - `ssh aliyunM "nginx -t && systemctl is-active nginx && tailscale status"`
   - `ssh aliyunM "curl -sS -L -o /tmp/toc.html -w '%{http_code}\n' http://127.0.0.1/"`
   - `ssh aliyunM "curl -sS -L -o /tmp/dify.html -w '%{http_code}\n' http://127.0.0.1:8080/"`
   - `cd /home/duxianghe/ModelNet-toc && docker compose ps`
-  - `cd /home/duxianghe/ModelNet-toc && docker compose logs --tail=200 litellm modelnet-router`
+  - `cd /home/duxianghe/ModelNet-toc && docker compose logs --tail=200 modelnet-router`
 <!-- codex-memory:modelnet-public-chain:end -->

@@ -1,5 +1,7 @@
 # ModelNet Dev Output Fallback Repair Notes (2026-07-07)
 
+> 历史记录（2026-08-24 注）：本文保留 LiteLLM 退役前的架构或排障证据。当前 ModelNet App/SDK 直接访问 `modelnet-router`，文中的 3090/3190、LiteLLM 容器和相关操作命令不再适用。
+
 ## Context
 
 Dev URL reported by user:

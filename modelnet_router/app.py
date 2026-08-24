@@ -5106,7 +5106,7 @@ def openai_modelnet_event_payload(
             }
         ]
     else:
-        # LiteLLM's stream handler assumes every OpenAI stream chunk has choices[0].
+        # Some OpenAI-compatible stream handlers assume every OpenAI stream chunk has choices[0].
         choices = [{"index": 0, "delta": {}, "finish_reason": None}]
     payload = {
         "id": request_id,
@@ -6151,9 +6151,9 @@ async def stream_backend(candidate: Candidate, request_id: str, body: dict[str, 
         ):
             events, buffer = split_sse_events(buffer, chunk)
             for event_chunk in events:
-                yield litellm_safe_openai_stream_chunk(event_chunk)
+                yield openai_compatible_safe_stream_chunk(event_chunk)
         if buffer.strip():
-            yield litellm_safe_openai_stream_chunk(buffer + b"\n\n")
+            yield openai_compatible_safe_stream_chunk(buffer + b"\n\n")
     except httpx.HTTPStatusError as exc:
         if response_should_cooldown(exc.response.status_code):
             error = f"backend status {exc.response.status_code}"
@@ -8062,7 +8062,7 @@ def sse_chunk(event: str, data: dict[str, Any]) -> bytes:
     return (prefix + f"data: {json.dumps(data, ensure_ascii=False)}\n\n").encode("utf-8")
 
 
-def litellm_safe_openai_stream_chunk(chunk: bytes) -> bytes:
+def openai_compatible_safe_stream_chunk(chunk: bytes) -> bytes:
     event, data = parse_sse_chunk(chunk)
     if data.get("raw") == "[DONE]":
         return chunk

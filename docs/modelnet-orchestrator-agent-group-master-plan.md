@@ -121,7 +121,7 @@ modelnet-router 已经具备：
 - UI 和请求层存在内部候选字段、运行时地址和 Provider 概念混杂的风险。
 - 当前群组能力偏向共享会话发言，没有成为持久、可恢复的多助理任务执行器。
 - broadcast 观点模式默认禁用工具，但这不能代表所有群组模式都应禁用工具。
-- LiteLLM 相关配置仍可能残留在开发 Compose、环境变量、生成脚本和文档中。
+- 项目自有 LiteLLM 运行服务、端口、变量和生成脚本已于 2026-08-24 清理；历史材料与上游通用 Provider 兼容代码不属于运行依赖。
 - 直接在上游 App 内堆叠 ModelNet 业务逻辑会扩大未来同步上游的冲突面。
 
 ## 五、目标总体架构
@@ -850,7 +850,7 @@ CI 至少包含：
 
 整体拆分为 15 个可独立验收阶段（阶段 0–14）。所有阶段必须独立提交、默认可关闭，并有明确退出门禁；不得跨阶段提前启用生产流量。
 
-### 阶段 0：基线、ADR 与 LiteLLM 退役
+### 阶段 0：基线、ADR 与 LiteLLM 退役（退役子项已完成）
 
 交付：
 
@@ -860,13 +860,13 @@ CI 至少包含：
 - 审计 provider=openai 加 modelnet-* 的历史助理。
 - 全仓、Capability Registry、配置生成、Model Bank、API 输出、数据库活动配置、测试和文档专项审计精确模型 ID modelnet。
 - 生成精确 modelId=modelnet 的历史记录迁移清单；语义不明确的记录标记为阻塞，不做自动猜测。
-- 从目标架构和 Dev 栈移除 LiteLLM 服务、3190 端口、环境变量和生成脚本。
+- 已从目标架构和 Dev 栈移除 LiteLLM 服务、3190 端口、环境变量和生成脚本。
 - 保留上游通用 LiteLLM 响应兼容代码，不因名称相似误删。
 
 退出门禁：
 
 - Dev App 3181 和 Router/Orchestrator 3192 健康。
-- 无运行请求依赖 3190。
+- 已确认无运行请求依赖 3190。
 - 基线测试与历史配置清单可复现。
 - 生产 Compose 未改动。
 
@@ -1330,7 +1330,7 @@ Feature Flag 应支持按环境、工作区和群组逐级启用。
 - [ ] Orchestrator 北向只公开虚拟编排模型。
 - [ ] 任意已授权 App Provider 可作为显式模型候选。
 - [ ] Provider Key、Base URL 和 endpoint 不离开 App 安全边界。
-- [ ] LiteLLM 已从目标 Dev 运行链和活动文档移除。
+- [x] LiteLLM 已从目标 Dev 运行链和活动文档移除。
 - [ ] Agent Plane 拥有独立数据库和可恢复状态机。
 - [ ] AgentTask 契约只引用完整 agentId。
 - [ ] 普通助理原有工具得到保留且权限不会被扩大。
@@ -1348,7 +1348,7 @@ Feature Flag 应支持按环境、工作区和群组逐级启用。
 第一次实施只做阶段 0–2，不同时启动 Agent Plane：
 
 1. 锁定 ADR、基线、Feature Flag 和上游接缝。
-2. 清理 LiteLLM 的 Dev 残留，但不修改生产栈。
+2. 已清理 LiteLLM 的 Dev 残留，未修改生产栈。
 3. 重构现有 modelnet Provider 的服务端动态路由，并彻底删除精确模型 ID modelnet。
 4. 让具体 Registry 模型由 App 直连 K8S。
 5. 保持三个虚拟模型继续访问现有 Router/Orchestrator 虚拟模型入口。

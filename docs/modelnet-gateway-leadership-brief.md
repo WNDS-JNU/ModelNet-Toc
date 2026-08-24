@@ -7,7 +7,7 @@
 
 ## 1. 一页摘要
 
-ModelNet Gateway 的定位不是普通 HTTP 代理，而是模型服务的统一入口和调度层。它把上层应用、LiteLLM、OpenAI-compatible SDK、ModelNet Native 请求统一接入，再根据模型注册表、租户权限、模型能力、健康状态、K8s/Prometheus 负载和协作策略选择后端模型服务。
+ModelNet Gateway 的定位不是普通 HTTP 代理，而是模型服务的统一入口和调度层。它把上层应用、OpenAI-compatible SDK、ModelNet Native 请求统一接入，再根据模型注册表、租户权限、模型能力、健康状态、K8s/Prometheus 负载和协作策略选择后端模型服务。
 
 这套网关的直接价值是：减少上层系统对具体模型后端的耦合，把模型新增、替换、限权、降级、观测和多模型协作集中在统一平台层处理。对业务侧来说，调用方式更稳定；对平台侧来说，模型资源调度和治理能力更集中；对研发侧来说，后续新增模型、后端类型和协作策略都有明确扩展点。
 
@@ -23,9 +23,9 @@ ModelNet Gateway 的定位不是普通 HTTP 代理，而是模型服务的统一
 
 ## 3. 总体技术方案
 
-线上链路可以概括为：ModelNet / SDK / 业务服务 -> LiteLLM。LiteLLM 对 `modelnet` / `modelnet-auto` 这类聚合或自动路由入口转发到 modelnet-router；对具体后端模型 ID 则按生成配置直接转发到 vLLM、llama.cpp、OpenAI-compatible、Ollama 等模型后端。
+线上链路可以概括为：ModelNet / SDK / 业务服务 -> modelnet-router -> 模型后端。`modelnet-auto` 和具体后端模型 ID 都由 Router 统一接入，并路由到 vLLM、llama.cpp、OpenAI-compatible、Ollama 等模型后端。
 
-`modelnet-router` 位于 LiteLLM 的聚合/自动路由入口与真实模型后端之间。它对上承接标准聊天请求和 ModelNet Native 协作请求，对下屏蔽不同模型后端的协议差异。核心设计是先把请求转换为统一内部 IR，再进入鉴权、能力匹配、路由评分、后端适配和结果输出流程。
+`modelnet-router` 位于上层客户端与真实模型后端之间。它对上承接标准聊天请求和 ModelNet Native 协作请求，对下屏蔽不同模型后端的协议差异。核心设计是先把请求转换为统一内部 IR，再进入鉴权、能力匹配、路由评分、后端适配和结果输出流程。
 
 ## 4. 核心能力分层
 
@@ -52,7 +52,7 @@ ModelNet Gateway 的定位不是普通 HTTP 代理，而是模型服务的统一
 
 | 模块 | 当前状态 | 说明 |
 |---|---|---|
-| OpenAI-compatible 入口 | 已实现 | 支持 `/v1/chat/completions`，适配 ModelNet、LiteLLM 和 OpenAI SDK 风格调用 |
+| OpenAI-compatible 入口 | 已实现 | 支持 `/v1/chat/completions`，适配 ModelNet App 和 OpenAI SDK 风格调用 |
 | ModelNet Native 入口 | 已实现 | 支持 `/v1/runs/stream`，用于显式控制 runner、aggregator 和 trace |
 | 模型注册表 | 已实现 | 通过 `MODELNET_REGISTRY_PATH` 加载，支持 alias、capabilities、backend type |
 | 租户鉴权 | 已实现 | 支持 JSON、多 key、legacy key 和匿名模式 |

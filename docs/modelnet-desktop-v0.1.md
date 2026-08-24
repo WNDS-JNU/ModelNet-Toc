@@ -22,11 +22,11 @@ ModelNet Desktop
   -> 4A100:3081
   -> modelnet-toc-lb
   -> modelnet-toc-app
-  -> modelnet-litellm / modelnet-router
+  -> modelnet-router
 ```
 
 This keeps the first release small: the desktop app is only the UI/client shell, while data,
-auth, model routing, leaderboard data, LiteLLM, and router state remain server-side.
+auth, model routing, leaderboard data, and router state remain server-side.
 
 ## v0.1 scope
 
@@ -43,7 +43,7 @@ Included:
 
 Deferred:
 
-- Bundling Docker/PostgreSQL/Redis/LiteLLM/modelnet-router inside the desktop app.
+- Bundling Docker/PostgreSQL/Redis/modelnet-router inside the desktop app.
 - Code signing, notarization, and auto-update publishing.
 - Final icon replacement and full removal of upstream ModelNet wording.
 - Windows/macOS release builds from their native platforms.

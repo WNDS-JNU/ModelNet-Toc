@@ -60,8 +60,7 @@ python3 scripts/modelnet_registry_source.py \
 The source producer applies a built-in temporary blocklist for chat models that
 were removed after Chinese TOC-like quality probes. Blocked model IDs are
 filtered before `capability-registry.yaml` is written, so they do not reappear
-in Router candidates, LiteLLM generated config, or ModelNet generated model
-lists after discovery is rerun.
+in Router candidates or ModelNet generated model lists after discovery is rerun.
 
 Additional IDs can be withheld with either form:
 
@@ -90,8 +89,8 @@ python3 scripts/publish_modelnet_registry.py \
 ```
 
 The publisher consumes `capability-registry.yaml` as the single registry
-source. The published dev bundle keeps that YAML plus generated LiteLLM config,
-version metadata, and checksums; it no longer includes `model_net.yaml`.
+source. The published dev bundle keeps that YAML plus version metadata and checksums;
+it no longer includes `model_net.yaml` or proxy-specific derived configuration.
 
 ## Safety
 

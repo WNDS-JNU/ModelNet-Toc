@@ -13,7 +13,7 @@ ModelNet Gateway 的核心目标是把不同入口协议统一成一套内部 IR
 
 ```mermaid
 flowchart LR
-    Client["Client / ModelNet / LiteLLM / SDK"]
+    Client["Client / ModelNet / SDK"]
     OpenAI["OpenAI-compatible API"]
     Native["ModelNet Native API"]
     IR["ModelNetRunRequest"]

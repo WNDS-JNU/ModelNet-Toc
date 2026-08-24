@@ -22,26 +22,24 @@
 flowchart LR
     User["用户 / 业务应用"]
     ModelNetApp["ModelNet"]
-    Lite["LiteLLM"]
     Router["modelnet-router"]
-    Registry["model_net.yaml\n模型注册表"]
+    Registry["capability-registry.yaml\n模型注册表"]
     AutoAlias["modelnet / modelnet-auto"]
     Concrete["具体模型 ID"]
     K8s["K8s / Prometheus\n健康与负载"]
     Backend["vLLM / llama.cpp /\nOpenAI-compatible / Ollama"]
 
     User --> ModelNetApp
-    ModelNetApp --> Lite
-    Lite --> AutoAlias
-    Lite --> Concrete
+    ModelNetApp --> AutoAlias
+    ModelNetApp --> Concrete
     AutoAlias --> Router
-    Concrete --> Backend
+    Concrete --> Router
     Registry --> Router
     K8s --> Router
     Router --> Backend
 ```
 
-LiteLLM 是统一外层代理。只有 `modelnet` / `modelnet-auto` 等需要聚合、协作和观测汇总的入口进入 `modelnet-router`；具体后端模型 ID 由 LiteLLM 根据生成配置直接转发到对应 `/v1` 后端。
+`modelnet-router` 是统一 OpenAI-compatible 入口。`modelnet-auto` 和具体后端模型 ID 都进入 Router，由 Router 统一完成能力过滤、健康检查、负载路由、后端协议适配与观测。
 
 在当前仓库里，关键代码主要在：
 
@@ -71,13 +69,13 @@ LiteLLM 是统一外层代理。只有 `modelnet` / `modelnet-auto` 等需要聚
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 
-这是进入 `modelnet-router` 后的 OpenAI-compatible 路径，通常对应 LiteLLM 的 `modelnet` / `modelnet-auto` 入口或直接调用 router API 的客户端。
+这是 `modelnet-router` 直接提供的 OpenAI-compatible 路径，供 ModelNet App、SDK 和其他客户端调用。
 
-进入 router 后，普通模型请求默认走 `route.once`。如果请求的模型是 `modelnet-auto`，就进入 `auto.network` 自动组网路径。LiteLLM 暴露的具体后端模型 ID 通常不进入这一层，而是按生成配置直连后端。
+进入 Router 后，普通模型请求默认走 `route.once`。如果请求的模型是 `modelnet-auto`，就进入 `auto.network` 自动组网路径；具体后端模型 ID 同样由 Router 按注册表路由。
 
 ```mermaid
 sequenceDiagram
-    participant C as Client / LiteLLM
+    participant C as Client
     participant API as /v1/chat/completions
     participant Adapter as openai_chat_to_ir
     participant Router as pick_candidate
@@ -169,7 +167,7 @@ flowchart TB
 
 ## 6. Candidate 从哪里来
 
-Candidate 来自模型注册表 `MODELNET_REGISTRY_PATH`，当前 Docker 里通常挂载为 `/app/model_net.yaml`。
+Candidate 来自 `MODELNET_REGISTRY_PATH` 指向的模型注册表；Dev Registry overlay 使用 `/etc/modelnet/registry/current/capability-registry.yaml`，生产迁移前仍可能挂载旧路径。
 
 `load_candidates()` 做的事：
 
@@ -361,7 +359,7 @@ flowchart TB
 
 可以按这个顺序讲，不需要一开始就打开 5000 行的 `app.py`：
 
-1. 先讲定位：LiteLLM 是外层代理，`modelnet-router` 是聚合/自动路由入口和真实模型后端之间的 ModelNet 网关。
+1. 先讲定位：`modelnet-router` 是 ModelNet App、SDK 与真实模型后端之间的统一 OpenAI-compatible 网关。
 2. 再讲入口：OpenAI-compatible 负责兼容，Native 负责高级协作和 trace。
 3. 讲核心对象：IR、Candidate、Runner、Aggregator。
 4. 讲普通路由：注册表候选 -> 权限/能力过滤 -> K8s/Prometheus/health 打分 -> 调后端。

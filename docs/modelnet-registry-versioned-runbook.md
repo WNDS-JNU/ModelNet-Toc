@@ -14,17 +14,17 @@ services.
      --root /home/duxianghe/modelnet-runtime/registry-dev
    ```
 
-2. Start the dev stack with the registry overlay:
+2. Recreate only the dev Router with the registry overlay:
 
    ```bash
    docker compose --env-file .env --env-file .env.dev \
      -f docker-compose.dev.yml \
      -f docker-compose.registry-dev.yml \
-     up -d --build --no-deps modelnet-router litellm lobe toc-lb
+     up -d --no-build --pull never --no-deps --force-recreate modelnet-router
    ```
 
-3. Verify that dev Router and LiteLLM read from
-   `/etc/modelnet/registry/current`.
+3. Verify that dev Router reports the registry path, version, and manifest
+   checksum from `/etc/modelnet/registry/current` through `/healthz`.
 
 ## Capability Registry Runtime
 
@@ -33,8 +33,8 @@ services.
   groups, and an embedded `models` inventory formerly carried by `model_net.yaml`.
 - Dev Router points `MODELNET_REGISTRY_PATH` at
   `/etc/modelnet/registry/current/capability-registry.yaml`.
-- Dev LiteLLM uses `/etc/modelnet/registry/current/litellm/modelnet-config.yaml`,
-  generated from the same capability registry.
+- Published bundles contain only `capability-registry.yaml`, `version.json`,
+  and `checksums.sha256`.
 - Dev ModelNet app/TOC should use the `.env.modelnet` generated from the same capability
   registry; router-direct dev overlay points `OPENAI_PROXY_URL` at Router.
 
@@ -43,14 +43,14 @@ services.
 - Do not edit `docker-compose.yml` until dev verification is accepted.
 - Do not edit `/home/duxianghe/dify/docker/docker-compose.yaml` in this phase.
 - Do not edit production or Dify `.env` files in this phase.
-- Do not restart production `modelnet-router`, `modelnet-litellm`, or Dify
+- Do not restart production `modelnet-router` or Dify
   `api`/`worker`/`worker_beat` containers in this phase.
 
 ## Future Production Direction
 
 - Mount the registry root directory, not a single YAML file.
 - Point Router at `/etc/modelnet/registry/current/capability-registry.yaml`.
-- Point LiteLLM at `/etc/modelnet/registry/current/litellm/modelnet-config.yaml`.
+- Keep OpenAI-compatible model access on Router; do not reintroduce an outer project proxy.
 - Prefer Dify calling ModelNet Gateway with `MODELNET_GATEWAY_ENABLED=true`.
 - If Dify must keep local registry compatibility, mount the same registry root
   and consume `/etc/modelnet/registry/current/capability-registry.yaml`.

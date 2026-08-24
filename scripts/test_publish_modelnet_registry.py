@@ -89,12 +89,12 @@ class PublishModelNetRegistryTest(unittest.TestCase):
             bundle = root / "current"
             for relative in (
                 "capability-registry.yaml",
-                "litellm/modelnet-config.yaml",
                 "version.json",
                 "checksums.sha256",
             ):
                 self.assertTrue((bundle / relative).exists(), relative)
             self.assertFalse((bundle / "model_net.yaml").exists())
+            self.assertFalse((bundle / "litellm").exists())
 
             checksums = {}
             for line in (bundle / "checksums.sha256").read_text(encoding="utf-8").splitlines():
@@ -106,15 +106,10 @@ class PublishModelNetRegistryTest(unittest.TestCase):
                 sha256(bundle / "capability-registry.yaml"),
             )
             self.assertEqual(
-                checksums["litellm/modelnet-config.yaml"],
-                sha256(bundle / "litellm/modelnet-config.yaml"),
+                checksums["version.json"],
+                sha256(bundle / "version.json"),
             )
-
-            litellm_config = (bundle / "litellm/modelnet-config.yaml").read_text(encoding="utf-8")
-            self.assertIn("model_name: 'modelnet'", litellm_config)
-            self.assertIn("model_name: 'modelnet-auto'", litellm_config)
-            self.assertIn("model_name: 'a-chat'", litellm_config)
-            self.assertIn("model_name: 'z-chat'", litellm_config)
+            self.assertEqual(set(checksums), {"capability-registry.yaml", "version.json"})
 
             capability_payload = yaml.safe_load(
                 (bundle / "capability-registry.yaml").read_text(encoding="utf-8")

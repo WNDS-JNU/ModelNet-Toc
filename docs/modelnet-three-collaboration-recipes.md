@@ -10,7 +10,7 @@
 2. `ModelNet 并联`：用户选 2-16 个模型并行回答，再合成。
 3. `ModelNet 串联`：用户选 2-8 个模型按顺序改写/审阅。
 
-核心原则很简单：**用户选择信息不是 LiteLLM 决策出来的，而是 TOC/ModelNet 写进请求体 `modelnet.collaboration_plan`，LiteLLM 原样透传，ModelNet Gateway 解析后执行。**
+核心原则很简单：**TOC/ModelNet 把用户选择写进请求体 `modelnet.collaboration_plan`，ModelNet Router 直接解析并执行。**
 
 ## 0. 公共链路
 
@@ -18,7 +18,6 @@
 
 ```text
 TOC/ModelNet
-  -> modelnet-litellm:8000 /v1/chat/completions
   -> modelnet-router:8000 /v1/chat/completions
   -> K8S backend models
 ```
@@ -27,33 +26,18 @@ TOC/ModelNet
 
 ```text
 TOC dev
-  -> modelnet-litellm-dev:8000 /v1/chat/completions
   -> modelnet-router-dev:8000 /v1/chat/completions
   -> K8S backend models
 ```
 
 本机调试端口：
 
-| 栈 | LiteLLM | Gateway | TOC |
-| --- | --- | --- | --- |
-| production | `http://127.0.0.1:3090/v1` | `http://127.0.0.1:3092` | `http://127.0.0.1:3081` |
-| dev | `http://127.0.0.1:3190/v1` | `http://127.0.0.1:3192` | `http://127.0.0.1:3181` |
+| 栈 | Router | TOC |
+| --- | --- | --- |
+| production | `http://127.0.0.1:3092/v1` | `http://127.0.0.1:3081` |
+| dev | `http://127.0.0.1:3192/v1` | `http://127.0.0.1:3181` |
 
-LiteLLM 配置里，两个聚合别名都转发到 Gateway：
-
-```yaml
-model_name: modelnet
-api_base: http://modelnet-router:8000/v1
-allowed_openai_params:
-  - modelnet
-
-model_name: modelnet-auto
-api_base: http://modelnet-router:8000/v1
-allowed_openai_params:
-  - modelnet
-```
-
-`allowed_openai_params: [modelnet]` 加上项目里的 LiteLLM 补丁，保证这个扩展字段能穿过 LiteLLM 到达 Gateway。
+Router 直接提供 `modelnet`、`modelnet-auto` 和具体模型 ID，并原生解析请求体中的 `modelnet` 扩展字段。
 
 ## 1. 方案一：自动组网 `modelnet-auto`
 
@@ -178,11 +162,11 @@ Gateway 会把 `modelnet.candidate_aliases` 放进 `collaboration_plan.candidate
 
 ### 直接 curl 示例
 
-Dev LiteLLM：
+Dev Router：
 
 ```bash
-curl -sS http://127.0.0.1:3190/v1/chat/completions \
-  -H "Authorization: Bearer $MODELNET_LITELLM_API_KEY" \
+curl -sS http://127.0.0.1:3192/v1/chat/completions \
+  -H "Authorization: Bearer $MODELNET_BACKEND_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "modelnet-auto",
@@ -190,7 +174,7 @@ curl -sS http://127.0.0.1:3190/v1/chat/completions \
     "messages": [
       {
         "role": "user",
-        "content": "用三点说明 LiteLLM 和 ModelNet Gateway 的分工。"
+        "content": "用三点说明 ModelNet Router 的核心职责。"
       }
     ],
     "modelnet": {
@@ -354,8 +338,8 @@ stream 中会出现：
 ### 直接 curl 示例
 
 ```bash
-curl -sS http://127.0.0.1:3190/v1/chat/completions \
-  -H "Authorization: Bearer $MODELNET_LITELLM_API_KEY" \
+curl -sS http://127.0.0.1:3192/v1/chat/completions \
+  -H "Authorization: Bearer $MODELNET_BACKEND_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "modelnet",
@@ -363,7 +347,7 @@ curl -sS http://127.0.0.1:3190/v1/chat/completions \
     "messages": [
       {
         "role": "user",
-        "content": "请分别从性能、可靠性、可维护性角度评价 LiteLLM + Gateway 架构。"
+        "content": "请分别从性能、可靠性、可维护性角度评价 ModelNet Router 架构。"
       }
     ],
     "modelnet": {
@@ -613,8 +597,8 @@ stream 中会出现：
 ### 直接 curl 示例
 
 ```bash
-curl -sS http://127.0.0.1:3190/v1/chat/completions \
-  -H "Authorization: Bearer $MODELNET_LITELLM_API_KEY" \
+curl -sS http://127.0.0.1:3192/v1/chat/completions \
+  -H "Authorization: Bearer $MODELNET_BACKEND_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "modelnet",
@@ -674,37 +658,16 @@ curl -sS http://127.0.0.1:3190/v1/chat/completions \
 | 并联 | 选 2-16 个模型 | `modelnet` | `collaboration_plan.models=[...]` | `response.parallel` | 多个模型独立回答后合成 |
 | 串联 | 选 2-8 个有序模型 | `modelnet` | `runner_config.serial_topology.nodes/edges` | `response.serial` | 按顺序生成、审阅、改写 |
 
-## 5. LiteLLM 在三种方案里的作用
+## 5. Router 在三种方案里的作用
 
-LiteLLM 对三种方案做同一件事：
+Router 对三种方案统一完成：
 
-1. 根据 `model` 查 alias。
-2. 如果是 `modelnet` 或 `modelnet-auto`，转发到：
+1. 解析 `modelnet`、`modelnet-auto` 或具体模型 ID。
+2. 保留并解析请求体中的 `modelnet.stream_options` 和 `modelnet.collaboration_plan`。
+3. 根据 Runner、候选模型、能力、健康和负载执行单模型或多模型流程。
+4. 直接向 TOC 返回 OpenAI-compatible JSON/SSE 和 ModelNet 扩展事件。
 
-```text
-http://modelnet-router:8000/v1
-```
-
-3. 保留请求体中的：
-
-```json
-"modelnet": {
-  "stream_options": {},
-  "collaboration_plan": {}
-}
-```
-
-4. 把 Gateway 返回的 OpenAI-compatible JSON/SSE 再交回 TOC。
-
-LiteLLM 不做这些事：
-
-- 不解析用户选了哪几个模型。
-- 不执行并联或串联。
-- 不做 K8S 负载调度。
-- 不生成 auto_plan。
-- 不决定 synthesizer。
-
-这些都由 Gateway 完成。
+协作规划、并串联执行、K8S 负载调度、auto plan 和 synthesizer 选择都由 Router 完成。
 
 ## 6. Gateway 如何识别用户选择
 
@@ -821,7 +784,7 @@ docker compose --env-file .env --env-file .env.dev -f docker-compose.dev.yml log
 生产：
 
 ```bash
-docker compose logs --tail=200 modelnet-router litellm
+docker compose logs --tail=200 modelnet-router
 ```
 
 ## 8. 常见坑
@@ -836,16 +799,9 @@ modelnet-auto
 
 `modelnet` 只有在携带显式 runner 时才用于并联/串联等协作入口。否则 Gateway 会返回 410。
 
-### 坑 2：LiteLLM 丢掉 `modelnet` 字段
+### 坑 2：请求没有携带 `modelnet` 扩展字段
 
-如果 LiteLLM 没有应用项目补丁，或 config 没有：
-
-```yaml
-allowed_openai_params:
-  - modelnet
-```
-
-Gateway 就收不到 `collaboration_plan`，并联/串联/自动组网都会退化或失败。
+如果客户端没有把 `modelnet.collaboration_plan` 发送给 Router，显式并联、串联和 trace 配置不会生效。应检查 App 请求组装和实际到达 Router 的请求体。
 
 ### 坑 3：并联少于两个成功 source
 
@@ -868,16 +824,9 @@ runner_config.serial_engine=dify
 
 才会走 Dify Workflow。
 
-### 坑 5：具体 backend model 直连不会经过 Gateway
+### 坑 5：具体 backend model 不会自动触发协作
 
-如果直接请求：
-
-```text
-model=inference-...
-model=llama-cpp-...
-```
-
-LiteLLM 可能直接转发到具体 backend，不经过 Gateway 的 `auto_plan`、trace、并联/串联逻辑。要使用协作能力，必须选：
+直接请求 `model=inference-...` 或 `model=llama-cpp-...` 时，Router 按具体模型执行普通单模型路径。要使用协作能力，必须选择：
 
 ```text
 modelnet-auto

@@ -27,7 +27,7 @@
 
 ## 2. 入口请求形状
 
-所有自动组网策略都通过 `modelnet-auto` 进入 LiteLLM，然后由 LiteLLM 转发到 ModelNet Gateway：
+所有自动组网策略都通过 `modelnet-auto` 直接进入 ModelNet Router：
 
 ```json
 {
@@ -720,7 +720,7 @@ Gateway 会把 `modelnet.candidate_aliases` 合并进 `collaboration_plan.candid
   "messages": [
     {
       "role": "user",
-      "content": "用三点解释 LiteLLM 和 Gateway 的分工。"
+      "content": "用三点解释 ModelNet Router 的核心职责。"
     }
   ],
   "modelnet": {
@@ -771,7 +771,7 @@ Gateway 会把 `modelnet.candidate_aliases` 合并进 `collaboration_plan.candid
   "messages": [
     {
       "role": "user",
-      "content": "核查并回答：这个项目当前生产 LiteLLM 是否公网暴露？"
+      "content": "核查并回答：这个项目当前 Router 是否直接公网暴露？"
     }
   ],
   "modelnet": {

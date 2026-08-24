@@ -238,7 +238,7 @@ curl -s -o /tmp/router-health.json -w "%{http_code}\n" http://127.0.0.1:3092/hea
 
 ## 18. 接手检查清单
 
-- 能说清 ModelNet、LiteLLM、modelnet-router 和后端模型的关系。
+- 能说清 ModelNet App、modelnet-router 和后端模型的关系。
 - 能用 `/v1/models` 和 `/v1/capabilities` 判断模型是否暴露正确。
 - 能解释 OpenAI-compatible 请求和 Native 请求的区别。
 - 能说出 `route.once`、`token.parallel`、`response.parallel` 的适用场景。

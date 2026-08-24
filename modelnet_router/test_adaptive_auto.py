@@ -2483,19 +2483,19 @@ class AdaptiveAutoTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("source.completed", [data.get("type") for data in modelnet_events])
         self.assertEqual(done_payload(events)["text"], "combined")
 
-    def test_litellm_safe_openai_stream_chunk_fills_empty_choices(self) -> None:
+    def test_openai_compatible_safe_stream_chunk_fills_empty_choices(self) -> None:
         chunk = (
             b'data: {"id":"chatcmpl","object":"chat.completion.chunk",'
             b'"choices":[],"usage":{"prompt_tokens":1}}\n\n'
         )
 
-        _event, data = router.parse_sse_chunk(router.litellm_safe_openai_stream_chunk(chunk))
+        _event, data = router.parse_sse_chunk(router.openai_compatible_safe_stream_chunk(chunk))
 
         self.assertEqual(len(data["choices"]), 1)
         self.assertEqual(data["choices"][0]["delta"], {})
         self.assertEqual(data["usage"]["prompt_tokens"], 1)
 
-    def test_openai_modelnet_event_payload_keeps_non_empty_choices_for_litellm(self) -> None:
+    def test_openai_modelnet_event_payload_keeps_non_empty_choices_for_openai_compatible_clients(self) -> None:
         event = {
             "type": "source.started",
             "sourceId": "source-1",

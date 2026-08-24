@@ -146,6 +146,17 @@ class ModelNetBrandingTest(unittest.TestCase):
         self.assertIn("OPENAI_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}", compose)
         self.assertNotIn("\n  litellm:\n", compose)
 
+    def test_dev_compose_routes_directly_without_litellm_assets(self) -> None:
+        compose = (REPO_ROOT / "docker-compose.dev.yml").read_text(encoding="utf-8")
+        registry_overlay = (REPO_ROOT / "docker-compose.registry-dev.yml").read_text(encoding="utf-8")
+
+        self.assertIn("MODELNET_PROXY_URL: http://modelnet-router:8000/v1", compose)
+        self.assertIn("OPENAI_PROXY_URL: http://modelnet-router:8000/v1", compose)
+        self.assertNotIn("\n  litellm:\n", compose)
+        self.assertNotIn("DEV_LITELLM", compose)
+        self.assertNotIn("MODELNET_LITELLM", compose)
+        self.assertNotIn("litellm", registry_overlay.lower())
+
     def test_reload_script_uses_router_direct_services(self) -> None:
         script = (REPO_ROOT / "scripts/reload_modelnet.sh").read_text(encoding="utf-8")
 

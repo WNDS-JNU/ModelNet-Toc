@@ -68,8 +68,6 @@ flowchart LR
     Router --> K8sState["Kubernetes 状态"]
     Router --> Prometheus["Prometheus 负载信息"]
 
-    App -.-> LiteLLM["LiteLLM"]
-    LiteLLM -.-> Router
     VersionedRegistry["Versioned capability registry"] -.-> Router
     Router -.-> DifyWorkflow["Dify Workflow"]
 ```
@@ -88,14 +86,13 @@ flowchart LR
 | Redis | App 的缓存、协调和运行时辅助状态 | 长期对象存储 |
 | RustFS | S3 兼容对象存储及相关运行资产 | 关系型数据库 |
 | SearxNG | Web 搜索能力 | 模型推理后端 |
-| LiteLLM | 可选兼容代理和部分注册表验证场景 | 当前 App 到 Router 的必经层 |
 | Dify | 当前注册表来源之一，以及显式 `dify.dsl` 串联模式的可选执行环境 | 所有 ModelNet 请求的默认执行入口 |
 
 ### 2.2 当前运行态与演进路径
 
 | 主题 | 当前运行态 | 可选或演进路径 |
 |---|---|---|
-| App 到模型网关 | App 直接访问 ModelNet Router | 经 LiteLLM 兼容代理后再到 Router |
+| App 到模型网关 | App 直接访问 ModelNet Router | 版本化 registry overlay 不改变请求链路 |
 | Router 注册表 | 外部 Dify `model_net.yaml` 挂载为 `/app/model_net.yaml` | 版本化 `capability-registry.yaml` bundle overlay |
 | 串联协作 | Router 本地执行 `response.serial`，通常配合 `judge_refine` | 显式选择 `dify.dsl` 时进入 Dify Workflow |
 | App 北向协议 | ModelNet 系统模型主要使用 Chat Completions 兼容流 | Router 同时提供 Responses 和 ModelNet Native 接口 |
@@ -293,15 +290,14 @@ sequenceDiagram
 | 模式 | 内容 | 当前定位 |
 |---|---|---|
 | 外部 `model_net.yaml` | 由 Dify 侧配置提供模型 ID、后端类型、地址和能力元数据，并挂载给 Router | 2026-07-22 当前默认运行态 |
-| 版本化 capability registry | 单一 `capability-registry.yaml` 内嵌模型清单，并配套 LiteLLM 配置、版本和 checksum | 已实现的可选 dev overlay 与演进方向 |
+| 版本化 capability registry | 单一 `capability-registry.yaml` 内嵌模型清单，并配套版本和 checksum | 已实现的可选 dev overlay 与演进方向 |
 
 版本化链路的核心代码位于：
 
 - `scripts/modelnet_registry_source.py`：生成或整理 capability registry 源。
 - `scripts/publish_modelnet_registry.py`：发布带版本和校验信息的 bundle。
-- `scripts/sync_modelnet_litellm.py`：从同一注册表生成 LiteLLM 配置。
 - `scripts/sync_modelnet_app.py`：从注册表同步 App 可见模型列表。
-- `docker-compose.registry-dev.yml`：让 dev Router 和 LiteLLM 读取版本化 bundle 的可选 overlay。
+- `docker-compose.registry-dev.yml`：让 dev Router 读取版本化 bundle 的可选 overlay。
 
 是否已经切换版本化注册表，必须以运行态中的 registry path、version 和 checksum 为准，不能只看 overlay 文件是否存在。
 
@@ -357,7 +353,7 @@ dev 与 production 是两套独立的 Compose 身份、网络、数据卷和入�
 | App 返回链路 | OpenAI 流解析、协作 Trace 组件、排行榜和 Device Gateway | Router 事件如何变成用户可见状态 |
 | Router 契约层 | schemas、adapters、plugins、auth、backend adapters | IR、Runner、Aggregator、Candidate 的边界是什么 |
 | Router 执行层 | `app.py` 中的 endpoint、选路、自动组网、并串联、SSE 和指标区域 | 一次请求如何被规划、执行和观测 |
-| 注册表工具 | source producer、publisher、App/LiteLLM 同步逻辑 | 当前注册表与版本化 bundle 如何关联 |
+| 注册表工具 | source producer、publisher、App 同步逻辑 | 当前注册表与版本化 bundle 如何关联 |
 | Benchmark | `benchmarks/README.md`、三类 benchmark runner 与结果结构 | 质量、压力、负载均衡和内部调用账本如何被衡量 |
 | 基础设施 | Compose、`haproxy.cfg`、`ops/` | 服务入口、网络和依赖的所有权在哪里 |
 
@@ -435,7 +431,7 @@ dev 与 production 是两套独立的 Compose 身份、网络、数据卷和入�
 
 - [ ] ModelNet App、Router 和 Kubernetes 模型后端分别负责什么。
 - [ ] 为什么模型后端不是本地 Compose 服务。
-- [ ] 当前 App 为什么不经过 LiteLLM，以及 LiteLLM 仍在哪些场景有意义。
+- [ ] 当前 App 和 SDK 为什么直接进入 Router。
 - [ ] 当前 `model_net.yaml` 与版本化 capability registry 的关系。
 - [ ] `modelnet-auto`、`modelnet`、`modelnet-parallel`、`modelnet-serial` 和具体模型 ID 的区别。
 - [ ] App 如何把并联或串联 UI 选择转换成协作计划。
