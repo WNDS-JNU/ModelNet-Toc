@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "ModelNet Desktop Application",
-  "homepage": "http://123.56.135.150",
+  "homepage": "https://123.56.135.150",
   "repository": {
     "type": "git",
     "url": "https://github.com/WNDS-JNU/ModelNet-Toc.git"
@@ -13,6 +13,7 @@
   "scripts": {
     "build:cli": "cross-env MINIFY=1 npm run build --prefix=../cli",
     "build:main": "cross-env NODE_OPTIONS=--max-old-space-size=8192 electron-vite build",
+    "build:renderer": "cross-env NODE_OPTIONS=--max-old-space-size=8192 vite build --config vite.renderer.config.ts",
     "build:run-unpack": "electron .",
     "db:generate:local": "drizzle-kit generate --config drizzle.local.config.ts",
     "dev": "node scripts/dev.mjs",
@@ -123,7 +124,8 @@
     "uuid": "^14.0.1",
     "vite": "8.0.14",
     "vitest": "3.2.6",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "zod-compiler": "^1.28.0"
   },
   "optionalDependencies": {
     "@napi-rs/canvas-darwin-arm64": "0.1.100",

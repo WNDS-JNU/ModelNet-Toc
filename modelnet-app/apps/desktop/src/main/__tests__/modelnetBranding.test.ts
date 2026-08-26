@@ -23,7 +23,7 @@ const desktopLocaleCommonSurfaces = readdirSync(resolve(desktopRoot, 'resources/
 const brandingSurfaces = [
   resolve(repoRoot, 'packages/locales/src/default/desktop-onboarding.ts'),
   ...desktopOnboardingLocaleSurfaces,
-  resolve(repoRoot, 'src/routes/(desktop)/desktop-onboarding/_layout/index.tsx'),
+  resolve(repoRoot, 'src/features/DesktopOnboarding/Layout/index.tsx'),
   resolve(desktopRoot, 'index.html'),
   resolve(desktopRoot, 'popup.html'),
   resolve(desktopRoot, 'resources/splash.html'),

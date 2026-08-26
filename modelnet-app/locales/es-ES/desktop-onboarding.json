@@ -80,7 +80,7 @@
   "screen5.methods.selfhost.name": "Instancia autohospedada",
   "screen5.navigation.next": "Comenzar",
   "screen5.selfhost.endpointPlaceholder": "Introduce la URL de tu servidor (por ejemplo, https://tu-servidor.com)",
-  "screen5.status.cloud.title": "Conectado a LobeHub Cloud",
+  "screen5.status.cloud.title": "Conectado a ModelNet Cloud",
   "screen5.status.description": "Agentes, Grupos, configuraciones y Contexto se están sincronizando en todos tus dispositivos.",
   "screen5.status.selfhost.description": "Sincronizando Agentes, Grupos, configuraciones y Contexto con {{url}}.",
   "screen5.status.selfhost.title": "Conectado a tu propio servidor",

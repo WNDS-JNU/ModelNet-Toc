@@ -80,7 +80,7 @@
   "screen5.methods.selfhost.name": "نمونه میزبانی‌شده شخصی",
   "screen5.navigation.next": "شروع کنید",
   "screen5.selfhost.endpointPlaceholder": "آدرس سرور خود را وارد کنید (مثلاً https://your-server.com)",
-  "screen5.status.cloud.title": "متصل به LobeHub Cloud",
+  "screen5.status.cloud.title": "متصل به ModelNet Cloud",
   "screen5.status.description": "نمایندگان، گروه‌ها، تنظیمات و زمینه در حال همگام‌سازی در تمام دستگاه‌های شما هستند.",
   "screen5.status.selfhost.description": "در حال همگام‌سازی نمایندگان، گروه‌ها، تنظیمات و زمینه با {{url}}.",
   "screen5.status.selfhost.title": "متصل به سرور شخصی شما",

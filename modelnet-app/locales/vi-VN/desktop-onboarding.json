@@ -80,7 +80,7 @@
   "screen5.methods.selfhost.name": "Phiên bản tự lưu trữ",
   "screen5.navigation.next": "Bắt đầu",
   "screen5.selfhost.endpointPlaceholder": "Nhập URL máy chủ của bạn (ví dụ: https://your-server.com)",
-  "screen5.status.cloud.title": "Đã kết nối với LobeHub Cloud",
+  "screen5.status.cloud.title": "Đã kết nối với ModelNet Cloud",
   "screen5.status.description": "Các Tác nhân, Nhóm, cài đặt và Ngữ cảnh đang được đồng bộ hóa trên tất cả các thiết bị của bạn.",
   "screen5.status.selfhost.description": "Đang đồng bộ hóa Tác nhân, Nhóm, cài đặt và Ngữ cảnh với {{url}}.",
   "screen5.status.selfhost.title": "Đã kết nối với máy chủ của bạn",

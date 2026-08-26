@@ -36,7 +36,7 @@ describe('parseGreetingLine', () => {
     const { links, plain } = parseGreetingLine('PR #17604 已经处理完');
 
     expect(links).toHaveLength(1);
-    expect(links[0].href).toBe('https://github.com/lobehub/lobehub/issues/17604');
+    expect(links[0].href).toBe('https://github.com/WNDS-JNU/ModelNet-Toc/issues/17604');
     expect(plain.slice(links[0].start, links[0].end)).toBe('#17604');
   });
 

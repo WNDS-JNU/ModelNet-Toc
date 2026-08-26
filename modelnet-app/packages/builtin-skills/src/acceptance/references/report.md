@@ -1,10 +1,10 @@
-# Structured Report Rounds (`lh acceptance run ingest`)
+# Structured Report Rounds (`modelnet acceptance run ingest`)
 
 Per-criterion `result submit` (SKILL.md Step 3) assumes a verify plan already
 exists. When it doesn't — a standalone delivery, a task run without
 `$LOBE_OPERATION_ID`, or any run where **you** author the checks — publish a
 **structured report round** instead: a self-contained directory that
-`lh acceptance run ingest` uploads as one immutable verification round. The
+`modelnet acceptance run ingest` uploads as one immutable verification round. The
 acceptance page renders itself from `result.json`: provenance, the overall
 conclusion, and the check list from `plan[]` paired with `cases[]`, each with
 its evidence inline — **images render as figures, before/after pairs render
@@ -32,18 +32,18 @@ the checks and use one of these first-class paths:
 REPORT_DIR=./acceptance-report
 
 # A. first external-project round — creates a standalone acceptance automatically
-lh acceptance run ingest "$REPORT_DIR" \
+modelnet acceptance run ingest "$REPORT_DIR" \
   --requirement "<one-sentence business goal>" --json
 
 # Re-verification — append a new immutable round to the same acceptance
-lh acceptance run ingest "$REPORT_DIR" --acceptance "$ACCEPTANCE_ID" --json
+modelnet acceptance run ingest "$REPORT_DIR" --acceptance "$ACCEPTANCE_ID" --json
 
 # Existing ModelNet subject — group by a Task, Topic, or Document
-lh acceptance run ingest "$REPORT_DIR" --subject topic:tpc_xxx --json
+modelnet acceptance run ingest "$REPORT_DIR" --subject topic:tpc_xxx --json
 
 # B. atomic fallback — create the round first, then submit into it with --run
-RUN=$(lh acceptance run create --title "…" --goal "…" --json | jq -r .id)
-lh acceptance run result submit --run "$RUN" --item "$CHECK_ITEM_ID" …
+RUN=$(modelnet acceptance run create --title "…" --goal "…" --json | jq -r .id)
+modelnet acceptance run result submit --run "$RUN" --item "$CHECK_ITEM_ID" …
 ```
 
 Prefer **A**: per-criterion submits without a plan produce checks with no
@@ -62,7 +62,7 @@ external project's first standalone round.
 Before composing a repair round, read the aggregate:
 
 ```bash
-lh acceptance view "$ACCEPTANCE_ID" --json
+modelnet acceptance view "$ACCEPTANCE_ID" --json
 ```
 
 - Omit checks whose latest `userReview.action` is `accept` unless the repair can
@@ -115,7 +115,7 @@ supersedes? }`.
 6. **Publish:**
 
    ```bash
-   lh acceptance run ingest "$REPORT_DIR" --source agent-testing --json
+   modelnet acceptance run ingest "$REPORT_DIR" --source agent-testing --json
    ```
 
    On the first ingest, add `--requirement "<one-sentence business goal>"`.
@@ -352,7 +352,7 @@ needed someone to look.
 | `type-check`, `tsc`, `eslint`, lint, format, a clean build | same — a precondition of shipping, not a deliverable |
 | "the test suite is green", "CI passes"                     | same                                                 |
 
-This is enforced, not advisory. `lh acceptance run ingest` **drops every
+This is enforced, not advisory. `modelnet acceptance run ingest` **drops every
 matching item** — matched on title, category, AND `method`, so writing
 "run `bun run test`" into `method` under a product-sounding title still
 matches — warns with the dropped ids, and recounts `summary` from the checks

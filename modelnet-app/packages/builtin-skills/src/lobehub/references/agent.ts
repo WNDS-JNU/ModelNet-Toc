@@ -16,7 +16,7 @@ Manage agents (AI assistants with custom configurations).
 ## Editing your own configuration
 
 You can edit yourself: pass your own agent id (already given to you in the
-identity table) to \`lh agent edit\`.
+identity table) to \`modelnet agent edit\`.
 
 Fields without a dedicated flag (\`openingMessage\`, \`openingQuestions\`, \`tags\`,
 \`avatar\`, \`backgroundColor\`, \`params\`, \`chatConfig\`, …) go through
@@ -25,7 +25,7 @@ are kept:
 
 \`\`\`bash
 echo '{"openingMessage":"Hi! Ask me about deploys.","tags":["devops"]}' > /tmp/cfg.json
-lh agent edit <agentId> --config-file /tmp/cfg.json --json
+modelnet agent edit <agentId> --config-file /tmp/cfg.json --json
 \`\`\`
 
 Identity fields (\`id\`, \`slug\`, \`userId\`, \`workspaceId\`, \`visibility\`) are

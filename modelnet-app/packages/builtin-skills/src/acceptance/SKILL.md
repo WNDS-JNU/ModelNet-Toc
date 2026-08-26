@@ -32,7 +32,7 @@ IDs select a path; they are not prerequisites:
   report round.
 - `$LOBEHUB_TOPIC_ID` or `--subject` groups rounds under an existing LobeHub
   object.
-- No topic or subject means `lh acceptance run ingest` creates a standalone
+- No topic or subject means `modelnet acceptance run ingest` creates a standalone
   acceptance automatically.
 
 Never report that this skill is inapplicable merely because
@@ -58,7 +58,7 @@ name that session is a choice, not a prerequisite:
 | You have                                 | Target the round with                                                                                                     | Path                                                   |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
 | A verify plan (`$LOBE_OPERATION_ID` set) | `--operation "$LOBE_OPERATION_ID"`                                                                                        | This document: discover the plan, satisfy its criteria |
-| No plan — you author the checks          | Publish a whole directory with `lh acceptance run ingest`; it creates the round and, when needed, a standalone acceptance | [references/report.md](references/report.md)           |
+| No plan — you author the checks          | Publish a whole directory with `modelnet acceptance run ingest`; it creates the round and, when needed, a standalone acceptance | [references/report.md](references/report.md)           |
 
 `--operation` and `--run` are interchangeable on `result submit` and
 `result list`; a round created without an operation is simply recorded as
@@ -92,7 +92,7 @@ three checks that actually needed a human eye. Run them — then report them as
 
 Enforcement, so plan around it rather than against it:
 
-- `lh acceptance run ingest` **drops** every matching plan item and case and
+- `modelnet acceptance run ingest` **drops** every matching plan item and case and
   warns — the round publishes without them, so a gate-check wastes the effort
   spent producing it.
 - A round consisting **only** of such checks **fails to publish entirely**:
@@ -113,7 +113,7 @@ progression. Correcting a typo in the same session's report is fine; passing off
 post-fix evidence as the original round is not.
 
 Before a repair round, read the current acceptance with
-`lh acceptance view <acceptanceId | type:id> --json`. Omit checks whose latest
+`modelnet acceptance view <acceptanceId | type:id> --json`. Omit checks whose latest
 `userReview.action` is `accept`; address non-stale rejects and reuse their exact
 stable check ids. When one check semantically replaces another, declare
 `supersedes: ['old-id']` and repeat the complete lineage in every later round
@@ -127,7 +127,7 @@ stay internal.
 
 ## Prerequisites
 
-- **`lh` is authed.** Confirm with `lh acceptance run list --json` (an empty `[]`
+- **`lh` is authed.** Confirm with `modelnet acceptance run list --json` (an empty `[]`
   means authed; an auth error means stop and surface it).
 - **A round path.** Use `$LOBE_OPERATION_ID` when supplied. Otherwise author a
   structured report; ingest creates both its round and, outside ModelNet, its
@@ -144,17 +144,17 @@ stay internal.
 > every check you write, then jump to
 > [references/report.md](references/report.md) and use the relevant surface
 > recipes below to capture its evidence. Publish that authored plan and its
-> cases together with `lh acceptance run ingest`.
+> cases together with `modelnet acceptance run ingest`.
 
 One read tells you what to prove:
 
 ```bash
-lh verify plan state "$LOBE_OPERATION_ID" --json
+modelnet verify plan state "$LOBE_OPERATION_ID" --json
 ```
 
 Each `verifyPlan[]` item carries `id` (the **checkItemId**), `title`, `required`,
 and `verifierConfig.requiredEvidence` (`[{ type, hint }]` — the artifacts you MUST
-capture). The `checkItemId` is the only handle you need: `lh acceptance run result submit` (Step 3)
+capture). The `checkItemId` is the only handle you need: `modelnet acceptance run result submit` (Step 3)
 keys off it plus your operation id and creates the result row for you, so you do
 **not** need a `checkResultId` up front. (Result rows generally don't exist yet at
 this point — that's expected.) Exact shapes:
@@ -213,19 +213,19 @@ Rules of thumb:
 Capture each required `type` with the selected surface guide, then apply the
 shared artifact rules in [references/evidence.md](references/evidence.md) and
 submit one artifact per call with the criterion's `checkItemId`.
-`lh acceptance run result submit` resolves your session from the operation id,
+`modelnet acceptance run result submit` resolves your session from the operation id,
 lazily creates/updates the result row, and attaches the evidence — one call, no
 `checkResultId` needed:
 
 ```bash
 # CHECK_ITEM_ID is the plan item id for this criterion (from Step 1).
 # file artifact already captured by the selected surface
-lh acceptance run result submit --operation "$LOBE_OPERATION_ID" --item "$CHECK_ITEM_ID" \
+modelnet acceptance run result submit --operation "$LOBE_OPERATION_ID" --item "$CHECK_ITEM_ID" \
   --type "$EVIDENCE_TYPE" --file "$ARTIFACT_PATH" --by "$PROVENANCE" \
   --desc "Observed state after the planned action"
 
 # inline text artifact (stdout / computed value) — no file
-lh acceptance run result submit --operation "$LOBE_OPERATION_ID" --item "$CHECK_ITEM_ID" \
+modelnet acceptance run result submit --operation "$LOBE_OPERATION_ID" --item "$CHECK_ITEM_ID" \
   --type text --content "$(your-cli command --json)" --by cli \
   --desc "command reports success after the change"
 ```
@@ -246,8 +246,8 @@ is present. After submitting, the result rows exist, so map each `checkItemId` t
 its `checkResultId` and list that row's evidence:
 
 ```bash
-lh acceptance run result list --operation "$LOBE_OPERATION_ID" --json # checkItemId → checkResultId
-lh acceptance run evidence list "$CHECK_RESULT_ID" --json
+modelnet acceptance run result list --operation "$LOBE_OPERATION_ID" --json # checkItemId → checkResultId
+modelnet acceptance run evidence list "$CHECK_RESULT_ID" --json
 ```
 
 Coverage rule: for each required criterion, **every** `requiredEvidence[].type`
@@ -268,7 +268,7 @@ URL. Put no images, local paths, local file links, or internal run-page paths in
 the chat reply.
 
 ```text
-Acceptance:   https://app.lobehub.com/acceptance/<acceptanceId>
+Acceptance:   https://123.56.135.150/acceptance/<acceptanceId>
 Coverage: 2/2 criteria, all required evidence uploaded
 ```
 

@@ -6,7 +6,7 @@ const LobeHub: ModelProviderCard = {
     'ModelNet Cloud routes requests across the ModelNet model network through the TOC gateway.',
   enabled: true,
   id: 'lobehub',
-  modelsUrl: 'http://123.56.135.150',
+  modelsUrl: 'https://123.56.135.150',
   name: 'ModelNet Cloud',
   settings: {
     modelEditable: false,
@@ -14,7 +14,7 @@ const LobeHub: ModelProviderCard = {
     showModelFetcher: false,
   },
   showConfig: false,
-  url: 'http://123.56.135.150',
+  url: 'https://123.56.135.150',
 };
 
 export default LobeHub;

@@ -164,9 +164,9 @@ describe('ModelNet-only visible links and fonts', () => {
 
   it('uses ModelNet project links in previews and generated issue links', () => {
     const linkPreview = readRepoFile(
-      'src/routes/(main)/settings/chat-appearance/features/ChatAppearance/LinkIconPreview.tsx',
+      'src/features/Settings/chat-appearance/features/ChatAppearance/LinkIconPreview.tsx',
     );
-    const welcomeText = readRepoFile('src/routes/(main)/home/features/WelcomeText/index.tsx');
+    const welcomeText = readRepoFile('src/features/Home/welcomeText.ts');
 
     expect(linkPreview).toContain('https://github.com/WNDS-JNU/ModelNet-Toc');
     expect(linkPreview).toContain('ModelNet');
@@ -178,12 +178,13 @@ describe('ModelNet-only visible links and fonts', () => {
 
   it('keeps secondary UI links and exported filenames ModelNet-only', () => {
     const surfaces = [
-      'src/features/CreatePlatformAgent/index.tsx',
+      'src/features/AgentBuilder/AgentBuilderWelcome.tsx',
       'src/features/ChatInput/ControlBar/HeteroDeviceSwitcher.tsx',
       'src/features/PluginDevModal/LocalForm.tsx',
+      'src/routes/(main)/agent/channel/Header.tsx',
       'src/routes/(main)/agent/channel/list.tsx',
       'src/routes/(main)/community/(list)/(home)/features/CreatorRewardBanner.tsx',
-      'src/routes/(main)/community/(detail)/skill/features/Sidebar/index.tsx',
+      'src/routes/(main)/community/(detail)/skill/index.tsx',
       'src/routes/(main)/community/(detail)/model/features/Details/Parameter/ParameterItem.tsx',
       'src/routes/share/t/[id]/_layout/HeaderMenu.tsx',
       'src/routes/(main)/community/(detail)/group_agent/features/StatusPage/index.tsx',
@@ -212,12 +213,15 @@ describe('ModelNet-only visible links and fonts', () => {
   it('publishes only the ModelNet CLI command and package identity', () => {
     const cliPackage = JSON.parse(readRepoFile('apps/cli/package.json'));
     const cliProgram = readRepoFile('apps/cli/src/program.ts');
+    const cliIdentity = readRepoFile('apps/cli/src/constants/identity.ts');
     const desktopBranding = readRepoFile('apps/desktop/src/main/const/branding.ts');
     const deviceConnect = readRepoFile('src/features/DeviceManager/DeviceConnectModal.tsx');
 
     expect(cliPackage.name).toBe('@modelnet/cli');
     expect(cliPackage.bin).toEqual({ modelnet: './dist/index.js' });
-    expect(cliProgram).toContain(".name('modelnet')");
+    expect(cliProgram).toContain('.name(CLI_PRIMARY_BIN)');
+    expect(cliIdentity).toContain("CLI_PRIMARY_BIN = 'modelnet'");
+    expect(cliIdentity).toContain("CLI_PRODUCT_NAME = 'ModelNet'");
     expect(desktopBranding).toContain('MODELNET_CLI_COMPATIBILITY_ALIASES = []');
     expect(deviceConnect).toContain('npm install -g @modelnet/cli');
     expect(deviceConnect).toContain('modelnet login');
