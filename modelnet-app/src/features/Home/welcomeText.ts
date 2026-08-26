@@ -18,7 +18,7 @@ const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g;
 /** Bare references the generator emits without the markdown link form. */
 const AUTO_LINK_PATTERNS = [
   {
-    build: (match: string) => `https://github.com/lobehub/lobehub/issues/${match.slice(1)}`,
+    build: (match: string) => `https://github.com/WNDS-JNU/ModelNet-Toc/issues/${match.slice(1)}`,
     regex: /#\d+/g,
   },
 ];

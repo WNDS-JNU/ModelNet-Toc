@@ -80,7 +80,7 @@
   "screen5.methods.selfhost.name": "نسخة مستضافة ذاتيًا",
   "screen5.navigation.next": "ابدأ الآن",
   "screen5.selfhost.endpointPlaceholder": "أدخل عنوان خادمك (مثال: https://your-server.com)",
-  "screen5.status.cloud.title": "متصل بـ LobeHub Cloud",
+  "screen5.status.cloud.title": "متصل بـ ModelNet Cloud",
   "screen5.status.description": "يتم مزامنة الوكلاء والمجموعات والإعدادات والسياق عبر جميع أجهزتك.",
   "screen5.status.selfhost.description": "يتم مزامنة الوكلاء والمجموعات والإعدادات والسياق مع {{url}}.",
   "screen5.status.selfhost.title": "متصل بخادمك الخاص",

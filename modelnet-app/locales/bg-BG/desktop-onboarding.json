@@ -80,7 +80,7 @@
   "screen5.methods.selfhost.name": "Самостоятелно хоствана инстанция",
   "screen5.navigation.next": "Да започваме",
   "screen5.selfhost.endpointPlaceholder": "Въведи URL на сървъра си (напр. https://your-server.com)",
-  "screen5.status.cloud.title": "Свързано с LobeHub Cloud",
+  "screen5.status.cloud.title": "Свързано с ModelNet Cloud",
   "screen5.status.description": "Агентите, групите, настройките и контекстът се синхронизират на всички ваши устройства.",
   "screen5.status.selfhost.description": "Синхронизиране на агентите, групите, настройките и контекста с {{url}}.",
   "screen5.status.selfhost.title": "Свързано с вашия собствен сървър",

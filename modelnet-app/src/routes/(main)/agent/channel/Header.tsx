@@ -79,7 +79,7 @@ const Header = memo<HeaderProps>(
     const handleExport = useCallback(() => {
       if (!providers?.length) return;
       const exportData = providers.map(({ id: _, ...rest }) => rest);
-      exportJSONFile(exportData, `lobehub-channels-${agentId}.json`);
+      exportJSONFile(exportData, `modelnet-channels-${agentId}.json`);
     }, [agentId, providers]);
 
     const handleImport = useCallback(() => {

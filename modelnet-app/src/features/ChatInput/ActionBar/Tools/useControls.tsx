@@ -72,6 +72,9 @@ const officialTag = (
   </Tooltip>
 );
 
+const isOfficialModelNetAuthor = (author?: string) =>
+  author === 'ModelNet' || author === 'LobeHub';
+
 type SkillPolicyMode = AgentPluginMode;
 
 interface SkillDeleteConfig {
@@ -950,7 +953,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
                   displayName: type.label,
                   onDelete: () => removeComposioServer(server.identifier),
                 },
-                extraTag: type.author === 'LobeHub' ? officialTag : undefined,
+                extraTag: isOfficialModelNetAuthor(type.author) ? officialTag : undefined,
                 icon,
                 id: server.identifier,
                 popoverContent,
@@ -1061,7 +1064,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
             if (server?.status === LobehubSkillStatus.CONNECTED || server?.isConnected) {
               return createManagedSkillItem({
                 badge: <Icon icon={McpIcon} size={12} />,
-                extraTag: provider.author === 'LobeHub' ? officialTag : undefined,
+                extraTag: isOfficialModelNetAuthor(provider.author) ? officialTag : undefined,
                 icon,
                 id: server.identifier,
                 popoverContent,
@@ -1441,7 +1444,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
         <Tag color={'warning'} icon={<Icon icon={Package} />} size={'small'}>
           {t('store.customPlugin', { ns: 'plugin' })}
         </Tag>
-      ) : item.author === 'LobeHub' ? (
+      ) : isOfficialModelNetAuthor(item.author) ? (
         officialTag
       ) : undefined,
       icon,

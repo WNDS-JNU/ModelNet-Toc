@@ -80,7 +80,7 @@
   "screen5.methods.selfhost.name": "Zelfgehoste instantie",
   "screen5.navigation.next": "Aan de slag",
   "screen5.selfhost.endpointPlaceholder": "Voer je server-URL in (bijv. https://jouw-server.com)",
-  "screen5.status.cloud.title": "Verbonden met LobeHub Cloud",
+  "screen5.status.cloud.title": "Verbonden met ModelNet Cloud",
   "screen5.status.description": "Agents, groepen, instellingen en context worden gesynchroniseerd op al je apparaten.",
   "screen5.status.selfhost.description": "Agents, groepen, instellingen en context worden gesynchroniseerd met {{url}}.",
   "screen5.status.selfhost.title": "Verbonden met je eigen server",

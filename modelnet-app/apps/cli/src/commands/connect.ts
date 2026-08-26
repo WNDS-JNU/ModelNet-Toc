@@ -24,6 +24,12 @@ import type { Command } from 'commander';
 import { createLambdaClient } from '../api/client';
 import { resolveToken } from '../auth/resolveToken';
 import { CLI_API_KEY_ENV } from '../constants/auth';
+import {
+  CLI_CONFIG_DIR_NAME,
+  CLI_CONNECT_SERVICE_NAME,
+  CLI_DISPLAY_NAME,
+  CLI_PRIMARY_BIN,
+} from '../constants/identity';
 import { OFFICIAL_GATEWAY_URL } from '../constants/urls';
 import {
   appendLog,
@@ -65,7 +71,7 @@ import { executeToolCall } from '../tools';
 import { cleanupAllProcesses } from '../tools/shell';
 import { log, setVerbose } from '../utils/logger';
 
-const CONNECT_SERVICE_NAME = 'lobehub-connect.service';
+const CONNECT_SERVICE_NAME = CLI_CONNECT_SERVICE_NAME;
 
 interface ConnectOptions {
   daemon?: boolean;
@@ -316,7 +322,7 @@ async function runConnect(options: ConnectOptions, isDaemonChild: boolean) {
   };
 
   // Print device info
-  info('─── ModelNet CLI ───');
+  info(`─── ${CLI_DISPLAY_NAME} ───`);
   info(`  Device ID : ${client.currentDeviceId}`);
   info(`  Hostname  : ${os.hostname()}`);
   info(`  Platform  : ${process.platform}`);
@@ -656,7 +662,7 @@ async function runConnect(options: ConnectOptions, isDaemonChild: boolean) {
 
     error(`Authentication failed: ${reason}`);
     error(
-      `Run 'modelnet login', or set ${CLI_API_KEY_ENV} and run 'modelnet login --server <url>' to configure API key authentication.`,
+      `Run '${CLI_PRIMARY_BIN} login', or set ${CLI_API_KEY_ENV} and run '${CLI_PRIMARY_BIN} login --server <url>' to configure API key authentication.`,
     );
     cleanup();
     process.exit(1);
@@ -985,7 +991,7 @@ function collectSystemInfo(): DeviceSystemInfo {
     homePath: home,
     musicPath: path.join(home, 'Music'),
     picturesPath: path.join(home, 'Pictures'),
-    userDataPath: path.join(home, '.modelnet'),
+    userDataPath: path.join(home, CLI_CONFIG_DIR_NAME),
     videosPath: path.join(home, videosDir),
     workingDirectory: process.cwd(),
   };

@@ -99,7 +99,7 @@ export default {
   'screen5.methods.selfhost.name': 'Self-hosted Instance',
   'screen5.navigation.next': 'Get Started',
   'screen5.selfhost.endpointPlaceholder': 'Enter your server URL (e.g., https://your-server.com)',
-  'screen5.status.cloud.title': 'Connected to LobeHub Cloud',
+  'screen5.status.cloud.title': 'Connected to ModelNet Cloud',
   'screen5.status.description':
     'Agents, Groups, settings, and Context are syncing across all your devices.',
   'screen5.status.selfhost.description':
