@@ -1,7 +1,8 @@
 'use client';
 
 import { DEFAULT_INBOX_AVATAR } from '@lobechat/const';
-import { Avatar, Icon } from '@lobehub/ui';
+import { Icon } from '@lobehub/ui';
+import { Avatar } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
 import { Loader2 } from 'lucide-react';
 import { type CSSProperties } from 'react';
@@ -64,7 +65,7 @@ const InboxItem = memo<InboxItemProps>(({ className, style }) => {
   const inboxUrl = usePreservedAgentUrl(inboxRouteAgentId);
 
   // Prefetch agent layout chunk and data eagerly since ModelNet is almost always clicked
-  prefetchAgent(inboxAgentId!);
+  if (inboxAgentId) prefetchAgent(inboxAgentId);
 
   const avatarNode = (
     <Avatar emojiScaleWithBackground avatar={inboxAgentAvatar} shape={'square'} size={24} />

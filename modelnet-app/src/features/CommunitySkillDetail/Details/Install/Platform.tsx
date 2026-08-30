@@ -1,21 +1,21 @@
 'use client';
 
-import { DEFAULT_INBOX_AVATAR, SESSION_CHAT_URL } from '@lobechat/const';
+import { AGENT_CHAT_URL, DEFAULT_INBOX_AVATAR } from '@lobechat/const';
 import { Claude, Cline, Cursor, OpenAI } from '@lobehub/icons';
-import {
-  Avatar, Block, Flexbox, Highlighter, Icon, Markdown, Text } from '@lobehub/ui';
-import { Button, Segmented, Select } from '@lobehub/ui/base-ui';
+import { Block, Flexbox, Highlighter, Icon, Markdown } from '@lobehub/ui';
+import { Avatar, Button, Select, Tabs, Text } from '@lobehub/ui/base-ui';
 import { Divider } from 'antd';
 import { createStaticStyles, cx } from 'antd-style';
 import { BotIcon, UserRoundIcon } from 'lucide-react';
 import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router';
 
+import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { useAgentStore } from '@/store/agent';
 import { builtinAgentSelectors } from '@/store/agent/selectors';
 import { useChatStore } from '@/store/chat';
 
+import { useDetailActionContext } from '../../DetailProvider';
 import VsCodeIcon from './VsCodeIcon';
 
 const Title = ({ children }: { children?: React.ReactNode }) => (
@@ -31,7 +31,7 @@ enum PlatformType {
   Cline = 'cline',
   Codex = 'codex',
   Cursor = 'cursor',
-  ModelNet = 'modelnet',
+  LobeHub = 'lobehub',
   VsCode = 'vscode',
 }
 
@@ -58,7 +58,7 @@ const genInstallCommand = (identifier?: string, platform?: PlatformType) => {
     [PlatformType.Claude]: 'claude-code',
     [PlatformType.Cline]: 'cline',
     [PlatformType.Cursor]: 'cursor',
-    [PlatformType.ModelNet]: 'modelnet',
+    [PlatformType.LobeHub]: 'lobehub',
     [PlatformType.Codex]: 'codex',
     [PlatformType.VsCode]: 'vscode',
   };
@@ -68,10 +68,10 @@ const genInstallCommand = (identifier?: string, platform?: PlatformType) => {
     case PlatformType.Claude:
     case PlatformType.Cline:
     case PlatformType.VsCode: {
-      return `npx -y @modelnet/market-cli skills install ${id} --agent ${agentMap[platform]}`;
+      return `npx -y @lobehub/market-cli skills install ${id} --agent ${agentMap[platform]}`;
     }
     case PlatformType.Codex: {
-      return `npx -y @modelnet/market-cli skills install ${id} --agent ${agentMap[platform]}`;
+      return `npx -y @lobehub/market-cli skills install ${id} --agent ${agentMap[platform]}`;
     }
     default: {
       return `# Recommended for ModelNet users:
@@ -94,13 +94,13 @@ const genLayout = (
     [PlatformType.Claude]: `~/.claude/skills/${id}`,
     [PlatformType.Cline]: `~/.cline/skills/${id}`,
     [PlatformType.Cursor]: `~/.cursor/skills/${id}`,
-    [PlatformType.ModelNet]: `<managed-by-modelnet>`,
+    [PlatformType.LobeHub]: `<managed-by-lobehub>`,
     [PlatformType.Codex]: `~/.agents/skills/${id}`,
     [PlatformType.VsCode]: `./.vscode/skills/${id}`,
   };
   const basePath = basePathMap[platform];
 
-  if (platform === PlatformType.ModelNet) {
+  if (platform === PlatformType.LobeHub) {
     return i18nText.lobehub;
   }
 
@@ -112,7 +112,8 @@ const genLayout = (
 const Platform = memo<PlatformProps>(
   ({ lite, identifier, mobile, expandCodeByDefault, downloadUrl }) => {
     const { t } = useTranslation('discover');
-    const navigate = useNavigate();
+    const navigate = useWorkspaceAwareNavigate();
+    const { close } = useDetailActionContext();
     const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
     const sendMessage = useChatStore((s) => s.sendMessage);
     const [active, setActive] = useState<PlatformType>(PlatformType.Claude);
@@ -148,7 +149,7 @@ const Platform = memo<PlatformProps>(
 
     const { platform, steps } = useMemo(() => {
       switch (active) {
-        case PlatformType.ModelNet: {
+        case PlatformType.LobeHub: {
           return {
             platform: 'ModelNet',
             steps: t('skills.details.sidebar.platform.steps.lobehub'),
@@ -191,39 +192,43 @@ const Platform = memo<PlatformProps>(
 
     const agentPrompt = `Curl http://123.56.135.150/skills/${identifier}/skill.md, then follow the instructions to set up ModelNet Skills Marketplace and install the skill. Once installed, read the SKILL.md file in the installed directory and follow its instructions to complete the task.`;
 
-    const handleUseOnModelNet = useCallback(() => {
+    const handleUseOnLobeAI = useCallback(() => {
       if (!inboxAgentId) return;
 
-      // Send message to ModelNet
+      // Send message to LobeAI
       sendMessage({
         context: { agentId: inboxAgentId },
         message: agentPrompt,
       });
 
-      // Navigate to ModelNet chat session
-      navigate(SESSION_CHAT_URL(inboxAgentId, mobile));
-    }, [agentPrompt, inboxAgentId, mobile, navigate, sendMessage]);
+      // Navigate to LobeAI chat session; in the modal the host outlives the
+      // router, so dismiss the detail alongside the navigation
+      navigate(AGENT_CHAT_URL(inboxAgentId, mobile));
+      close?.();
+    }, [agentPrompt, close, inboxAgentId, mobile, navigate, sendMessage]);
 
     return (
       <Block gap={lite ? 0 : 16} padding={4} variant={lite ? 'outlined' : 'borderless'}>
-        <Segmented
-          block
+        <Tabs
+          activeKey={mode}
           style={{ marginBottom: 8 }}
-          value={mode}
-          variant={'filled'}
-          options={[
+          items={[
             {
               icon: <Icon icon={BotIcon} />,
+              key: 'agent',
               label: t('skills.hero.guide.agent'),
-              value: 'agent',
             },
             {
               icon: <Icon icon={UserRoundIcon} />,
+              key: 'human',
               label: t('skills.hero.guide.human'),
-              value: 'human',
             },
           ]}
-          onChange={(value) => setMode(value as GuideMode)}
+          styles={{
+            list: { display: 'flex', width: '100%' },
+            tab: { flex: 1 },
+          }}
+          onChange={(key) => setMode(key as GuideMode)}
         />
 
         {mode === 'agent' ? (
@@ -253,9 +258,9 @@ const Platform = memo<PlatformProps>(
                 icon={<Avatar avatar={DEFAULT_INBOX_AVATAR} size={18} />}
                 size={'large'}
                 type={'primary'}
-                onClick={handleUseOnModelNet}
+                onClick={handleUseOnLobeAI}
               >
-                {t('skills.details.sidebar.agent.useOnModelNet')}
+                {t('skills.details.sidebar.agent.useOnLobeAI')}
               </Button>
             </Flexbox>
           </Flexbox>
@@ -276,11 +281,18 @@ const Platform = memo<PlatformProps>(
                 onSelect={(v) => setActive(v as PlatformType)}
               />
             ) : (
-              <Segmented
-                block
-                options={options}
-                value={active}
-                onChange={(v) => setActive(v as PlatformType)}
+              <Tabs
+                activeKey={active}
+                items={options.map((opt) => ({
+                  icon: opt.icon,
+                  key: opt.value,
+                  label: opt.label,
+                }))}
+                styles={{
+                  list: { display: 'flex', width: '100%' },
+                  tab: { flex: 1 },
+                }}
+                onChange={(key) => setActive(key as PlatformType)}
               />
             )}
             <Flexbox>

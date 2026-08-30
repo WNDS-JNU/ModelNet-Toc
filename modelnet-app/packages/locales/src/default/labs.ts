@@ -5,7 +5,7 @@ export default {
     'Show graph runtime configuration in an agent profile advanced settings.',
   'features.agentGraphConfig.title': 'Agent Graph Runtime Configuration',
   'features.agentProviderBinding.desc':
-    'Let supported local agents run on API instead of their subscription — through the ModelNet default provider or a configured API provider and model. Initially available for Claude Code and Codex on Desktop local execution.',
+    'Let supported local agents run on API instead of their subscription — through the ModelNet default provider or a configured API provider and model. Available for select agents on Desktop local execution.',
   'features.agentProviderBinding.title': 'Agent Provider Binding',
   'features.agentSelfIteration.desc':
     'Allow the agent to reflect, build self-awareness, and continuously iterate through ongoing attempts and interactions.',
@@ -39,9 +39,15 @@ export default {
   'features.inputMarkdown.desc':
     'Render Markdown in the input area in real time (bold text, code blocks, tables, etc.).',
   'features.inputMarkdown.title': 'Input Markdown Rendering',
-  'features.platformAgent.desc':
-    'Show the "Connect Agent" entry in the create menu. Connected agents (e.g. OpenClaw, Hermes) run on your own devices and communicate back via modelnet connect.',
-  'features.platformAgent.title': 'Connect Agent',
+  'features.messageTextSelectionActions.desc':
+    'Show a quick action when selecting text in chat messages so the selected text can be added to the next conversation context.',
+  'features.messageTextSelectionActions.title': 'Message Text Selection Actions',
+  'features.oauthApps.desc':
+    'Show OAuth app management in personal and workspace settings. This feature is hidden by default.',
+  'features.oauthApps.title': 'OAuth Apps',
+  'features.projects.desc':
+    'Organize long-running goals into dedicated workspaces with their own agents, knowledge bases, and tasks.',
+  'features.projects.title': 'Project Workspaces',
   'features.taskVerify.desc':
     'Add a delivery-acceptance section to the task detail: describe acceptance in one sentence and let AI generate editable verify criteria.',
   'features.taskVerify.title': 'Task Delivery Acceptance',
@@ -60,14 +66,7 @@ export default {
     'Relatively usable. The core flow works, while details are still being polished.',
   'stage.beta.label': 'Beta',
   'title': 'Labs',
-
   // ModelNet local keys preserved across the ModelNet vendor sync.
-  "features.messageTextSelectionActions.desc": "Show a quick action when selecting text in chat messages so the selected text can be added to the next conversation context.",
-  "features.messageTextSelectionActions.title": "Message Text Selection Actions",
-  "features.oauthApps.desc": "Show OAuth app management in personal and workspace settings. This feature is hidden by default.",
-  "features.oauthApps.title": "OAuth Apps",
-  "features.projects.desc": "Organize long-running goals into dedicated workspaces with their own agents, knowledge bases, and tasks.",
-  "features.projects.title": "Project Workspaces",
   "features.agentDocumentFloatingChatPanel.desc": "Show the floating chat panel in agent document preview only when this lab feature is enabled.",
   "features.agentDocumentFloatingChatPanel.title": "Agent Document Floating Chat Panel",
   "features.fleet.desc": "Show the Fleet entry in the title bar — a side-by-side dashboard of all running tasks across your agents.",

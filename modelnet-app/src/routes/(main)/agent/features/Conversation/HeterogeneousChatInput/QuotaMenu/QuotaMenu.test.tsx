@@ -127,26 +127,11 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
-vi.mock('antd-style', async (importOriginal) => {
-  const actual = (await importOriginal()) as Record<string, unknown>;
-  const mockCssVar = new Proxy({}, { get: (_target, prop) => `var(--${String(prop)})` });
-  return {
-    ...actual,
-    createStaticStyles: (
-      create: (utils: {
-        css: (...args: unknown[]) => string;
-        cssVar: Record<string, string>;
-      }) => Record<string, string>,
-    ) => create({ css: () => 'cls', cssVar: mockCssVar }),
-    cssVar: mockCssVar,
-    cx: (...args: unknown[]) => args.filter(Boolean).join(' '),
-  };
-});
-
-vi.mock('@lobehub/ui', async () => {
+vi.mock('@lobehub/ui', async (importOriginal) => {
   const { useState } = await import('react');
 
   return {
+    ...(await importOriginal<object>()),
     ActionIcon: ({
       disabled,
       onClick,
@@ -222,21 +207,24 @@ vi.mock('@lobehub/ui', async () => {
   };
 });
 
-vi.mock('@lobehub/ui/base-ui', () => ({
-  Button: ({
-    children,
-    disabled,
-    loading,
+vi.mock('@lobehub/ui/base-ui', async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  ActionIcon: ({
     onClick,
+    title,
+    disabled,
   }: {
-    children?: ReactNode;
     disabled?: boolean;
-    loading?: boolean;
-    onClick?: () => void;
+    onClick?: (e: React.MouseEvent) => void;
+    title?: string;
   }) => (
-    <button disabled={disabled || loading} type="button" onClick={onClick}>
-      {children}
-    </button>
+    <button
+      aria-label={title}
+      data-testid={title ? 'calendar' : 'refresh'}
+      disabled={disabled}
+      type="button"
+      onClick={onClick}
+    />
   ),
   confirmModal: confirmModalMock,
   toast: {
@@ -975,6 +963,21 @@ describe('ClaudeCodeQuotaMenu', () => {
 });
 
 describe('CodexQuotaMenu', () => {
+  it.each([
+    [
+      'failed to fetch codex rate limits: error sending request for url (https://chatgpt.com/backend-api/wham/usage)',
+      'heteroAgent.codexQuota.errorConnection',
+    ],
+    ['unexpected RPC failure', 'heteroAgent.codexQuota.errorGeneric'],
+  ])('shows a friendly error instead of exposing %s', async (error, expectedMessage) => {
+    mockService.getCodexQuota.mockResolvedValue(codexSnapshot({ error, status: 'error' }));
+
+    render(<CodexQuotaMenu command="codex" />);
+
+    expect(await screen.findByText(expectedMessage)).toBeTruthy();
+    expect(screen.queryByText(error)).toBeNull();
+  });
+
   it('renders windows and the reset-credits footer', async () => {
     const resetsAt = Date.now() + 60 * 60_000;
     mockService.getCodexQuota.mockResolvedValue(

@@ -2,12 +2,10 @@ import VoiceDictation from '../Dictation';
 import VoiceMessage from '../VoiceMessage';
 import AgentMode from './AgentMode';
 import Clear from './Clear';
-import Effort from './Effort';
 import History from './History';
 import Memory from './Memory';
 import Mention from './Mention';
 import Model from './Model';
-import ModelLabel from './ModelLabel';
 import ModelNetParallel from './ModelNetParallel';
 import ModelNetSerial from './ModelNetSerial';
 import Params from './Params';
@@ -23,14 +21,12 @@ export const actionMap = {
   agentMode: AgentMode,
   clear: Clear,
   contextWindow: ContextWindow,
-  effort: Effort,
   fileUpload: Upload,
   plus: Plus,
   history: History,
   memory: Memory,
   mention: Mention,
   model: Model,
-  modelLabel: ModelLabel,
   modelnetParallel: ModelNetParallel,
   modelnetSerial: ModelNetSerial,
   params: Params,

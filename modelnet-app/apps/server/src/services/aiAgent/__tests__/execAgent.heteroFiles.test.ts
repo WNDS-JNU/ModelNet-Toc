@@ -1075,6 +1075,7 @@ describe('AiAgentService.execAgent - hetero early-exit file attachments', () => 
       );
       expect(topicMock.tryReserveTaskCallback).toHaveBeenCalledWith('topic-1', expect.any(String), {
         allowRunningOperationId: 'parent-operation',
+        allowSameReservationReentry: true,
         ignoreRunningOperation: undefined,
         replacesOperationId: undefined,
       });
@@ -1465,7 +1466,7 @@ describe('AiAgentService.execAgent - hetero early-exit file attachments', () => 
       expect(mockExecuteToolCall).not.toHaveBeenCalled();
     });
 
-    // Regression guard for LOBE-13477: a callAgent/callSubAgent-spawned hetero
+    // Regression guard: a callAgent/callSubAgent-spawned hetero
     // child (isolation-thread, no topicStartOwnerOperationId) must still get
     // its userId/workspaceId written to the state-manager metadata store —
     // subAgentCallback reads it to authorize resuming the parked parent

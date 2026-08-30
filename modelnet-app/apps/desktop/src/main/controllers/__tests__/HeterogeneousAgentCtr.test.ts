@@ -1513,6 +1513,68 @@ describe('HeterogeneousAgentCtr', () => {
       expect(send).toHaveBeenCalledWith('heteroAgentSessionComplete', { sessionId });
     });
 
+    it('launches provider-bound Grok with a managed secret-free profile', async () => {
+      const ctr = new HeterogeneousAgentCtr({
+        appStoragePath,
+        storeManager: { get: vi.fn() },
+      } as any);
+      const { sessionId } = await ctr.startSession({
+        agentType: 'grok-build',
+        args: ['--model', 'stale-model', '--effort', 'high'],
+        command: 'grok',
+        env: {
+          GROK_CODE_XAI_API_KEY: 'stale-legacy-key',
+          GROK_CONFIG: 'untrusted',
+          XAI_API_KEY: 'stale-key',
+        },
+        providerBinding: {
+          apiConfig: { model: 'gpt-test', providerId: 'openai' },
+          kind: 'provider',
+        },
+      });
+
+      const originalLegacyApiKey = process.env.GROK_CODE_XAI_API_KEY;
+      const originalXaiApiKey = process.env.XAI_API_KEY;
+      process.env.GROK_CODE_XAI_API_KEY = 'inherited-legacy-key';
+      process.env.XAI_API_KEY = 'inherited-xai-key';
+      try {
+        await ctr.sendPrompt({ operationId: 'op-grok-provider', prompt: 'hello', sessionId });
+      } finally {
+        if (originalLegacyApiKey === undefined) delete process.env.GROK_CODE_XAI_API_KEY;
+        else process.env.GROK_CODE_XAI_API_KEY = originalLegacyApiKey;
+        if (originalXaiApiKey === undefined) delete process.env.XAI_API_KEY;
+        else process.env.XAI_API_KEY = originalXaiApiKey;
+      }
+
+      const options = grokAcpSessionConstructMock.mock.calls.at(-1)?.[0];
+      expect(options.args).toEqual([
+        '--effort',
+        'high',
+        '--model',
+        expect.stringMatching(/^lobehub-provider-[\da-f]{16}$/),
+      ]);
+      expect(options.env).toEqual(
+        expect.objectContaining({
+          GROK_CONFIG: '',
+          GROK_DEFAULT_MODEL: '',
+          GROK_HOME: expect.stringContaining('/heteroAgent/bindings/grok-build/'),
+          LOBEHUB_GROK_API_KEY: 'provider-secret',
+        }),
+      );
+      expect(options.env).not.toHaveProperty('GROK_CODE_XAI_API_KEY');
+      expect(options.env).not.toHaveProperty('XAI_API_KEY');
+
+      const bindingsDir = path.join(appStoragePath, 'heteroAgent', 'bindings', 'grok-build');
+      const [bindingDir] = await readdir(bindingsDir);
+      const config = await readFile(path.join(bindingsDir, bindingDir, 'config.toml'), 'utf8');
+      expect(config).toContain('model = "gpt-test"');
+      expect(config).toContain('base_url = "https://api.openai.com/v1"');
+      expect(config).toContain('api_backend = "responses"');
+      expect(config).not.toContain('provider-secret');
+      expect(JSON.stringify(loggerInfoMock.mock.calls)).not.toContain('provider-secret');
+      expect(await readdir(path.join(appStoragePath, 'heteroAgent', 'runs'))).toEqual([]);
+    });
+
     it.each([
       ['cancelSession', grokAcpSessionInterruptMock],
       ['stopSession', grokAcpSessionCloseMock],
@@ -1677,6 +1739,174 @@ describe('HeterogeneousAgentCtr', () => {
     });
   });
 
+  describe('sendPrompt (kimi-code provider binding)', () => {
+    let originalKimiBaseURL: string | undefined;
+
+    beforeEach(() => {
+      originalKimiBaseURL = process.env.KIMI_MODEL_BASE_URL;
+      process.env.KIMI_MODEL_BASE_URL = 'https://stale-or-attacker.example/v1';
+      spawnCalls.length = 0;
+      execFileMock.mockReset();
+      getProviderBindingRuntimeMock.mockResolvedValue({
+        enabled: true,
+        runtimeConfig: {
+          config: {},
+          keyVaults: {
+            apiKey: 'kimi-provider-secret',
+            baseURL: 'https://gateway.example.com/v1/',
+          },
+          settings: { sdkType: 'openai' },
+        },
+      });
+    });
+
+    afterEach(() => {
+      if (originalKimiBaseURL === undefined) delete process.env.KIMI_MODEL_BASE_URL;
+      else process.env.KIMI_MODEL_BASE_URL = originalKimiBaseURL;
+    });
+
+    it('requires Kimi Code 0.6.0 for provider binding but not subscription mode', async () => {
+      const detect = vi.fn().mockResolvedValue({ available: true, version: '0.5.0' });
+      const ctr = new HeterogeneousAgentCtr({
+        appStoragePath,
+        binaryManager: { detect },
+        storeManager: { get: vi.fn() },
+      } as any);
+      const providerSession = await ctr.startSession({
+        agentType: 'kimi-code',
+        command: 'kimi',
+        providerBinding: {
+          apiConfig: { model: 'upstream-model', providerId: 'custom-openai' },
+          kind: 'provider',
+        },
+      });
+
+      await expect(
+        ctr.sendPrompt({
+          operationId: 'op-kimi-old-provider',
+          prompt: 'provider prompt',
+          sessionId: providerSession.sessionId,
+        }),
+      ).rejects.toThrow(
+        'Kimi Code 0.6.0 or newer is required to use a LobeHub provider. Installed version: 0.5.0.',
+      );
+      expect(spawnCalls).toHaveLength(0);
+
+      nextFakeProc = createFakeProc().proc;
+      const subscriptionSession = await ctr.startSession({
+        agentType: 'kimi-code',
+        command: 'kimi',
+      });
+      await ctr.sendPrompt({
+        operationId: 'op-kimi-old-subscription',
+        prompt: 'subscription prompt',
+        sessionId: subscriptionSession.sessionId,
+      });
+
+      expect(spawnCalls).toHaveLength(1);
+    });
+
+    it('keeps the env-only binding across fresh and resumed runs without persisting the key', async () => {
+      const ctr = new HeterogeneousAgentCtr({
+        appStoragePath,
+        storeManager: { get: vi.fn() },
+      } as any);
+      const providerBinding = {
+        apiConfig: { model: 'upstream-model', providerId: 'custom-openai' },
+        kind: 'provider' as const,
+      };
+
+      nextFakeProc = createFakeProc().proc;
+      const fresh = await ctr.startSession({
+        agentType: 'kimi-code',
+        args: [
+          '--continue',
+          '-c',
+          '-C',
+          '--model',
+          'stale-model',
+          '--session=stale-session',
+          '--verbose',
+        ],
+        command: 'kimi',
+        env: {
+          KIMI_CODE_HOME: '/user/kimi',
+          KIMI_MODEL_API_KEY: 'stale-key',
+          KIMI_MODEL_BASE_URL: 'https://stale.example.com',
+        },
+        providerBinding,
+      });
+      await ctr.sendPrompt({
+        operationId: 'op-kimi-fresh',
+        prompt: 'fresh private prompt',
+        sessionId: fresh.sessionId,
+      });
+
+      expect(spawnCalls[0].args).toEqual([
+        '--output-format',
+        'stream-json',
+        '--verbose',
+        '--prompt',
+        'fresh private prompt',
+      ]);
+      expect(spawnCalls[0].options.env).toEqual(
+        expect.objectContaining({
+          KIMI_CODE_HOME: expect.stringContaining('/heteroAgent/bindings/kimi-code/'),
+          KIMI_MODEL_API_KEY: expect.any(String),
+          KIMI_MODEL_BASE_URL: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/v1$/),
+          KIMI_MODEL_NAME: 'upstream-model',
+          KIMI_MODEL_PROVIDER_TYPE: 'openai',
+          NO_PROXY: expect.stringContaining('127.0.0.1'),
+          no_proxy: expect.stringContaining('127.0.0.1'),
+        }),
+      );
+
+      nextFakeProc = createFakeProc().proc;
+      const resumed = await ctr.startSession({
+        agentType: 'kimi-code',
+        command: 'kimi',
+        providerBinding: { ...providerBinding, resumeBindingKey: fresh.providerBindingKey },
+        resumeSessionId: 'kimi-native-session',
+      });
+      await ctr.sendPrompt({
+        operationId: 'op-kimi-resume',
+        prompt: 'resume private prompt',
+        sessionId: resumed.sessionId,
+      });
+
+      expect(spawnCalls[1].args).toEqual([
+        '--output-format',
+        'stream-json',
+        '--session',
+        'kimi-native-session',
+        '--prompt',
+        'resume private prompt',
+      ]);
+      expect(spawnCalls[1].options.env).toEqual(
+        expect.objectContaining({
+          KIMI_MODEL_API_KEY: expect.any(String),
+          KIMI_MODEL_BASE_URL: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/v1$/),
+          KIMI_MODEL_NAME: 'upstream-model',
+          KIMI_MODEL_PROVIDER_TYPE: 'openai',
+        }),
+      );
+      expect(spawnCalls[0].options.env.KIMI_MODEL_API_KEY).not.toBe('kimi-provider-secret');
+      expect(spawnCalls[1].options.env.KIMI_MODEL_API_KEY).not.toBe('kimi-provider-secret');
+      expect(spawnCalls.flatMap(({ args }) => args)).not.toContain('kimi-provider-secret');
+      expect(JSON.stringify(spawnCalls)).not.toContain('kimi-provider-secret');
+      expect(JSON.stringify(spawnCalls)).not.toContain('stale-or-attacker.example');
+      expect(JSON.stringify(loggerInfoMock.mock.calls)).not.toContain('kimi-provider-secret');
+
+      const bindingsRoot = path.join(appStoragePath, 'heteroAgent', 'bindings', 'kimi-code');
+      const [bindingDir] = await readdir(bindingsRoot);
+      const profileFiles = await readdir(path.join(bindingsRoot, bindingDir));
+      expect(profileFiles).toEqual(['.lobehub-last-used']);
+      expect(
+        await readFile(path.join(bindingsRoot, bindingDir, '.lobehub-last-used'), 'utf8'),
+      ).not.toContain('kimi-provider-secret');
+    });
+  });
+
   describe('sendPrompt (codex)', () => {
     beforeEach(() => {
       spawnCalls.length = 0;
@@ -1743,9 +1973,102 @@ describe('HeterogeneousAgentCtr', () => {
         topicId: 'topic-1',
       });
       expect(spawnCalls[0].args).toEqual(expect.arrayContaining(['--model', 'lobehub/gpt-5.4']));
+      expect(spawnCalls[0].options.env.LOBEHUB_HETERO_TOKEN).toBe('operation-token');
       expect(settleServerDefaultOperationMock).toHaveBeenCalledWith(expect.any(Object), {
         cancelled: false,
         operationId: 'op-server-default',
+        result: 'done',
+      });
+    });
+
+    it('injects a Kimi operation token into its Anthropic credential env', async () => {
+      nextFakeProc = createFakeProc().proc;
+      const ctr = new HeterogeneousAgentCtr({
+        appStoragePath,
+        storeManager: { get: vi.fn() },
+      } as any);
+      const { sessionId } = await ctr.startSession({
+        agentType: 'kimi-code',
+        command: 'kimi',
+        providerBinding: {
+          apiConfig: { model: 'kimi-k2.6', source: 'server-default' },
+          kind: 'server-default',
+        },
+      });
+
+      await ctr.sendPrompt({
+        operationId: 'op-server-default-kimi',
+        prompt: 'hello',
+        sessionId,
+        topicId: 'topic-1',
+      });
+
+      expect(beginServerDefaultOperationMock).toHaveBeenCalledWith(expect.any(Object), {
+        agentId: undefined,
+        agentType: 'kimi-code',
+        model: 'kimi-k2.6',
+        operationId: 'op-server-default-kimi',
+        topicId: 'topic-1',
+      });
+      expect(spawnCalls[0]).toMatchObject({
+        command: 'kimi',
+        options: {
+          env: {
+            KIMI_MODEL_API_KEY: 'operation-token',
+            KIMI_MODEL_BASE_URL: 'https://app.example.com/api/v1/anthropic',
+            KIMI_MODEL_NAME: 'lobehub/kimi-k2.6',
+            KIMI_MODEL_PROVIDER_TYPE: 'anthropic',
+          },
+        },
+      });
+      expect(settleServerDefaultOperationMock).toHaveBeenCalledWith(expect.any(Object), {
+        cancelled: false,
+        operationId: 'op-server-default-kimi',
+        result: 'done',
+      });
+    });
+
+    it('injects a Pi operation token into its Responses credential env', async () => {
+      nextFakeProc = createFakeProc().proc;
+      const ctr = new HeterogeneousAgentCtr({
+        appStoragePath,
+        storeManager: { get: vi.fn() },
+      } as any);
+      const { sessionId } = await ctr.startSession({
+        agentType: 'pi',
+        command: 'pi',
+        providerBinding: {
+          apiConfig: { model: 'kimi-k2.6', source: 'server-default' },
+          kind: 'server-default',
+        },
+      });
+
+      await ctr.sendPrompt({
+        operationId: 'op-server-default-pi',
+        prompt: 'hello',
+        sessionId,
+        topicId: 'topic-1',
+      });
+
+      expect(beginServerDefaultOperationMock).toHaveBeenCalledWith(expect.any(Object), {
+        agentId: undefined,
+        agentType: 'pi',
+        model: 'kimi-k2.6',
+        operationId: 'op-server-default-pi',
+        topicId: 'topic-1',
+      });
+      expect(spawnCalls[0].args).toEqual(
+        expect.arrayContaining([
+          '--provider',
+          'lobehub-server-default',
+          '--model',
+          'lobehub/kimi-k2.6',
+        ]),
+      );
+      expect(spawnCalls[0].options.env.LOBEHUB_PI_API_KEY).toBe('operation-token');
+      expect(settleServerDefaultOperationMock).toHaveBeenCalledWith(expect.any(Object), {
+        cancelled: false,
+        operationId: 'op-server-default-pi',
         result: 'done',
       });
     });

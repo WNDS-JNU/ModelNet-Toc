@@ -6,7 +6,7 @@ documents its shape and how to turn it into a per-criterion worklist. You submit
 each criterion's evidence by its `checkItemId` — no separate upload handle to
 resolve.
 
-## (a) `modelnet verify plan state $LOBE_OPERATION_ID --json`
+## (a) `modelnet verify plan state $OPERATION_ID --json`
 
 Returns the run's verify state plus the **frozen plan** (immutable once
 confirmed):
@@ -51,12 +51,12 @@ The plan (a) is all you need. For each `verifyPlan[]` item with non-empty
 | `vci_a1b2c3` | Login flow reaches the workspace | `screenshot`     |
 
 ```bash
-OP="$LOBE_OPERATION_ID"
-modelnet verify submit --operation "$OP" --item vci_a1b2c3 --type screenshot \
+OP="$OPERATION_ID"
+modelnet acceptance run result submit --operation "$OP" --item vci_a1b2c3 --type screenshot \
   --file ./proof/home.png --by agent-browser --desc "…"
 ```
 
-`modelnet verify submit` resolves the session from the operation id and **creates the
+`modelnet acceptance run result submit` resolves the session from the operation id and **creates the
 check-result row for you** (idempotent on `checkItemId`), then attaches the
 evidence — there is no `checkResultId` to look up first.
 
@@ -66,7 +66,7 @@ Once you've submitted, the result rows exist. To confirm coverage, read them bac
 and list each row's evidence:
 
 ```jsonc
-// modelnet verify result list --operation "$OP" --json
+// modelnet acceptance run result list --operation "$OP" --json
 [
   {
     "id": "vcr_x9y8z7", // checkResultId (created by submit)
@@ -77,5 +77,5 @@ and list each row's evidence:
 ```
 
 ```bash
-modelnet verify evidence list "$CHECK_RESULT_ID" --json # confirm each required type is present
+modelnet acceptance run evidence list "$CHECK_RESULT_ID" --json # confirm each required type is present
 ```

@@ -592,8 +592,6 @@ export default {
   'devices.connectWizard.cli.connectDesc':
     'Start the background daemon to keep the device online and listening for remote operations.',
   'devices.connectWizard.cli.connectTitle': 'Start the daemon',
-  'devices.connectWizard.cli.installDesc':
-    'Install the ModelNet CLI globally with your preferred package manager to enable device connectivity and management.',
   'devices.connectWizard.cli.installTitle': 'Install the CLI',
   'devices.connectWizard.cli.loginTitle': 'Sign in',
   'devices.connectWizard.desktop.downloadLink': 'Download ModelNet Desktop',
@@ -1034,6 +1032,21 @@ export default {
   'settingAppearance.contextMenuMode.disabled': 'Disabled',
   'settingAppearance.contextMenuMode.title': 'Right-Click Menu Mode',
   'settingAppearance.desktop.title': 'Desktop',
+  'settingAppearance.font.fontFamily.default': 'System Default',
+  'settingAppearance.font.fontFamily.desc':
+    'Choose a font installed on this device for the whole interface. System Default follows the built-in font stack of your current language.',
+  'settingAppearance.font.fontFamily.loadError':
+    'System fonts could not be loaded. System Default remains available.',
+  'settingAppearance.font.fontFamily.title': 'Interface Font',
+  'settingAppearance.font.fontFamily.unavailable': '{{font}} (Unavailable on this device)',
+  'settingAppearance.font.monospace.default': 'System Default',
+  'settingAppearance.font.monospace.desc':
+    'Used by code blocks and the built-in terminal. Choose a monospaced font installed on this device.',
+  'settingAppearance.font.monospace.loadError':
+    'System fonts could not be loaded. System Default remains available.',
+  'settingAppearance.font.monospace.title': 'Monospace Font',
+  'settingAppearance.font.monospace.unavailable': '{{font}} (Unavailable on this device)',
+  'settingAppearance.font.title': 'Font',
   'settingAppearance.neutralColor.desc': 'Custom grayscale with different color tendencies',
   'settingAppearance.neutralColor.title': 'Neutral Color',
   'settingAppearance.noAnimation.desc': 'Disable all animation effects in the application',
@@ -1041,14 +1054,6 @@ export default {
   'settingAppearance.preview.title': 'Color Palette',
   'settingAppearance.primaryColor.desc': 'Custom theme color',
   'settingAppearance.primaryColor.title': 'Theme Color',
-  'settingAppearance.terminal.fontFamily.desc':
-    'Choose a monospaced font installed on this device. Select Application Default to use the application code font.',
-  'settingAppearance.terminal.fontFamily.default': 'Application Default',
-  'settingAppearance.terminal.fontFamily.loadError':
-    'System fonts could not be loaded. Application Default remains available.',
-  'settingAppearance.terminal.fontFamily.title': 'Monospace Font',
-  'settingAppearance.terminal.fontFamily.unavailable': '{{font}} (Unavailable on this device)',
-  'settingAppearance.terminal.title': 'Terminal',
   'settingAppearance.title': 'Application Appearance',
   'settingChat.chatStyleType.title': 'Chat Window Style',
   'settingChat.chatStyleType.type.chat': 'Conversation Mode',
@@ -2743,7 +2748,7 @@ When I am ___, I need ___
   'workspace.general.url.title': 'Workspace URL',
   'workspace.slugBrandApply.button': 'Apply',
   'workspace.slugBrandApply.mailBody':
-    'Hi ModelNet team,\n\nI would like to request the workspace URL "{{slug}}" (http://123.56.135.150/{{slug}}).\n\n- Brand / organization I represent:\n- Official website / domain:\n- My role in the organization:\n- Organization email (please reply from this address):\n\nThanks!',
+    'Hi LobeHub team,\n\nI would like to request the workspace URL "{{slug}}" (https://lobehub.com/{{slug}}).\n\n- Brand / organization I represent:\n- Official website / domain:\n- My role in the organization:\n- Organization email (please reply from this address):\n\nThanks!',
   'workspace.slugBrandApply.mailButton': 'Apply via email',
   'workspace.slugBrandApply.mailSubject': 'Workspace URL brand request: {{slug}}',
   'workspace.slugBrandApply.modalCreateTip':
@@ -2849,6 +2854,8 @@ When I am ___, I need ___
   'workspace.waitlistPage.enabledTitle': 'Workspace is ready for you',
   'workspace.waitlistPage.entryCta': 'Join Workspace Beta',
   'workspace.waitlistPage.goHome': 'Back to ModelNet',
+  'workspace.waitlistPage.learnMore': 'Learn more about Workspace',
+  'workspace.waitlistPage.learnMoreNewTabHint': 'Opens in a new tab',
   'workspace.waitlistPage.organizationLabel': 'Organization / Group (optional)',
   'workspace.waitlistPage.organizationPlaceholder': 'Company, school, or family…',
   'workspace.waitlistPage.pendingSubtitle':
@@ -3376,7 +3383,7 @@ When I am ___, I need ___
   'tools.builtins.lobe-agent-management.description': 'Create, manage, and orchestrate AI agents',
   'tools.builtins.lobe-agent-management.title': 'Agent Management',
   'tools.builtins.lobe-agent.description':
-    'Built-in ModelNet Agent capabilities: plan and todo management, sub-agent dispatch, and visual media analysis',
+    'Built-in ModelNet Agent capabilities: plan and todo management, sub-agent dispatch, and multimodal media analysis',
   'tools.builtins.lobe-agent.title': 'ModelNet Agent',
   'tools.builtins.lobe-brief.description':
     'Report progress, deliver results, and request user decisions',
@@ -3384,9 +3391,6 @@ When I am ___, I need ___
   'tools.builtins.lobe-creds.description':
     'Manage user credentials for authentication, environment variable injection, and API verification — handle API keys, OAuth tokens, and secrets for third-party integrations.',
   'tools.builtins.lobe-creds.title': 'Credentials',
-  'tools.builtins.lobe-cron.description':
-    'Manage scheduled tasks that run automatically at specified times. Create, update, enable/disable, and monitor recurring tasks for your agents.',
-  'tools.builtins.lobe-cron.title': 'Scheduled Tasks',
   'tools.builtins.lobe-group-agent-builder.description':
     'Configure group metadata, members, and shared content for multi-agent groups',
   'tools.builtins.lobe-group-agent-builder.title': 'Group Agent Builder',
@@ -3417,7 +3421,7 @@ When I am ___, I need ___
   'tools.builtins.lobe-skills.description': 'Activate and use reusable skill packages',
   'tools.builtins.lobe-skills.title': 'Skills',
   'tools.builtins.lobe-task.description':
-    'Create, list, edit, and delete tasks with dependencies and review configuration',
+    'Create, schedule, list, edit, and delete tasks with dependencies and review configuration',
   'tools.builtins.lobe-task.title': 'Task Tools',
   'tools.builtins.lobe-topic-reference.description':
     'Retrieve context from referenced topic conversations',
@@ -3697,7 +3701,6 @@ When I am ___, I need ___
   'tools.tabs.all': 'All',
   'tools.tabs.installed': 'Enabled',
   'tools.title': 'Skills',
-
   // ModelNet local keys preserved across the ModelNet vendor sync.
   "accountDeletion.reasonPlaceholder": "Please tell us why you want to delete your account...",
   "accountDeletion.reasonRequired": "Please provide a reason for deletion",
