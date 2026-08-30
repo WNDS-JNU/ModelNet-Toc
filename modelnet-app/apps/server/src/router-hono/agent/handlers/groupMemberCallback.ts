@@ -34,6 +34,7 @@ export async function groupMemberCallback(c: Context): Promise<Response> {
 
   const {
     anchorMessageId,
+    collaboration,
     expectedMembers,
     groupToolMessageId,
     mode,
@@ -81,6 +82,7 @@ export async function groupMemberCallback(c: Context): Promise<Response> {
 
     const resumed = await aiAgentService.completeGroupActionMember({
       anchorMessageId,
+      collaboration,
       expectedMembers: Number(expectedMembers) || 1,
       groupToolMessageId,
       mode: mode === 'isolated' ? 'isolated' : 'in_group',

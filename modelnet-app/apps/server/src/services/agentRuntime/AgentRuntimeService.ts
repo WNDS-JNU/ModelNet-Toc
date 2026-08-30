@@ -63,6 +63,7 @@ import {
   type RuntimeExecutorContext,
 } from '@/server/modules/AgentRuntime/RuntimeExecutors';
 import { type IStreamEventManager } from '@/server/modules/AgentRuntime/types';
+import { AgentGroupCollaborationService } from '@/server/services/agentGroupCollaboration';
 import { emitAgentSignalSourceEvent } from '@/server/services/agentSignal';
 import { toAgentSignalTraceEvents } from '@/server/services/agentSignal/observability/traceEvents';
 import { FileService } from '@/server/services/file';
@@ -3083,6 +3084,7 @@ export class AgentRuntimeService {
   async completeGroupActionMember(params: GroupActionMemberBridgeParams): Promise<boolean> {
     const {
       anchorMessageId,
+      collaboration,
       expectedMembers,
       groupToolMessageId,
       mode,
@@ -3095,6 +3097,36 @@ export class AgentRuntimeService {
 
     const finalState =
       params.finalState ?? (await this.coordinator.loadAgentState(operationId)) ?? undefined;
+
+    if (collaboration) {
+      const attemptStatus =
+        reason === 'timeout'
+          ? 'timed_out'
+          : reason === 'interrupted'
+            ? 'cancelled'
+            : reason === 'error'
+              ? 'failed'
+              : 'completed';
+      const collaborationService = new AgentGroupCollaborationService(
+        this.serverDB,
+        this.userId,
+        this.workspaceId,
+      );
+      await collaborationService.completeAttempt({
+        ...collaboration,
+        completionReason: reason,
+        error: finalState?.error
+          ? {
+              message:
+                typeof finalState.error === 'object' && 'message' in finalState.error
+                  ? String(finalState.error.message)
+                  : String(finalState.error),
+            }
+          : undefined,
+        operationId,
+        status: attemptStatus,
+      });
+    }
 
     log(
       '[%s] group-member bridge → parent %s (mode: %s, reason: %s, %d members)',
@@ -3290,6 +3322,7 @@ export class AgentRuntimeService {
 
     const resumed = await this.completeGroupActionMember({
       anchorMessageId: params.anchorMessageId,
+      collaboration: params.collaboration,
       expectedMembers: params.expectedMembers,
       finalState: state,
       groupToolMessageId: params.groupToolMessageId,

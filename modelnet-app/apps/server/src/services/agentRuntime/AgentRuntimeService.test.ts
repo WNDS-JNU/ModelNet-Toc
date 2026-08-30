@@ -32,6 +32,15 @@ vi.mock('@lobechat/model-runtime', () => ({
 const { ssrfSafeFetch: mockSsrfSafeFetch } = vi.hoisted(() => ({ ssrfSafeFetch: vi.fn() }));
 vi.mock('@lobechat/ssrf-safe-fetch', () => ({ ssrfSafeFetch: mockSsrfSafeFetch }));
 
+const { completeCollaborationAttempt } = vi.hoisted(() => ({
+  completeCollaborationAttempt: vi.fn(),
+}));
+vi.mock('@/server/services/agentGroupCollaboration', () => ({
+  AgentGroupCollaborationService: class {
+    completeAttempt = completeCollaborationAttempt;
+  },
+}));
+
 // Mock trusted client to avoid server-side env access
 vi.mock('@/libs/trusted-client', () => ({
   generateTrustedClientToken: vi.fn().mockReturnValue(undefined),
@@ -2357,6 +2366,7 @@ describe('AgentRuntimeService', () => {
     let resumeSpy: MockInstance<AgentRuntimeService['tryResumeParentFromAsyncTool']>;
 
     beforeEach(() => {
+      completeCollaborationAttempt.mockReset().mockResolvedValue(undefined);
       updateToolMessage = vi.fn().mockResolvedValue({ success: true });
       (service as any).messageModel.updateToolMessage = updateToolMessage;
       resumeSpy = vi.spyOn(service, 'tryResumeParentFromAsyncTool').mockResolvedValue(true);
@@ -2386,6 +2396,69 @@ describe('AgentRuntimeService', () => {
       expect(resumeSpy).toHaveBeenCalledWith(
         { parentOperationId: 'parent-1' },
         { scheduleVerifyOnHold: true },
+      );
+    });
+
+    it('settles durable attempt lineage before backfilling the member anchor', async () => {
+      await service.completeGroupActionMember({
+        anchorMessageId: 'grp-tool-1',
+        collaboration: {
+          attemptNo: 1,
+          runId: 'run-1',
+          runNodeId: 'node-1',
+          runtimeKind: 'normal',
+        },
+        expectedMembers: 1,
+        finalState: memberState as any,
+        groupToolMessageId: 'grp-tool-1',
+        mode: 'in_group',
+        onComplete: 'resume',
+        operationId: 'child-1',
+        parentOperationId: 'parent-1',
+        reason: 'done',
+      });
+
+      expect(completeCollaborationAttempt).toHaveBeenCalledWith({
+        attemptNo: 1,
+        completionReason: 'done',
+        error: undefined,
+        operationId: 'child-1',
+        runId: 'run-1',
+        runNodeId: 'node-1',
+        runtimeKind: 'normal',
+        status: 'completed',
+      });
+      expect(completeCollaborationAttempt.mock.invocationCallOrder[0]).toBeLessThan(
+        updateToolMessage.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('maps a member timeout to timed_out with a durable error snapshot', async () => {
+      await service.completeGroupActionMember({
+        anchorMessageId: 'grp-tool-timeout',
+        collaboration: {
+          attemptNo: 1,
+          runId: 'run-1',
+          runNodeId: 'node-timeout',
+          runtimeKind: 'normal',
+        },
+        expectedMembers: 1,
+        finalState: { ...memberState, error: { message: 'deadline exceeded' } } as any,
+        groupToolMessageId: 'grp-tool-timeout',
+        mode: 'isolated',
+        onComplete: 'resume',
+        operationId: 'child-timeout',
+        parentOperationId: 'parent-1',
+        reason: 'timeout',
+      });
+
+      expect(completeCollaborationAttempt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          completionReason: 'timeout',
+          error: { message: 'deadline exceeded' },
+          operationId: 'child-timeout',
+          status: 'timed_out',
+        }),
       );
     });
 

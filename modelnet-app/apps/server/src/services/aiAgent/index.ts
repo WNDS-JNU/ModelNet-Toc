@@ -5616,6 +5616,7 @@ export class AiAgentService {
           bridgeHookFactory: (threadId) =>
             this.createGroupActionMemberBridgeHook({
               anchorMessageId: params.anchorMessageId,
+              collaboration: params.collaboration,
               expectedMembers: params.expectedMembers,
               groupToolMessageId: params.groupToolMessageId,
               mode: 'isolated',
@@ -5639,6 +5640,7 @@ export class AiAgentService {
         await this.agentRuntimeService.scheduleGroupMemberTimeout(
           {
             anchorMessageId: params.anchorMessageId,
+            collaboration: params.collaboration,
             expectedMembers: params.expectedMembers,
             groupToolMessageId: params.groupToolMessageId,
             memberOperationId: result.operationId,
@@ -5672,6 +5674,7 @@ export class AiAgentService {
     const {
       agentId,
       anchorMessageId,
+      collaboration,
       disableTools,
       expectedMembers,
       groupId,
@@ -5751,6 +5754,7 @@ export class AiAgentService {
       hooks: [
         this.createGroupActionMemberBridgeHook({
           anchorMessageId,
+          collaboration,
           expectedMembers,
           groupToolMessageId,
           mode: 'in_group',
@@ -6323,6 +6327,7 @@ export class AiAgentService {
    */
   private createGroupActionMemberBridgeHook(params: {
     anchorMessageId: string;
+    collaboration?: GroupActionMemberBridgeParams['collaboration'];
     expectedMembers: number;
     groupToolMessageId: string;
     mode: GroupActionMemberMode;
@@ -6332,6 +6337,7 @@ export class AiAgentService {
   }): AgentHook {
     const {
       anchorMessageId,
+      collaboration,
       expectedMembers,
       groupToolMessageId,
       mode,
@@ -6344,6 +6350,7 @@ export class AiAgentService {
         try {
           await this.agentRuntimeService.completeGroupActionMember({
             anchorMessageId,
+            collaboration,
             expectedMembers,
             finalState: event.finalState,
             groupToolMessageId,
@@ -6367,6 +6374,7 @@ export class AiAgentService {
       webhook: {
         body: {
           anchorMessageId,
+          collaboration,
           expectedMembers,
           groupToolMessageId,
           mode,

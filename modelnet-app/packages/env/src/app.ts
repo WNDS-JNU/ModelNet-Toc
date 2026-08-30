@@ -79,6 +79,15 @@ export const getAppConfig = () => {
       ENABLE_AGENT_GATEWAY: z.boolean().optional(),
       AGENT_GATEWAY_URL: z.string().url().optional(),
       /**
+       * Persist the new Agent Group Run / Node / Attempt projection alongside
+       * the existing durable AgentOperation tree. This flag does not select the
+       * server-vs-client execution owner: new group messages already execute
+       * through the server supervisor path. Keep disabled until the projection
+       * schema and idempotent write path have passed dev recovery tests.
+       * @default false
+       */
+      enableAgentGroupDurableRuns: z.boolean().optional(),
+      /**
        * Enable Queue-based Agent Runtime
        * When true, use QStash for async agent execution (production)
        * When false, execute agent steps synchronously in current process (development)
@@ -124,6 +133,7 @@ export const getAppConfig = () => {
       AGENT_GATEWAY_SERVICE_TOKEN: process.env.AGENT_GATEWAY_SERVICE_TOKEN,
       ENABLE_AGENT_GATEWAY: process.env.ENABLE_AGENT_GATEWAY === '1',
       AGENT_GATEWAY_URL: process.env.AGENT_GATEWAY_URL,
+      enableAgentGroupDurableRuns: process.env.AGENT_GROUP_DURABLE_RUNS === '1',
       enableQueueAgentRuntime: process.env.AGENT_RUNTIME_MODE === 'queue',
       TELEMETRY_DISABLED: process.env.TELEMETRY_DISABLED === '1',
     },

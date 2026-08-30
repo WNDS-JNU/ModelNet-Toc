@@ -8,6 +8,7 @@ import type {
   ToolSource,
 } from '@lobechat/context-engine';
 import type {
+  AgentGroupRunAttemptRef,
   ChatTopicBotContext,
   EvalToolForwardingConfig,
   ExpertiseContextSnapshot,
@@ -254,6 +255,8 @@ export interface GroupActionMemberBridgeParams {
    * collapse the anchor onto the group tool call itself).
    */
   anchorMessageId: string;
+  /** Durable collaboration lineage; absent while the migration flag is disabled. */
+  collaboration?: AgentGroupRunAttemptRef;
   /** Total members forked under this group tool call — the K=N barrier target. */
   expectedMembers: number;
   /** Child member op's final state — passed in local mode; loaded otherwise. */
@@ -281,6 +284,7 @@ export interface GroupActionMemberBridgeParams {
  */
 export interface GroupMemberTimeoutParams {
   anchorMessageId: string;
+  collaboration?: AgentGroupRunAttemptRef;
   expectedMembers: number;
   groupToolMessageId: string;
   /** The forked member operation id whose deadline this enforces. */
@@ -300,6 +304,8 @@ export interface ExecGroupMemberParams {
   agentId: string;
   /** Per-member anchor message id the bridge backfills. */
   anchorMessageId: string;
+  /** Durable collaboration lineage for this member attempt. */
+  collaboration?: AgentGroupRunAttemptRef;
   /** Disable tools for this member (broadcast — voice opinions only). */
   disableTools?: boolean;
   /** K=N barrier target stored on the group tool message. */

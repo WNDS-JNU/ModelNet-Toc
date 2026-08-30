@@ -35,6 +35,7 @@ services:
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgresql:5432/${DEV_MODELNET_DB_NAME:-${DEV_LOBE_DB_NAME:-modelnet_dev}}
       DEVICE_GATEWAY_URL: http://device-gateway:3000
       DEVICE_GATEWAY_SERVICE_TOKEN: ${DEVICE_GATEWAY_SERVICE_TOKEN}
+      AGENT_GROUP_DURABLE_RUNS: ${AGENT_GROUP_DURABLE_RUNS:-0}
       MODELNET_LEADERBOARD_DATA_DIR: /app/leaderboard/data
       MODELNET_PROXY_URL: http://modelnet-router:8000/v1
       MODELNET_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}

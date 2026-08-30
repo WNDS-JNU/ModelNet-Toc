@@ -13,6 +13,8 @@ import debug from 'debug';
 
 import { WorkModel } from '@/database/models/work';
 import { type LobeChatDatabase } from '@/database/type';
+import { appEnv } from '@/envs/app';
+import { AgentGroupCollaborationService } from '@/server/services/agentGroupCollaboration';
 import { FileService } from '@/server/services/file';
 import {
   type ServerAgentMemberRunner,
@@ -348,8 +350,9 @@ export const buildServerAgentMemberRunner = (
 
   return {
     run: async ({ members, mode, onComplete, disableTools, timeout }) => {
-      const agentMap = (state.metadata?.agentGroup as { agentMap?: Record<string, { name: string }> }
-        | undefined)?.agentMap;
+      const agentMap = (
+        state.metadata?.agentGroup as { agentMap?: Record<string, { name: string }> } | undefined
+      )?.agentMap;
       const resolvedMembers = members.map((member) => ({
         ...member,
         agentId: resolveGroupMemberId(member.agentId, agentMap),
@@ -410,15 +413,100 @@ export const buildServerAgentMemberRunner = (
         }
       }
 
+      const cleanupPlaceholders = async () => {
+        for (const id of new Set([...anchorIds, groupTool.id])) {
+          try {
+            await ctx.messageModel.deleteMessage(id);
+          } catch (error) {
+            log('buildServerAgentMemberRunner: cleanup failed for %s: %O', id, error);
+          }
+        }
+      };
+
+      let collaborationService: AgentGroupCollaborationService | undefined;
+      let durableRun: Awaited<ReturnType<AgentGroupCollaborationService['createRun']>> | undefined;
+      if (appEnv.enableAgentGroupDurableRuns) {
+        if (!ctx.userId) {
+          log('buildServerAgentMemberRunner: durable run requires a user id');
+          await cleanupPlaceholders();
+          return { started: false, startedCount: 0 };
+        }
+
+        collaborationService = new AgentGroupCollaborationService(
+          ctx.serverDB,
+          ctx.userId,
+          ctx.workspaceId,
+        );
+        try {
+          durableRun = await collaborationService.createRun({
+            budgetSnapshot: timeout ? { maxDurationMs: timeout } : undefined,
+            chatGroupId: groupId,
+            idempotencyKey: `group-action:${ctx.operationId}:${chatToolPayload.id}`,
+            nodes: resolvedMembers.map((member, index) => ({
+              agentId: member.agentId,
+              dependencies: [],
+              instruction:
+                member.instruction?.trim() ||
+                (mode === 'isolated'
+                  ? 'Please complete the assigned task.'
+                  : 'Please respond to the group conversation.'),
+              key: `member-${index + 1}`,
+              role: 'participant',
+              ...(timeout ? { timeoutMs: timeout } : {}),
+              ...(disableTools ? { toolPolicy: { disableTools: true } } : {}),
+            })),
+            policySnapshot: { failureStrategy: 'wait_all' },
+            protocol:
+              expectedMembers === 1
+                ? 'single'
+                : mode === 'isolated'
+                  ? 'parallel_tasks'
+                  : 'broadcast',
+            supervisorAgentId: agentId,
+            supervisorOperationId: ctx.operationId,
+            threadId: state.metadata?.threadId,
+            topicId,
+          });
+        } catch (error) {
+          log('buildServerAgentMemberRunner: failed to create durable run: %O', error);
+          await cleanupPlaceholders();
+          return { started: false, startedCount: 0 };
+        }
+
+        // A redelivered/replayed tool call reuses its immutable run and must not
+        // fork a second set of member operations. Its original group-tool rows
+        // remain the completion barrier; remove only the placeholders created by
+        // this duplicate invocation.
+        if (!durableRun.created) {
+          await cleanupPlaceholders();
+          return {
+            started: durableRun.attempts.length > 0,
+            startedCount: durableRun.attempts.length,
+          };
+        }
+      }
+
       // 3. Fork members.
       let startedCount = 0;
       await Promise.all(
         resolvedMembers.map(async (member, i) => {
           const anchorMessageId = anchorIds[i];
+          const durableNode = durableRun?.nodes[i];
+          const collaboration =
+            durableRun && durableNode
+              ? {
+                  attemptNo: 1,
+                  runId: durableRun.run.id,
+                  runNodeId: durableNode.id,
+                  runtimeKind: 'normal' as const,
+                }
+              : undefined;
+          let startError: string | undefined;
           try {
             const result = await execGroupMember({
               agentId: member.agentId,
               anchorMessageId,
+              collaboration,
               disableTools,
               expectedMembers,
               groupId,
@@ -435,14 +523,49 @@ export const buildServerAgentMemberRunner = (
             });
             if (result?.started) {
               startedCount += 1;
+              if (collaborationService && collaboration && result.operationId) {
+                try {
+                  await collaborationService.createAttempt({
+                    ...collaboration,
+                    operationId: result.operationId,
+                  });
+                } catch (error) {
+                  // The completion callback carries the same lineage and can
+                  // idempotently create/finalize the attempt if it wins this race.
+                  log(
+                    'buildServerAgentMemberRunner: failed to record attempt for %s: %O',
+                    result.operationId,
+                    error,
+                  );
+                }
+              }
               return;
             }
+            startError = result?.error;
           } catch (error) {
+            startError = error instanceof Error ? error.message : String(error);
             log(
               'buildServerAgentMemberRunner: member %s failed to start: %O',
               member.agentId,
               error,
             );
+          }
+          if (collaborationService && durableNode) {
+            try {
+              await collaborationService.failNodeStart({
+                error: {
+                  code: 'AGENT_MEMBER_START_FAILED',
+                  message: startError || `Agent member "${member.agentId}" failed to start.`,
+                },
+                runNodeId: durableNode.id,
+              });
+            } catch (error) {
+              log(
+                'buildServerAgentMemberRunner: failed to settle node %s: %O',
+                durableNode.id,
+                error,
+              );
+            }
           }
           // Member failed to start — its completion bridge will never fire, so
           // backfill the anchor as errored to keep the K=N barrier reachable.
@@ -464,13 +587,7 @@ export const buildServerAgentMemberRunner = (
       // None started — no bridge will ever fire, so tear down the placeholders
       // and let the caller surface an inline tool error instead of parking.
       if (startedCount === 0) {
-        for (const id of new Set([...anchorIds, groupTool.id])) {
-          try {
-            await ctx.messageModel.deleteMessage(id);
-          } catch (error) {
-            log('buildServerAgentMemberRunner: cleanup failed for %s: %O', id, error);
-          }
-        }
+        await cleanupPlaceholders();
         return { started: false, startedCount: 0 };
       }
 

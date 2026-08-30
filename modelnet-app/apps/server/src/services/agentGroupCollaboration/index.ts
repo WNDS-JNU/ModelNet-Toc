@@ -1,0 +1,93 @@
+import type {
+  AgentGroupRunBudgetSnapshot,
+  AgentGroupRunPlanNodeInput,
+  AgentGroupRunPolicySnapshot,
+  AgentGroupRunProtocol,
+} from '@lobechat/types';
+import { TRPCError } from '@trpc/server';
+
+import type {
+  CompleteAgentGroupRunAttemptParams,
+  CreateAgentGroupRunAttemptParams,
+  FailAgentGroupRunNodeStartParams,
+} from '@/database/models/agentGroupRun';
+import { AgentGroupRunRepository } from '@/database/repositories/agentGroupRun';
+import type { LobeChatDatabase } from '@/database/type';
+import { appEnv } from '@/envs/app';
+
+import { compileAgentGroupRunPlan } from './plan';
+
+export interface CreateAgentGroupCollaborationRunInput {
+  budgetSnapshot?: AgentGroupRunBudgetSnapshot;
+  chatGroupId: string;
+  idempotencyKey: string;
+  nodes: AgentGroupRunPlanNodeInput[];
+  policySnapshot?: AgentGroupRunPolicySnapshot;
+  protocol: AgentGroupRunProtocol;
+  supervisorAgentId: string;
+  supervisorOperationId: string;
+  threadId?: string | null;
+  topicId?: string | null;
+}
+
+/** Application boundary for creating the new collaboration projection. */
+export class AgentGroupCollaborationService {
+  private readonly repository: AgentGroupRunRepository;
+
+  constructor(db: LobeChatDatabase, userId: string, workspaceId?: string) {
+    this.repository = new AgentGroupRunRepository(db, userId, workspaceId);
+  }
+
+  createRun = async (input: CreateAgentGroupCollaborationRunInput) => {
+    if (!appEnv.enableAgentGroupDurableRuns) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Durable Agent Group runs are disabled for this deployment.',
+      });
+    }
+
+    const context = await this.repository.getExecutionContext(input.chatGroupId);
+    if (!context) throw new TRPCError({ code: 'NOT_FOUND', message: 'Agent Group not found.' });
+
+    const { roster } = context;
+
+    const supervisor = roster.find((member) => member.role === 'supervisor');
+    if (!supervisor || supervisor.agentId !== input.supervisorAgentId) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'The supplied supervisor is not the enabled supervisor for this Agent Group.',
+      });
+    }
+
+    const { planHash, planSnapshot } = compileAgentGroupRunPlan({
+      allowedAgentIds: roster.map((member) => member.agentId),
+      nodes: input.nodes,
+      protocol: input.protocol,
+      supervisorAgentId: input.supervisorAgentId,
+    });
+
+    return this.repository.createRun({
+      budgetSnapshot: input.budgetSnapshot,
+      chatGroupId: input.chatGroupId,
+      idempotencyKey: input.idempotencyKey,
+      planHash,
+      planSnapshot,
+      policySnapshot: input.policySnapshot,
+      supervisorAgentId: input.supervisorAgentId,
+      supervisorOperationId: input.supervisorOperationId,
+      threadId: input.threadId,
+      topicId: input.topicId,
+    });
+  };
+
+  completeAttempt = (params: CompleteAgentGroupRunAttemptParams) =>
+    this.repository.completeAttempt(params);
+
+  createAttempt = (params: CreateAgentGroupRunAttemptParams) =>
+    this.repository.createAttempt(params);
+
+  failNodeStart = (params: FailAgentGroupRunNodeStartParams) =>
+    this.repository.failNodeStart(params);
+
+  getRun = (runId: string) => this.repository.getRun(runId);
+}

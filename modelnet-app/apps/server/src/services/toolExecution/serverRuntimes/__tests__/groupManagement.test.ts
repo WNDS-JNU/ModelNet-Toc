@@ -82,22 +82,56 @@ describe('groupManagementRuntime', () => {
         onComplete: 'resume',
       });
       expect(result).toMatchObject({ deferred: true, success: true });
+      expect(result.state).toEqual({ agentIds: ['a', 'b'], status: 'pending', type: 'broadcast' });
+    });
+
+    it('finishes the supervisor when skipCallSupervisor is set', async () => {
+      await runtime().broadcast({ agentIds: ['a', 'b'], skipCallSupervisor: true }, makeCtx());
+
+      expect(run).toHaveBeenCalledWith(expect.objectContaining({ onComplete: 'finish' }));
     });
 
     it('errors without agentIds', async () => {
       const result = await runtime().broadcast({ agentIds: [] } as any, makeCtx());
       expect(result.error?.code).toBe('INVALID_ARGUMENTS');
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    it('surfaces an inline error when no broadcast member started', async () => {
+      run.mockResolvedValue({ started: false, startedCount: 0 });
+
+      const result = await runtime().broadcast({ agentIds: ['a', 'b'] }, makeCtx());
+
+      expect(result).toMatchObject({
+        error: { code: 'AGENT_MEMBER_START_FAILED' },
+        success: false,
+      });
     });
   });
 
   describe('delegate', () => {
     it('hands off to a member and finishes (no resume)', async () => {
-      await runtime().delegate({ agentId: 'agent-a', reason: 'you take it' }, makeCtx());
+      const result = await runtime().delegate(
+        { agentId: 'agent-a', reason: 'you take it' },
+        makeCtx(),
+      );
       expect(run).toHaveBeenCalledWith({
         members: [{ agentId: 'agent-a', instruction: 'you take it' }],
         mode: 'in_group',
         onComplete: 'finish',
       });
+      expect(result).toMatchObject({
+        deferred: true,
+        state: { agentId: 'agent-a', status: 'pending', type: 'delegate' },
+        success: true,
+      });
+    });
+
+    it('errors without an agentId', async () => {
+      const result = await runtime().delegate({} as any, makeCtx());
+
+      expect(result.error?.code).toBe('INVALID_ARGUMENTS');
+      expect(run).not.toHaveBeenCalled();
     });
   });
 
@@ -119,6 +153,16 @@ describe('groupManagementRuntime', () => {
     it('errors without instruction', async () => {
       const result = await runtime().executeAgentTask({ agentId: 'agent-a' } as any, makeCtx());
       expect(result.error?.code).toBe('INVALID_ARGUMENTS');
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    it('finishes the supervisor when skipCallSupervisor is set', async () => {
+      await runtime().executeAgentTask(
+        { agentId: 'agent-a', instruction: 'do work', skipCallSupervisor: true },
+        makeCtx(),
+      );
+
+      expect(run).toHaveBeenCalledWith(expect.objectContaining({ onComplete: 'finish' }));
     });
   });
 
@@ -145,9 +189,45 @@ describe('groupManagementRuntime', () => {
       });
     });
 
+    it('leaves timeout undefined when no task defines one and can finish the supervisor', async () => {
+      run.mockResolvedValue({ started: true, startedCount: 2 });
+
+      await runtime().executeAgentTasks(
+        {
+          skipCallSupervisor: true,
+          tasks: [
+            { agentId: 'a', instruction: 'ta' },
+            { agentId: 'b', instruction: 'tb' },
+          ],
+        },
+        makeCtx(),
+      );
+
+      expect(run).toHaveBeenCalledWith(
+        expect.objectContaining({ onComplete: 'finish', timeout: undefined }),
+      );
+    });
+
     it('errors without tasks', async () => {
       const result = await runtime().executeAgentTasks({ tasks: [] } as any, makeCtx());
       expect(result.error?.code).toBe('INVALID_ARGUMENTS');
+      expect(run).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('not-yet-implemented server actions', () => {
+    it.each([
+      ['interrupt', { taskId: 'task-1' }, 'not yet supported'],
+      ['summarize', {}, 'not yet implemented'],
+      ['createWorkflow', { name: 'workflow-1' }, 'not yet implemented'],
+      ['vote', { question: 'ship it?' }, 'not yet implemented'],
+    ])('keeps %s inline so the supervisor does not park', async (method, params, content) => {
+      const result = await runtime()[method](params, makeCtx());
+
+      expect(result).toMatchObject({ success: true });
+      expect(result.content).toContain(content);
+      expect(result.deferred).not.toBe(true);
+      expect(run).not.toHaveBeenCalled();
     });
   });
 });

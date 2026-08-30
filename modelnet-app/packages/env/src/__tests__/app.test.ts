@@ -81,6 +81,37 @@ describe('getServerConfig', () => {
       expect(config.INTERNAL_APP_URL).toBe('http://127.0.0.1:3210');
     });
   });
+
+  describe('Agent Group durable runs', () => {
+    it('should stay disabled when AGENT_GROUP_DURABLE_RUNS is not set', async () => {
+      delete process.env.AGENT_GROUP_DURABLE_RUNS;
+
+      const { getAppConfig } = await import('../app');
+      const config = getAppConfig();
+
+      expect(config.enableAgentGroupDurableRuns).toBe(false);
+    });
+
+    it('should enable only for the explicit value 1', async () => {
+      process.env.AGENT_GROUP_DURABLE_RUNS = '1';
+
+      const { getAppConfig } = await import('../app');
+      const config = getAppConfig();
+
+      expect(config.enableAgentGroupDurableRuns).toBe(true);
+      delete process.env.AGENT_GROUP_DURABLE_RUNS;
+    });
+
+    it('should not treat other truthy-looking values as enabled', async () => {
+      process.env.AGENT_GROUP_DURABLE_RUNS = 'true';
+
+      const { getAppConfig } = await import('../app');
+      const config = getAppConfig();
+
+      expect(config.enableAgentGroupDurableRuns).toBe(false);
+      delete process.env.AGENT_GROUP_DURABLE_RUNS;
+    });
+  });
 });
 
 describe('APP_URL fallback', () => {

@@ -139,6 +139,100 @@ export interface AgentGroupDetail extends ChatGroupItem {
   supervisorAgentId?: string;
 }
 
+// Agent Group durable collaboration run
+
+export type AgentGroupRunProtocol =
+  'single' | 'broadcast' | 'parallel_tasks' | 'pipeline' | 'debate';
+
+export type AgentGroupRunStatus =
+  'pending' | 'running' | 'waiting' | 'cancelling' | 'cancelled' | 'completed' | 'failed';
+
+export type AgentGroupRunNodeStatus =
+  | 'pending'
+  | 'ready'
+  | 'running'
+  | 'waiting'
+  | 'blocked'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'skipped';
+
+export type AgentGroupRunAttemptStatus =
+  'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | 'timed_out';
+
+export type AgentGroupRunRuntimeKind = 'normal' | 'heterogeneous' | 'external';
+
+/** Stable lineage carried from member launch through local/QStash callbacks. */
+export interface AgentGroupRunAttemptRef {
+  attemptNo: number;
+  runId: string;
+  runNodeId: string;
+  runtimeKind: AgentGroupRunRuntimeKind;
+}
+
+export interface AgentGroupRunBudgetSnapshot {
+  maxDurationMs?: number;
+  maxParallel?: number;
+  maxTotalCost?: number;
+}
+
+export interface AgentGroupRunPolicySnapshot {
+  failureStrategy?: 'fail_fast' | 'wait_all';
+  requireHumanApprovalForWrites?: boolean;
+}
+
+export interface AgentGroupRunExecutionPolicySnapshot {
+  [key: string]: unknown;
+  executionTarget?: string;
+  runtimeKind?: AgentGroupRunRuntimeKind;
+}
+
+export interface AgentGroupRunToolPolicySnapshot {
+  [key: string]: unknown;
+  allowedToolIds?: string[];
+  deniedToolIds?: string[];
+  disableTools?: boolean;
+}
+
+export interface AgentGroupRunPlanNodeInput {
+  agentId: string;
+  barrierKey?: string;
+  dependencies?: string[];
+  executionPolicy?: AgentGroupRunExecutionPolicySnapshot;
+  instruction: string;
+  key: string;
+  maxAttempts?: number;
+  role?: string;
+  timeoutMs?: number;
+  toolPolicy?: AgentGroupRunToolPolicySnapshot;
+}
+
+export interface AgentGroupRunPlanNodeSnapshot extends AgentGroupRunPlanNodeInput {
+  dependencies: string[];
+  maxAttempts: number;
+  sortOrder: number;
+}
+
+export interface AgentGroupRunPlanSnapshot {
+  nodes: AgentGroupRunPlanNodeSnapshot[];
+  protocol: AgentGroupRunProtocol;
+  supervisorAgentId: string;
+  version: 1;
+}
+
+export interface AgentGroupRunError {
+  [key: string]: unknown;
+  code?: string;
+  message: string;
+}
+
+export interface AgentGroupRunExternalExecutionRef {
+  [key: string]: unknown;
+  contextId?: string;
+  taskId?: string;
+}
+
 // Re-export agent execution types for backwards compatibility
 export type {
   ExecAgentAppContext,
