@@ -44,7 +44,10 @@ import type {
   UpdateGroupPromptState,
   UpdateGroupState,
 } from '@lobechat/builtin-tool-group-agent-builder';
-import { GroupAgentBuilderIdentifier } from '@lobechat/builtin-tool-group-agent-builder';
+import {
+  GroupAgentBuilderIdentifier,
+  resolveGroupBuilderMemberConfig,
+} from '@lobechat/builtin-tool-group-agent-builder';
 import { formatAgentProfile } from '@lobechat/prompts';
 
 import { AgentModel } from '@/database/models/agent';
@@ -316,15 +319,13 @@ export const groupAgentBuilderRuntime: ServerRuntimeRegistration = {
 
           await assertGroupEditable(groupId);
 
+          const memberConfig = resolveGroupBuilderMemberConfig(params);
           const [agent] = await agentModel.batchCreate([
             {
-              avatar: params.avatar,
-              description: params.description,
+              ...memberConfig,
               // Domain tool plugins support structured entries, while the DB
               // model's JSONB column still carries its legacy string[] type.
-              plugins: params.tools as unknown as string[] | undefined,
-              systemRole: params.systemRole,
-              title: params.title,
+              plugins: memberConfig.plugins as unknown as string[] | undefined,
               virtual: true,
               ...(group.visibility ? { visibility: group.visibility } : {}),
             },
@@ -361,15 +362,16 @@ export const groupAgentBuilderRuntime: ServerRuntimeRegistration = {
           await assertGroupEditable(groupId);
 
           const createdAgents = await agentModel.batchCreate(
-            params.agents.map((agent) => ({
-              avatar: agent.avatar,
-              description: agent.description,
-              plugins: agent.tools as unknown as string[] | undefined,
-              systemRole: agent.systemRole,
-              title: agent.title,
-              virtual: true,
-              ...(group.visibility ? { visibility: group.visibility } : {}),
-            })),
+            params.agents.map((agent) => {
+              const memberConfig = resolveGroupBuilderMemberConfig(agent);
+
+              return {
+                ...memberConfig,
+                plugins: memberConfig.plugins as unknown as string[] | undefined,
+                virtual: true,
+                ...(group.visibility ? { visibility: group.visibility } : {}),
+              };
+            }),
           );
 
           await chatGroupModel.addAgentsToGroup(

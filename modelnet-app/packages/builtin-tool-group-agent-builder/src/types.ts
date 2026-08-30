@@ -7,6 +7,14 @@ import type { LobeAgentConfig, MetaData } from '@lobechat/types';
 export const GroupAgentBuilderIdentifier = 'lobe-group-agent-builder';
 
 /**
+ * Runtime used by a newly-created group member.
+ *
+ * CLI runtimes intentionally do not accept a chat model/provider override:
+ * they inherit the CLI's own default model and subscription login.
+ */
+export type CreateAgentRuntime = 'claude-code' | 'codex' | 'model';
+
+/**
  * Group Agent Builder API Names
  */
 export const GroupAgentBuilderApiName = {
@@ -71,6 +79,11 @@ export interface CreateAgentParams {
    * A brief description of what this agent does
    */
   description?: string;
+  /**
+   * Execution runtime for this member. Defaults to the built-in model runtime.
+   * Use 'claude-code' or 'codex' when the user explicitly requests those CLIs.
+   */
+  runtime?: CreateAgentRuntime;
   /**
    * The system prompt that defines the agent's behavior
    */

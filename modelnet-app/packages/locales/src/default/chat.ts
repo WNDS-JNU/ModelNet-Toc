@@ -290,6 +290,9 @@ export default {
   'group.profile.external': 'External',
   'group.profile.externalAgentWarning':
     'This is an external agent. Changes made here will directly modify the original agent configuration.',
+  'group.profile.heterogeneousRuntimeDescription':
+    'No chat model is selected for this group member. Runs use the default model and current subscription login from {{name}} on the local or connected machine.',
+  'group.profile.heterogeneousRuntimeTitle': '{{name}} CLI defaults',
   'group.profile.groupSettings': 'Group Settings',
   'group.profile.supervisor': 'Orchestrator',
   'group.profile.supervisorPlaceholder':

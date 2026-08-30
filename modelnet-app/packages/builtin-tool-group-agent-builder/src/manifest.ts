@@ -61,6 +61,12 @@ export const GroupAgentBuilderManifest: BuiltinToolManifest = {
             description: 'A brief description of what this agent does and its expertise.',
             type: 'string',
           },
+          runtime: {
+            description:
+              'Execution runtime. Use "claude-code" or "codex" when the user explicitly requests that CLI. Their model and login are inherited from the local CLI; otherwise use "model".',
+            enum: ['model', 'claude-code', 'codex'],
+            type: 'string',
+          },
           systemRole: {
             description:
               "The system prompt that defines the agent's behavior, personality, and capabilities.",
@@ -189,6 +195,12 @@ export const GroupAgentBuilderManifest: BuiltinToolManifest = {
                 },
                 description: {
                   description: 'A brief description of what this agent does and its expertise.',
+                  type: 'string',
+                },
+                runtime: {
+                  description:
+                    'Execution runtime. Use "claude-code" or "codex" for those CLI members; otherwise use "model". CLI members inherit their local default model and subscription login.',
+                  enum: ['model', 'claude-code', 'codex'],
                   type: 'string',
                 },
                 systemRole: {

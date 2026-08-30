@@ -1,4 +1,4 @@
-import { type AgentGroupDetail } from '@lobechat/types';
+import { type AgentGroupDetail, type LobeAgentAgencyConfig } from '@lobechat/types';
 
 import {
   type ChatGroupAgentItem,
@@ -10,6 +10,7 @@ import type { GroupMemberRole } from '@/database/utils/groupMembership';
 import { lambdaClient } from '@/libs/trpc/client';
 
 export interface GroupMemberConfig {
+  agencyConfig?: LobeAgentAgencyConfig;
   avatar?: string;
   backgroundColor?: string;
   description?: string;

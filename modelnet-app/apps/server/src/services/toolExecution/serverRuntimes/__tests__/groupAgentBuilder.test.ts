@@ -129,6 +129,37 @@ describe('groupAgentBuilderRuntime', () => {
       });
     });
 
+    it('creates Codex as a local CLI member using its subscription defaults', async () => {
+      mockBatchCreate.mockResolvedValue([{ id: 'agt_codex', visibility: 'public' }]);
+
+      await createRuntime().createAgent(
+        {
+          runtime: 'codex',
+          systemRole: 'Review the implementation.',
+          title: 'Codex',
+          tools: ['lobe-cloud-sandbox'],
+        },
+        groupCtx,
+      );
+
+      const persisted = mockBatchCreate.mock.calls[0][0][0];
+      expect(persisted).toMatchObject({
+        agencyConfig: {
+          executionTarget: 'local',
+          heterogeneousProvider: {
+            authMode: 'subscription',
+            command: 'codex',
+            systemContext: 'Review the implementation.',
+            type: 'codex',
+          },
+        },
+        plugins: undefined,
+        provider: 'codex',
+        virtual: true,
+      });
+      expect(persisted).not.toHaveProperty('model');
+    });
+
     it('inherits the group access level for workspace members', async () => {
       mockBatchCreate.mockResolvedValue([{ id: 'agt_new', visibility: 'public' }]);
       mockGetAccessLevel.mockResolvedValue('edit');
@@ -171,6 +202,52 @@ describe('groupAgentBuilderRuntime', () => {
         state: { failedCount: 0, successCount: 2 },
         success: true,
       });
+    });
+
+    it('preserves CLI defaults in a mixed Claude Code and model-backed batch', async () => {
+      mockBatchCreate.mockResolvedValue([
+        { id: 'agt_claude', visibility: 'public' },
+        { id: 'agt_research', visibility: 'public' },
+      ]);
+
+      await createRuntime().batchCreateAgents(
+        {
+          agents: [
+            {
+              runtime: 'claude-code',
+              systemRole: 'Implement the change.',
+              title: 'Claude Code',
+            },
+            {
+              runtime: 'model',
+              systemRole: 'Research the design.',
+              title: 'Researcher',
+              tools: ['lobe-web-browsing'],
+            },
+          ],
+        },
+        groupCtx,
+      );
+
+      expect(mockBatchCreate).toHaveBeenCalledWith([
+        expect.objectContaining({
+          agencyConfig: {
+            executionTarget: 'local',
+            heterogeneousProvider: {
+              authMode: 'subscription',
+              command: 'claude',
+              systemContext: 'Implement the change.',
+              type: 'claude-code',
+            },
+          },
+          plugins: undefined,
+          provider: 'claude-code',
+        }),
+        expect.objectContaining({
+          plugins: ['lobe-web-browsing'],
+          title: 'Researcher',
+        }),
+      ]);
     });
   });
 

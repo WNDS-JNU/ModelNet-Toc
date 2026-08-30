@@ -38,6 +38,13 @@ const MemberProfile = memo(() => {
   // Get agent config by agentId
   const config = useAgentStore(agentByIdSelectors.getAgentConfigById(agentId), isEqual);
   const updateAgentConfigById = useAgentStore((s) => s.updateAgentConfigById);
+  const heterogeneousProvider = config?.agencyConfig?.heterogeneousProvider;
+  const heterogeneousRuntimeName =
+    heterogeneousProvider?.type === 'claude-code'
+      ? 'Claude Code'
+      : heterogeneousProvider?.type === 'codex'
+        ? 'Codex'
+        : heterogeneousProvider?.type;
 
   const { gid } = useParams<{ gid: string }>();
   const groupId = useAgentGroupStore(agentGroupSelectors.activeGroupId);
@@ -136,25 +143,44 @@ const MemberProfile = memo(() => {
       >
         {/* Header: Avatar + Name */}
         <AgentHeader disabled={!canEdit} readOnly={isSupervisor} />
-        {/* Config Bar: Model Selector */}
-        <Flexbox
-          horizontal
-          align={'center'}
-          gap={8}
-          justify={'flex-start'}
-          style={{ marginBottom: 12 }}
-        >
-          <ModelSelect
-            initialWidth
-            disabled={!canEdit}
-            value={{
-              model: config?.model,
-              provider: config?.provider,
-            }}
-            onChange={updateAgentConfig}
+        {heterogeneousProvider ? (
+          <Alert
+            showIcon
+            style={{ marginBottom: 12, width: '100%' }}
+            type={'info'}
+            variant={'outlined'}
+            description={t('group.profile.heterogeneousRuntimeDescription', {
+              name: heterogeneousRuntimeName,
+              ns: 'chat',
+            })}
+            title={t('group.profile.heterogeneousRuntimeTitle', {
+              name: heterogeneousRuntimeName,
+              ns: 'chat',
+            })}
           />
-        </Flexbox>
-        <AgentTool />
+        ) : (
+          <>
+            {/* Config Bar: Model Selector */}
+            <Flexbox
+              horizontal
+              align={'center'}
+              gap={8}
+              justify={'flex-start'}
+              style={{ marginBottom: 12 }}
+            >
+              <ModelSelect
+                initialWidth
+                disabled={!canEdit}
+                value={{
+                  model: config?.model,
+                  provider: config?.provider,
+                }}
+                onChange={updateAgentConfig}
+              />
+            </Flexbox>
+            <AgentTool />
+          </>
+        )}
         <Flexbox
           horizontal
           align={'center'}
@@ -175,20 +201,24 @@ const MemberProfile = memo(() => {
           </Button>
         </Flexbox>
       </Flexbox>
-      <Divider />
-      {/* Main Content: Prompt Editor */}
-      <EditorCanvas
-        disabled={!canEdit}
-        editor={editor}
-        editorData={editorData}
-        entityId={agentId}
-        placeholder={
-          isSupervisor
-            ? t('group.profile.supervisorPlaceholder', { ns: 'chat' })
-            : t('settingAgent.prompt.placeholder')
-        }
-        onContentChange={onContentChange}
-      />
+      {!heterogeneousProvider && (
+        <>
+          <Divider />
+          {/* Main Content: Prompt Editor */}
+          <EditorCanvas
+            disabled={!canEdit}
+            editor={editor}
+            editorData={editorData}
+            entityId={agentId}
+            placeholder={
+              isSupervisor
+                ? t('group.profile.supervisorPlaceholder', { ns: 'chat' })
+                : t('settingAgent.prompt.placeholder')
+            }
+            onContentChange={onContentChange}
+          />
+        </>
+      )}
     </>
   );
 });
