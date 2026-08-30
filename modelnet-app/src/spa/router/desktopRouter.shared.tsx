@@ -29,8 +29,11 @@ import BrandTextLoading from '@/components/Loading/BrandTextLoading';
 import AppsSkeleton from '@/components/Skeleton/Apps';
 import ConversationLayoutSkeleton from '@/components/Skeleton/Conversation/Layout';
 import ConversationSegmentSkeleton from '@/components/Skeleton/Conversation/Segment';
+import GenerationSkeleton from '@/components/Skeleton/Generation';
+import HomeSkeleton from '@/components/Skeleton/Home';
 import MemorySkeleton from '@/components/Skeleton/Memory';
 import RouteSegmentSkeleton from '@/components/Skeleton/RouteSegment';
+import { createSurfaceSkeleton } from '@/components/Skeleton/Surface';
 import { agentDocumentRouteMeta } from '@/features/AgentDocumentPage/routeMeta';
 import { goalDetailRouteMeta, goalsRouteMeta } from '@/features/AgentGoals/routeMeta';
 import { taskRouteMeta, tasksRouteMeta } from '@/features/AgentTasks/routeMeta';
@@ -499,6 +502,7 @@ export const sharedMainAreaChildren: RouteObject[] = [
           'Desktop > Discover > List > Layout',
           { preloadId: 'community' },
         ),
+        handle: { meta: routeMeta({ Skeleton: createSurfaceSkeleton('grid') }) },
       },
       // Detail routes (with DetailLayout)
       {
@@ -564,6 +568,7 @@ export const sharedMainAreaChildren: RouteObject[] = [
           () => import('@/routes/(main)/community/(detail)/_layout'),
           'Desktop > Discover > Detail > Layout',
         ),
+        handle: { meta: routeMeta({ Skeleton: createSurfaceSkeleton('detail') }) },
       },
     ],
     element: dynamicElement(
@@ -646,7 +651,11 @@ export const sharedMainAreaChildren: RouteObject[] = [
               'Desktop > Resource > Library > Permission',
             ),
             handle: {
-              meta: routeMeta({ icon: LibraryBigIcon, titleKey: 'navigation.knowledgeBase' }),
+              meta: routeMeta({
+                icon: LibraryBigIcon,
+                Skeleton: createSurfaceSkeleton('form'),
+                titleKey: 'navigation.knowledgeBase',
+              }),
             },
             path: 'permission',
           },
@@ -674,6 +683,7 @@ export const sharedMainAreaChildren: RouteObject[] = [
       { preloadId: 'resource' },
     ),
     errorElement: <ErrorBoundary />,
+    handle: { meta: routeMeta({ Skeleton: createSurfaceSkeleton('list') }) },
     path: 'resource',
   },
 
@@ -752,6 +762,7 @@ export const sharedMainAreaChildren: RouteObject[] = [
       { preloadId: 'memory' },
     ),
     errorElement: <ErrorBoundary />,
+    handle: { meta: routeMeta({ Skeleton: createSurfaceSkeleton('list') }) },
     path: 'memory',
   },
 
@@ -771,6 +782,7 @@ export const sharedMainAreaChildren: RouteObject[] = [
       { preloadId: 'video' },
     ),
     errorElement: <ErrorBoundary />,
+    handle: { meta: routeMeta({ Skeleton: GenerationSkeleton }) },
     path: 'video',
   },
 
@@ -793,6 +805,7 @@ export const sharedMainAreaChildren: RouteObject[] = [
       { preloadId: 'image' },
     ),
     errorElement: <ErrorBoundary />,
+    handle: { meta: routeMeta({ Skeleton: GenerationSkeleton }) },
     path: 'image',
   },
 
@@ -877,6 +890,7 @@ export const sharedMainAreaChildren: RouteObject[] = [
       { preloadId: 'eval' },
     ),
     errorElement: <ErrorBoundary />,
+    handle: { meta: routeMeta({ Skeleton: createSurfaceSkeleton('list') }) },
     path: 'eval',
   },
 
@@ -972,6 +986,20 @@ export const sharedMainAreaChildren: RouteObject[] = [
         errorElement: <ErrorBoundary resetPath="../tasks" />,
         path: 'task',
       },
+      {
+        children: [
+          {
+            element: dynamicElement(
+              () => import('@/routes/(main)/goal/[goalId]'),
+              'Desktop > Goal Detail',
+            ),
+            handle: { meta: goalDetailRouteMeta },
+            path: ':goalId',
+          },
+        ],
+        errorElement: <ErrorBoundary resetPath="../tasks" />,
+        path: 'goal',
+      },
     ],
     element: dynamicLayout(
       () => import('@/routes/(main)/(task-workspace)/_layout'),
@@ -988,7 +1016,11 @@ export const sharedMainAreaChildren: RouteObject[] = [
           preloadId: 'page',
         }),
         handle: {
-          meta: routeMeta({ icon: FilePenIcon, titleKey: 'navigation.pages' }),
+          meta: routeMeta({
+            icon: FilePenIcon,
+            Skeleton: createSurfaceSkeleton('list'),
+            titleKey: 'navigation.pages',
+          }),
         },
         index: true,
       },
@@ -1358,6 +1390,7 @@ const createMainAreaChildrenDefinition = (options: MainAreaRouteOptions = {}): R
     handle: {
       meta: routeMeta({
         icon: HomeIcon,
+        Skeleton: HomeSkeleton,
         tabTitleKey: 'navigation.home',
         titleKey: 'navigation.home',
       }),

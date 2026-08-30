@@ -15,10 +15,10 @@ import { userGeneralSettingsSelectors } from '@/store/user/selectors';
 import AgentConfigError from './AgentConfigError';
 import { useSendMenuItems } from './useSendMenuItems';
 
-const contextWindowRightActions: ActionKeys[] = ['voiceDictation', 'voiceMessage', 'contextWindow'];
+const contextWindowRightActions: ActionKeys[] = ['model', 'voiceMessage', 'contextWindow'];
 const promptTransformRightActions: ActionKeys[] = [
+  'model',
   'promptTransform',
-  'voiceDictation',
   'voiceMessage',
   'contextWindow',
 ];
@@ -44,7 +44,12 @@ const MainChatInput = memo(() => {
     ? promptTransformRightActions
     : contextWindowRightActions;
 
-  const leftActions: ActionKeys[] = useMemo(() => ['model', 'modelnetParallel', 'modelnetSerial', 'plus'], []);
+  // The model chip lives on the right, next to Send (see rightActions); the
+  // left bar keeps the ModelNet topology controls, "+" menu, dictation and the expand toggle.
+  const leftActions: ActionKeys[] = useMemo(
+    () => ['modelnetParallel', 'modelnetSerial', 'plus', 'voiceDictation'],
+    [],
+  );
 
   return (
     <>

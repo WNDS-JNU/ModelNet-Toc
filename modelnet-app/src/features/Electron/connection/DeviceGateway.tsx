@@ -1,6 +1,7 @@
 import { useWatchBroadcast } from '@lobechat/electron-client-ipc';
-import { ActionIcon, Flexbox } from '@lobehub/ui';
-import { Input, Popover, Switch } from 'antd';
+import { Flexbox } from '@lobehub/ui';
+import { ActionIcon, Popover, Switch } from '@lobehub/ui/base-ui';
+import { Input } from 'antd';
 import { createStaticStyles } from 'antd-style';
 import { HardDrive, SettingsIcon } from 'lucide-react';
 import { memo, useCallback, useState } from 'react';
@@ -43,8 +44,6 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
   `,
   popoverContent: css`
     width: 280px;
-    padding-block: 4px;
-    padding-inline: 0;
   `,
   scopeHint: css`
     font-size: 11px;
@@ -101,8 +100,8 @@ const DeviceGateway = memo(() => {
 
   const [localName, setLocalName] = useState<string | undefined>();
   const [localDescription, setLocalDescription] = useState<string | undefined>();
-
   const [open, setOpen] = useState(false);
+
   const handleSwitchChange = useCallback(
     async (checked: boolean) => {
       if (checked) {
@@ -119,14 +118,14 @@ const DeviceGateway = memo(() => {
       updateDeviceName(localName);
     }
     setLocalName(undefined);
-  }, [localName, gatewayDeviceInfo?.name, updateDeviceName]);
+  }, [gatewayDeviceInfo?.name, localName, updateDeviceName]);
 
   const handleDescriptionBlur = useCallback(() => {
     if (localDescription !== undefined && localDescription !== gatewayDeviceInfo?.description) {
       updateDeviceDescription(localDescription);
     }
     setLocalDescription(undefined);
-  }, [localDescription, gatewayDeviceInfo?.description, updateDeviceDescription]);
+  }, [gatewayDeviceInfo?.description, localDescription, updateDeviceDescription]);
 
   const connectionHint = t(
     isConnecting
@@ -139,7 +138,7 @@ const DeviceGateway = memo(() => {
   const popoverContent = (
     <Flexbox className={styles.popoverContent} gap={16}>
       <Flexbox horizontal align="center" justify="space-between">
-        <span className={styles.statusTitle}>{t('gateway.enableConnection')}</span>
+        <span className={styles.statusTitle}>{t('gateway.title')}</span>
         <Flexbox horizontal align="center" gap={6}>
           <ActionIcon
             aria-label={t('gateway.manageDevices')}
@@ -152,6 +151,7 @@ const DeviceGateway = memo(() => {
             }}
           />
           <Switch
+            aria-label={t('gateway.enableConnection')}
             checked={isConnected || isConnecting}
             loading={isConnecting}
             size="small"
@@ -159,9 +159,7 @@ const DeviceGateway = memo(() => {
           />
         </Flexbox>
       </Flexbox>
-
       {gatewayError && <span className={styles.errorText}>{gatewayError}</span>}
-
       <Flexbox gap={4}>
         <span className={styles.fieldLabel}>{t('gateway.deviceName')}</span>
         <Input
@@ -171,11 +169,10 @@ const DeviceGateway = memo(() => {
           value={localName ?? gatewayDeviceInfo?.name ?? ''}
           variant="filled"
           onBlur={handleNameBlur}
-          onChange={(e) => setLocalName(e.target.value)}
+          onChange={(event) => setLocalName(event.target.value)}
           onPressEnter={handleNameBlur}
         />
       </Flexbox>
-
       <Flexbox gap={4}>
         <span className={styles.fieldLabel}>{t('gateway.description')}</span>
         <Input.TextArea
@@ -186,7 +183,7 @@ const DeviceGateway = memo(() => {
           value={localDescription ?? gatewayDeviceInfo?.description ?? ''}
           variant="filled"
           onBlur={handleDescriptionBlur}
-          onChange={(e) => setLocalDescription(e.target.value)}
+          onChange={(event) => setLocalDescription(event.target.value)}
         />
       </Flexbox>
       <span className={styles.scopeHint}>{connectionHint}</span>
@@ -199,6 +196,7 @@ const DeviceGateway = memo(() => {
       content={popoverContent}
       open={open}
       placement="bottomRight"
+      styles={{ content: { padding: 8 } }}
       trigger="click"
       onOpenChange={setOpen}
     >

@@ -157,6 +157,26 @@ the image lands unpaired and unlabeled. Publish a fresh round carrying the compl
 evidence set instead, and say in `report.md` that it re-publishes the same
 observations rather than re-running the cases.
 
+### L-E11b — Publishing a new round onto a check the reviewer already accepted
+
+**Wrong approach:** when new feedback arrives about a check the user has already
+accepted, reuse that check's id for the new work — because reusing ids is the rule for
+rejected checks.
+
+**Why it fails:** an accepted verdict is deliberately sticky (`acceptanceService`
+computes `stale` only for rejects, and a test pins that behaviour by name). A later
+result on a settled id therefore inherits the tick: the round publishes green and the
+reviewer is never told there is anything new to look at. Since 2026-08, `attachRun`
+refuses such a round outright — the error names the offending ids and nothing is
+written, so a partially attached round cannot happen.
+
+**Correct approach:** read `userReview.action` before writing the plan. `accept` means
+settled: the new work needs a NEW check id, which appears unreviewed and can actually
+be judged. Reuse the id only while the check is rejected or never reviewed. Decide by
+_is the criterion new, and has the old one been accepted_ — not by how big the change
+is: a presentation fix on a still-open check reuses its id (\[\[L-E1]]), while a newly
+raised criterion on an accepted check must not.
+
 ### L-E12 — Expressing multimodal disclosure through the `verifier` enum
 
 **Wrong approach:** write a value such as `"verifier": "multimodal LLM"` in a plan
@@ -285,6 +305,26 @@ it makes a green verification cover only half of what users can see.
 where the action key is actually enabled (grep each route's `leftActions` array, not
 the component's imports) and capture evidence for every surface that enables it. Mark
 any surface you deliberately skip as untested.
+
+### L-E19 — Hard-wrapping the prose inside a markdown evidence document
+
+**Wrong approach:** author a `markdown` / `text` evidence artifact the way you write
+a source file, folding every paragraph at \~80 columns, and assume the page reflows
+it like any other markdown.
+
+**Why it fails:** the Acceptance evidence renderer parses evidence documents in chat
+mode, where `remark-breaks` turns every single newline inside a paragraph into a
+`<br>`. The author's fold is frozen into the page: paragraphs break mid-sentence at a
+column count unrelated to the reader's viewport, next to a report body that reflows
+normally, so the same round shows two different text behaviours. Reviewers read the
+ragged block as a rendering defect and spend the round on the wrapping instead of the
+finding.
+
+**Correct approach:** keep each paragraph of evidence prose on ONE physical line and
+separate blocks with a blank line. Spend a newline only where it carries meaning —
+list items, table rows, fenced code, and literal transcript output, which are exactly
+the places the break is the content. Never run a proseWrap formatter over files under
+`assets/`.
 
 ## Product and interaction contracts
 
@@ -773,3 +813,18 @@ because it installs from scratch.
 expectations, delete the hidden `node_modules/.pnpm/lock.yaml` (or the whole
 node\_modules) in the affected workspace root and reinstall, then re-verify the
 actual resolved version via the importing package's symlink.
+
+### L-S16 — Treating a listening dev-server process as a healthy long-run probe
+
+**Wrong approach:** use process existence, an open TCP connection, or an unbounded
+`curl` as the health signal for an unattended ModelNet soak.
+
+**Why it fails:** Next dev can remain alive and accept a TCP connection while never
+returning an HTTP response. An unbounded probe then blocks the monitor itself, so the
+log stops exactly when the failure begins and makes the run look shorter rather than
+recording an unhealthy interval.
+
+**Correct approach:** give every HTTP and CLI probe explicit connect and total
+timeouts, record timeout/`000` as an observation, and keep the monitor advancing.
+Prove recovery with a successful application request after restarting the owned
+server; neither a PID nor a listening socket is sufficient.

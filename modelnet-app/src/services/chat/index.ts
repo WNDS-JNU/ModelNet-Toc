@@ -1,7 +1,6 @@
 import { AgentBuilderIdentifier } from '@lobechat/builtin-tool-agent-builder';
 import {
-  COMPOSIO_APP_TYPES,
-  LOBEHUB_SKILL_PROVIDERS,
+  getConnectorCatalog,
   REQUEST_AGENT_ID_HEADER,
   REQUEST_TOPIC_ID_HEADER,
   REQUEST_TRIGGER_HEADER,
@@ -300,13 +299,29 @@ class ChatService {
 
       const officialTools: OfficialToolItem[] = [];
 
-      // Get builtin tools (excluding Composio tools)
+      const isComposioEnabled = Boolean(
+        typeof window !== 'undefined' &&
+        window.global_serverConfigStore?.getState()?.serverConfig?.enableComposio,
+      );
+      const isLobehubSkillEnabled = Boolean(
+        typeof window !== 'undefined' &&
+        window.global_serverConfigStore?.getState()?.serverConfig?.enableLobehubSkill,
+      );
+      const connectorCatalog = getConnectorCatalog({
+        composio: isComposioEnabled,
+        lobehub: isLobehubSkillEnabled,
+      });
+      const connectorIdentifiers = new Set(
+        connectorCatalog.map((item) =>
+          item.type === 'lobehub' ? item.provider.id : item.serverType.identifier,
+        ),
+      );
+
+      // Get builtin tools (excluding connectors rendered through their canonical owner)
       const builtinTools = builtinToolSelectors.metaList(toolState);
-      const composioIdentifiers = new Set(COMPOSIO_APP_TYPES.map((t) => t.identifier));
 
       for (const tool of builtinTools) {
-        // Skip Composio tools in builtin list (they'll be shown separately)
-        if (composioIdentifiers.has(tool.identifier)) continue;
+        if (connectorIdentifiers.has(tool.identifier)) continue;
 
         officialTools.push({
           description: tool.meta?.description,
@@ -318,48 +333,35 @@ class ChatService {
         });
       }
 
-      // Get Composio tools (if enabled)
-      const isComposioEnabled =
-        typeof window !== 'undefined' &&
-        window.global_serverConfigStore?.getState()?.serverConfig?.enableComposio;
-
-      if (isComposioEnabled) {
-        const allComposioServers = composioStoreSelectors.getServers(toolState);
-
-        for (const composioType of COMPOSIO_APP_TYPES) {
-          const server = allComposioServers.find((s) => s.identifier === composioType.identifier);
-
+      const allComposioServers = composioStoreSelectors.getServers(toolState);
+      const allLobehubSkillServers = lobehubSkillStoreSelectors.getServers(toolState);
+      for (const connector of connectorCatalog) {
+        if (connector.type === 'composio') {
+          const { serverType } = connector;
+          const server = allComposioServers.find(
+            (item) => item.identifier === serverType.identifier,
+          );
           officialTools.push({
-            description: `ModelNet Mcp Server: ${composioType.label}`,
-            enabled: enabledPlugins.includes(composioType.identifier),
-            identifier: composioType.identifier,
+            description: `ModelNet Mcp Server: ${serverType.label}`,
+            enabled: enabledPlugins.includes(serverType.identifier),
+            identifier: serverType.identifier,
             installed: !!server,
-            name: composioType.label,
+            name: serverType.label,
             type: 'composio',
           });
+          continue;
         }
-      }
 
-      // Get LobehubSkill providers (if enabled)
-      const isLobehubSkillEnabled =
-        typeof window !== 'undefined' &&
-        window.global_serverConfigStore?.getState()?.serverConfig?.enableLobehubSkill;
-
-      if (isLobehubSkillEnabled) {
-        const allLobehubSkillServers = lobehubSkillStoreSelectors.getServers(toolState);
-
-        for (const provider of LOBEHUB_SKILL_PROVIDERS) {
-          const server = allLobehubSkillServers.find((s) => s.identifier === provider.id);
-
-          officialTools.push({
-            description: `ModelNet Skill Provider: ${provider.label}`,
-            enabled: enabledPlugins.includes(provider.id),
-            identifier: provider.id,
-            installed: !!server,
-            name: provider.label,
-            type: 'lobehub-skill',
-          });
-        }
+        const { provider } = connector;
+        const server = allLobehubSkillServers.find((item) => item.identifier === provider.id);
+        officialTools.push({
+          description: `ModelNet Skill Provider: ${provider.label}`,
+          enabled: enabledPlugins.includes(provider.id),
+          identifier: provider.id,
+          installed: !!server,
+          name: provider.label,
+          type: 'lobehub-skill',
+        });
       }
 
       agentBuilderContext = {
@@ -514,7 +516,8 @@ class ChatService {
     // This ensures the user's preference takes priority over provider's useResponseModels config
     // When user enables Responses API, set to 'responses' to force use Responses API
     const normalizedModel = model.toLowerCase();
-    const isModelNetProvider = provider === MODELNET_PROVIDER_ID || provider === ModelProvider.OpenAI;
+    const isModelNetProvider =
+      provider === MODELNET_PROVIDER_ID || provider === ModelProvider.OpenAI;
     const isModelNetAuto = isModelNetProvider && normalizedModel === MODELNET_AUTO_MODEL_ID;
     const isModelNetConcreteBackend =
       isModelNetProvider &&
@@ -571,9 +574,7 @@ class ChatService {
 
     if (isModelNetParallel) {
       if (modelnetParallelModelIds.length < MIN_MODELNET_PARALLEL_MODELS) {
-        throw new Error(
-          `ModelNet \u5E76\u8054\u81F3\u5C11\u9700\u8981\u9009\u62E9 ${MIN_MODELNET_PARALLEL_MODELS} \u4E2A\u6A21\u578B`,
-        );
+        throw new Error(`ModelNet 并联至少需要选择 ${MIN_MODELNET_PARALLEL_MODELS} 个模型`);
       }
 
       payload.model = 'modelnet';
@@ -620,9 +621,7 @@ class ChatService {
       const nodeCount = Array.isArray(serialTopology?.nodes) ? serialTopology.nodes.length : 0;
 
       if (nodeCount < MIN_MODELNET_SERIAL_MODELS) {
-        throw new Error(
-          `ModelNet \u4E32\u8054\u81F3\u5C11\u9700\u8981\u9009\u62E9 ${MIN_MODELNET_SERIAL_MODELS} \u4E2A\u6A21\u578B`,
-        );
+        throw new Error(`ModelNet 串联至少需要选择 ${MIN_MODELNET_SERIAL_MODELS} 个模型`);
       }
 
       payload.model = 'modelnet';

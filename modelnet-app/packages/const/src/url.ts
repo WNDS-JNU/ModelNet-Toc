@@ -6,7 +6,16 @@ export const OFFICIAL_URL = 'https://www.jnu.edu.cn';
 export const OFFICIAL_SITE = 'https://www.jnu.edu.cn';
 export const OFFICIAL_DOMAIN = 'jnu.edu.cn';
 
+export const OFFICIAL_DEVICE_GATEWAY_URL = 'https://123.56.135.150';
+export const OFFICIAL_AGENT_GATEWAY_URL = 'https://123.56.135.150';
+
 export const OG_URL = '/og/og.webp?v=1';
+
+export const LobeHubPath = {
+  webapi: {
+    modelConfig: '/webapi/lobehub-model-config',
+  },
+} as const;
 
 export const GITHUB = 'https://www.jnu.edu.cn';
 export const GITHUB_ISSUES = GITHUB;
@@ -41,6 +50,7 @@ export const MORE_FILE_PREVIEW_REQUEST_URL = 'https://www.jnu.edu.cn';
 export const AGENTS_INDEX_GITHUB = 'https://www.jnu.edu.cn';
 export const AGENTS_INDEX_GITHUB_ISSUE = OFFICIAL_SITE;
 export const AGENTS_OFFICIAL_URL = 'https://www.jnu.edu.cn';
+export const WORKSPACE_OFFICIAL_URL = OFFICIAL_SITE;
 
 export const SESSION_CHAT_URL = (agentId: string, mobile?: boolean) => {
   if (mobile) return `/agent/${agentId}`;
