@@ -9,6 +9,7 @@ import { getTestDB } from '../../core/getTestDB';
 import { agentOperations, agents, chatGroups, users, workspaces } from '../../schemas';
 import {
   AGENT_GROUP_RUN_IDEMPOTENCY_CONFLICT,
+  AGENT_GROUP_RUN_NODE_NOT_READY,
   AGENT_GROUP_RUN_NOT_FOUND,
   AGENT_GROUP_RUN_OPERATION_MISMATCH,
   AGENT_GROUP_RUN_PAUSE_NOT_ALLOWED,
@@ -37,6 +38,22 @@ const makePlan = (agentId = memberAgentId): AgentGroupRunPlanSnapshot => ({
     },
   ],
   protocol: 'single',
+  supervisorAgentId,
+  version: 1,
+});
+
+const makePipelinePlan = (
+  nodes: Array<{ dependencies: string[]; key: string; maxAttempts?: number }>,
+): AgentGroupRunPlanSnapshot => ({
+  nodes: nodes.map((node, sortOrder) => ({
+    agentId: memberAgentId,
+    dependencies: node.dependencies,
+    instruction: `Complete pipeline node ${node.key}`,
+    key: node.key,
+    maxAttempts: node.maxAttempts ?? 1,
+    sortOrder,
+  })),
+  protocol: 'pipeline',
   supervisorAgentId,
   version: 1,
 });
@@ -132,6 +149,235 @@ describe('AgentGroupRunModel', () => {
 
     const events = await model.listEvents(result.run.id);
     expect(events?.map(({ type }) => type)).toEqual(['run.created', 'node.created']);
+  });
+
+  it('persists pipeline readiness and unlocks a join only after every dependency completes', async () => {
+    await seedPersonalGroup();
+    const model = new AgentGroupRunModel(serverDB, userId);
+    const created = await model.create(
+      createParams({
+        idempotencyKey: 'pipeline-join',
+        planHash: 'c'.repeat(64),
+        planSnapshot: makePipelinePlan([
+          { dependencies: [], key: 'research' },
+          { dependencies: [], key: 'review' },
+          { dependencies: ['research', 'review'], key: 'synthesis' },
+        ]),
+      }),
+    );
+    const nodes = new Map(created.nodes.map((node) => [node.nodeKey, node]));
+    await serverDB.insert(agentOperations).values(
+      ['research', 'review', 'synthesis'].map((key) => ({
+        agentId: memberAgentId,
+        chatGroupId: groupId,
+        id: `pipeline-${key}-operation`,
+        status: 'running' as const,
+        userId,
+      })),
+    );
+
+    expect(
+      Object.fromEntries(created.nodes.map(({ nodeKey, status }) => [nodeKey, status])),
+    ).toEqual({ research: 'ready', review: 'ready', synthesis: 'pending' });
+    await expect(
+      model.createAttempt({
+        attemptNo: 1,
+        operationId: 'pipeline-synthesis-operation',
+        runNodeId: nodes.get('synthesis')!.id,
+        runtimeKind: 'normal',
+      }),
+    ).rejects.toThrowError(AGENT_GROUP_RUN_NODE_NOT_READY);
+
+    await model.completeAttempt({
+      attemptNo: 1,
+      completionReason: 'done',
+      operationId: 'pipeline-research-operation',
+      runNodeId: nodes.get('research')!.id,
+      runtimeKind: 'normal',
+      status: 'completed',
+    });
+    let reconnectedModel = new AgentGroupRunModel(serverDB, userId);
+    let snapshot = await reconnectedModel.findById(created.run.id);
+    expect(snapshot?.nodes.find(({ nodeKey }) => nodeKey === 'synthesis')?.status).toBe('pending');
+
+    const reviewCompletion = {
+      attemptNo: 1,
+      completionReason: 'done',
+      operationId: 'pipeline-review-operation',
+      runNodeId: nodes.get('review')!.id,
+      runtimeKind: 'normal' as const,
+      status: 'completed' as const,
+    };
+    await reconnectedModel.completeAttempt(reviewCompletion);
+    await reconnectedModel.completeAttempt(reviewCompletion);
+    reconnectedModel = new AgentGroupRunModel(serverDB, userId);
+    snapshot = await reconnectedModel.findById(created.run.id);
+    expect(snapshot?.nodes.find(({ nodeKey }) => nodeKey === 'synthesis')?.status).toBe('ready');
+    expect(snapshot?.run.status).toBe('running');
+
+    await reconnectedModel.completeAttempt({
+      attemptNo: 1,
+      completionReason: 'done',
+      operationId: 'pipeline-synthesis-operation',
+      runNodeId: nodes.get('synthesis')!.id,
+      runtimeKind: 'normal',
+      status: 'completed',
+    });
+    snapshot = await reconnectedModel.findById(created.run.id);
+    expect(snapshot?.run).toMatchObject({ completionReason: 'completed', status: 'completed' });
+
+    const events = await reconnectedModel.listEvents(created.run.id);
+    expect(events?.filter(({ type }) => type === 'node.ready')).toHaveLength(3);
+    expect(
+      events?.filter(
+        ({ runNodeId, type }) => type === 'node.ready' && runNodeId === nodes.get('synthesis')!.id,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('serializes concurrent pipeline completions so a join cannot remain pending', async () => {
+    await seedPersonalGroup();
+    const model = new AgentGroupRunModel(serverDB, userId);
+    const created = await model.create(
+      createParams({
+        idempotencyKey: 'pipeline-concurrent-join',
+        planHash: 'e'.repeat(64),
+        planSnapshot: makePipelinePlan([
+          { dependencies: [], key: 'left' },
+          { dependencies: [], key: 'right' },
+          { dependencies: ['left', 'right'], key: 'join' },
+        ]),
+      }),
+    );
+    const nodes = new Map(created.nodes.map((node) => [node.nodeKey, node]));
+    await serverDB.insert(agentOperations).values(
+      ['left', 'right'].map((key) => ({
+        agentId: memberAgentId,
+        chatGroupId: groupId,
+        id: `pipeline-concurrent-${key}`,
+        status: 'running' as const,
+        userId,
+      })),
+    );
+
+    await Promise.all(
+      ['left', 'right'].map((key) =>
+        model.completeAttempt({
+          attemptNo: 1,
+          completionReason: 'done',
+          operationId: `pipeline-concurrent-${key}`,
+          runNodeId: nodes.get(key)!.id,
+          runtimeKind: 'normal',
+          status: 'completed',
+        }),
+      ),
+    );
+
+    const reconnectedModel = new AgentGroupRunModel(serverDB, userId);
+    const snapshot = await reconnectedModel.findById(created.run.id);
+    expect(snapshot?.nodes.find(({ nodeKey }) => nodeKey === 'join')?.status).toBe('ready');
+    const events = await reconnectedModel.listEvents(created.run.id);
+    expect(
+      events?.filter(
+        ({ runNodeId, type }) => type === 'node.ready' && runNodeId === nodes.get('join')!.id,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('recursively blocks failed pipeline descendants and revives them after a successful retry', async () => {
+    await seedPersonalGroup();
+    const model = new AgentGroupRunModel(serverDB, userId);
+    const created = await model.create(
+      createParams({
+        idempotencyKey: 'pipeline-retry',
+        planHash: 'd'.repeat(64),
+        planSnapshot: makePipelinePlan([
+          { dependencies: [], key: 'draft', maxAttempts: 2 },
+          { dependencies: ['draft'], key: 'critique' },
+          { dependencies: ['critique'], key: 'publish' },
+        ]),
+      }),
+    );
+    const nodes = new Map(created.nodes.map((node) => [node.nodeKey, node]));
+    await serverDB.insert(agentOperations).values(
+      ['draft-attempt-1', 'draft-attempt-2', 'critique-attempt-1', 'publish-attempt-1'].map(
+        (key) => ({
+          agentId: memberAgentId,
+          chatGroupId: groupId,
+          id: `pipeline-${key}`,
+          status: 'running' as const,
+          userId,
+        }),
+      ),
+    );
+
+    await model.completeAttempt({
+      attemptNo: 1,
+      completionReason: 'error',
+      operationId: 'pipeline-draft-attempt-1',
+      runNodeId: nodes.get('draft')!.id,
+      runtimeKind: 'normal',
+      status: 'failed',
+    });
+    let snapshot = await model.findById(created.run.id);
+    expect(
+      Object.fromEntries(snapshot!.nodes.map(({ nodeKey, status }) => [nodeKey, status])),
+    ).toEqual({ critique: 'blocked', draft: 'failed', publish: 'blocked' });
+    expect(snapshot?.run).toMatchObject({ completionReason: 'failed', status: 'failed' });
+    await expect(
+      model.createAttempt({
+        attemptNo: 1,
+        operationId: 'pipeline-critique-attempt-1',
+        runNodeId: nodes.get('critique')!.id,
+        runtimeKind: 'normal',
+      }),
+    ).rejects.toThrowError(AGENT_GROUP_RUN_NODE_NOT_READY);
+
+    await model.startRetryAttempt({
+      attemptNo: 2,
+      operationId: 'pipeline-draft-attempt-2',
+      runNodeId: nodes.get('draft')!.id,
+      runtimeKind: 'normal',
+    });
+    await model.completeAttempt({
+      attemptNo: 2,
+      completionReason: 'done',
+      operationId: 'pipeline-draft-attempt-2',
+      runNodeId: nodes.get('draft')!.id,
+      runtimeKind: 'normal',
+      status: 'completed',
+    });
+    let reconnectedModel = new AgentGroupRunModel(serverDB, userId);
+    snapshot = await reconnectedModel.findById(created.run.id);
+    expect(
+      Object.fromEntries(snapshot!.nodes.map(({ nodeKey, status }) => [nodeKey, status])),
+    ).toEqual({ critique: 'ready', draft: 'completed', publish: 'blocked' });
+
+    await reconnectedModel.completeAttempt({
+      attemptNo: 1,
+      completionReason: 'done',
+      operationId: 'pipeline-critique-attempt-1',
+      runNodeId: nodes.get('critique')!.id,
+      runtimeKind: 'normal',
+      status: 'completed',
+    });
+    reconnectedModel = new AgentGroupRunModel(serverDB, userId);
+    snapshot = await reconnectedModel.findById(created.run.id);
+    expect(snapshot?.nodes.find(({ nodeKey }) => nodeKey === 'publish')?.status).toBe('ready');
+
+    await reconnectedModel.completeAttempt({
+      attemptNo: 1,
+      completionReason: 'done',
+      operationId: 'pipeline-publish-attempt-1',
+      runNodeId: nodes.get('publish')!.id,
+      runtimeKind: 'normal',
+      status: 'completed',
+    });
+    snapshot = await reconnectedModel.findById(created.run.id);
+    expect(snapshot?.run).toMatchObject({ completionReason: 'completed', status: 'completed' });
+    const events = await reconnectedModel.listEvents(created.run.id);
+    expect(events?.filter(({ type }) => type === 'node.blocked')).toHaveLength(2);
+    expect(events?.filter(({ type }) => type === 'node.ready')).toHaveLength(3);
   });
 
   it('returns the existing run for an identical idempotent create', async () => {

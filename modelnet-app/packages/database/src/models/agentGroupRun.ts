@@ -24,6 +24,7 @@ import { buildWorkspacePayload, buildWorkspaceWhere } from '../utils/workspace';
 export const AGENT_GROUP_RUN_NOT_FOUND = 'AGENT_GROUP_RUN_NOT_FOUND';
 export const AGENT_GROUP_RUN_IDEMPOTENCY_CONFLICT = 'AGENT_GROUP_RUN_IDEMPOTENCY_CONFLICT';
 export const AGENT_GROUP_RUN_OPERATION_MISMATCH = 'AGENT_GROUP_RUN_OPERATION_MISMATCH';
+export const AGENT_GROUP_RUN_NODE_NOT_READY = 'AGENT_GROUP_RUN_NODE_NOT_READY';
 export const AGENT_GROUP_RUN_RETRY_LIMIT_EXCEEDED = 'AGENT_GROUP_RUN_RETRY_LIMIT_EXCEEDED';
 export const AGENT_GROUP_RUN_RETRY_NOT_ALLOWED = 'AGENT_GROUP_RUN_RETRY_NOT_ALLOWED';
 export const AGENT_GROUP_RUN_PAUSE_NOT_ALLOWED = 'AGENT_GROUP_RUN_PAUSE_NOT_ALLOWED';
@@ -97,11 +98,19 @@ const TERMINAL_ATTEMPT_STATUSES: AgentGroupRunAttemptStatus[] = [
   'timed_out',
 ];
 const TERMINAL_NODE_STATUSES: AgentGroupRunNodeStatus[] = [
+  'blocked',
   'cancelled',
   'completed',
   'failed',
   'skipped',
 ];
+const RETRYABLE_NODE_STATUSES: AgentGroupRunNodeStatus[] = [
+  'cancelled',
+  'completed',
+  'failed',
+  'skipped',
+];
+const BLOCKING_DEPENDENCY_STATUSES: AgentGroupRunNodeStatus[] = ['blocked', 'cancelled', 'failed'];
 const TERMINAL_RUN_STATUSES = ['cancelled', 'completed', 'failed'] as const;
 const ACTIVE_ATTEMPT_STATUSES: AgentGroupRunAttemptStatus[] = ['pending', 'running', 'waiting'];
 
@@ -171,6 +180,7 @@ export class AgentGroupRunModel {
         chatGroupId: agentGroupRuns.chatGroupId,
         id: agentGroupRunNodes.id,
         maxAttempts: agentGroupRunNodes.maxAttempts,
+        protocol: agentGroupRuns.protocol,
         runId: agentGroupRunNodes.runId,
         runStatus: agentGroupRuns.status,
         status: agentGroupRunNodes.status,
@@ -188,6 +198,7 @@ export class AgentGroupRunModel {
   private ensureAttempt = async (
     tx: Transaction,
     params: CreateAgentGroupRunAttemptParams,
+    options: { allowTerminalNode?: boolean } = {},
   ): Promise<{
     attempt: typeof agentGroupRunAttempts.$inferSelect;
     node: Awaited<ReturnType<AgentGroupRunModel['loadAccessibleNode']>>;
@@ -230,6 +241,14 @@ export class AgentGroupRunModel {
       .limit(1);
     if (existingByOperation) return { attempt: validateIdentity(existingByOperation), node };
 
+    if (
+      !options.allowTerminalNode &&
+      node.protocol === 'pipeline' &&
+      !(['ready', 'running', 'waiting'] as AgentGroupRunNodeStatus[]).includes(node.status)
+    ) {
+      throw new Error(AGENT_GROUP_RUN_NODE_NOT_READY);
+    }
+
     const [created] = await tx
       .insert(agentGroupRunAttempts)
       .values({
@@ -259,6 +278,117 @@ export class AgentGroupRunModel {
     return { attempt: validateIdentity(winner), node };
   };
 
+  /**
+   * Advance the durable pipeline projection after one node transition.
+   *
+   * A required dependency failure recursively blocks every not-yet-started
+   * descendant. Successful retries can revive those dependency-blocked nodes,
+   * but only when every required dependency has completed successfully.
+   */
+  private advancePipeline = async (tx: Transaction, runId: string, transitionKey: string) => {
+    const [run] = await tx
+      .select({ protocol: agentGroupRuns.protocol })
+      .from(agentGroupRuns)
+      .where(eq(agentGroupRuns.id, runId))
+      .limit(1)
+      .for('update');
+    if (run?.protocol !== 'pipeline') return;
+
+    const nodes = await tx
+      .select({
+        completionReason: agentGroupRunNodes.completionReason,
+        dependencies: agentGroupRunNodes.dependencies,
+        id: agentGroupRunNodes.id,
+        nodeKey: agentGroupRunNodes.nodeKey,
+        status: agentGroupRunNodes.status,
+      })
+      .from(agentGroupRunNodes)
+      .where(eq(agentGroupRunNodes.runId, runId));
+    const statusByKey = new Map(nodes.map((node) => [node.nodeKey, node.status]));
+
+    let blockedOne = true;
+    while (blockedOne) {
+      blockedOne = false;
+      for (const node of nodes) {
+        const status = statusByKey.get(node.nodeKey);
+        if (status !== 'pending' && status !== 'ready') continue;
+
+        const blockedBy = node.dependencies.find((dependencyKey) => {
+          const dependencyStatus = statusByKey.get(dependencyKey);
+          return Boolean(
+            dependencyStatus && BLOCKING_DEPENDENCY_STATUSES.includes(dependencyStatus),
+          );
+        });
+        if (!blockedBy) continue;
+
+        const error: AgentGroupRunError = {
+          code: 'DEPENDENCY_FAILED',
+          message: `Required dependency "${blockedBy}" did not complete successfully.`,
+        };
+        const [updated] = await tx
+          .update(agentGroupRunNodes)
+          .set({ completionReason: 'dependency_failed', error, status: 'blocked' })
+          .where(
+            and(
+              eq(agentGroupRunNodes.id, node.id),
+              inArray(agentGroupRunNodes.status, ['pending', 'ready']),
+            ),
+          )
+          .returning({ id: agentGroupRunNodes.id });
+        if (!updated) continue;
+
+        statusByKey.set(node.nodeKey, 'blocked');
+        blockedOne = true;
+        await this.recordEvent(tx, {
+          data: { blockedBy, error },
+          idempotencyKey: `node:${node.id}:blocked:${transitionKey}`,
+          runId,
+          runNodeId: node.id,
+          status: 'blocked',
+          type: 'node.blocked',
+        });
+      }
+    }
+
+    for (const node of nodes) {
+      const status = statusByKey.get(node.nodeKey);
+      if (
+        status !== 'pending' &&
+        !(status === 'blocked' && node.completionReason === 'dependency_failed')
+      ) {
+        continue;
+      }
+      if (node.dependencies.length === 0) continue;
+      const dependenciesReady = node.dependencies.every((dependencyKey) => {
+        const dependencyStatus = statusByKey.get(dependencyKey);
+        return dependencyStatus === 'completed' || dependencyStatus === 'skipped';
+      });
+      if (!dependenciesReady) continue;
+
+      const [updated] = await tx
+        .update(agentGroupRunNodes)
+        .set({ completionReason: null, error: null, status: 'ready' })
+        .where(
+          and(
+            eq(agentGroupRunNodes.id, node.id),
+            inArray(agentGroupRunNodes.status, ['pending', 'blocked']),
+          ),
+        )
+        .returning({ id: agentGroupRunNodes.id });
+      if (!updated) continue;
+
+      statusByKey.set(node.nodeKey, 'ready');
+      await this.recordEvent(tx, {
+        data: { dependencies: node.dependencies },
+        idempotencyKey: `node:${node.id}:ready:${transitionKey}`,
+        runId,
+        runNodeId: node.id,
+        status: 'ready',
+        type: 'node.ready',
+      });
+    }
+  };
+
   private settleRunIfTerminal = async (tx: Transaction, runId: string, transitionKey: string) => {
     const nodeStatuses = await tx
       .select({ status: agentGroupRunNodes.status })
@@ -271,7 +401,9 @@ export class AgentGroupRunModel {
       return;
     }
 
-    const hasFailure = nodeStatuses.some((node) => node.status === 'failed');
+    const hasFailure = nodeStatuses.some(
+      (node) => node.status === 'failed' || node.status === 'blocked',
+    );
     const hasCancellation = nodeStatuses.some((node) => node.status === 'cancelled');
     const status = hasFailure ? 'failed' : hasCancellation ? 'cancelled' : 'completed';
     const [updated] = await tx
@@ -396,11 +528,19 @@ export class AgentGroupRunModel {
             role: node.role,
             runId: created.id,
             sortOrder: node.sortOrder,
+            status:
+              params.planSnapshot.protocol === 'pipeline' && node.dependencies.length === 0
+                ? ('ready' as const)
+                : ('pending' as const),
             timeoutMs: node.timeoutMs,
             toolPolicySnapshot: node.toolPolicy,
           })),
         )
-        .returning({ id: agentGroupRunNodes.id, nodeKey: agentGroupRunNodes.nodeKey });
+        .returning({
+          id: agentGroupRunNodes.id,
+          nodeKey: agentGroupRunNodes.nodeKey,
+          status: agentGroupRunNodes.status,
+        });
 
       await this.recordEvent(tx, {
         data: { planHash: params.planHash, protocol: params.planSnapshot.protocol },
@@ -415,9 +555,19 @@ export class AgentGroupRunModel {
           idempotencyKey: `node:${node.id}:created`,
           runId: created.id,
           runNodeId: node.id,
-          status: 'pending',
+          status: node.status,
           type: 'node.created',
         });
+        if (node.status === 'ready') {
+          await this.recordEvent(tx, {
+            data: { dependencies: [] },
+            idempotencyKey: `node:${node.id}:ready:initial`,
+            runId: created.id,
+            runNodeId: node.id,
+            status: 'ready',
+            type: 'node.ready',
+          });
+        }
       }
 
       return { created: true, runId: created.id };
@@ -813,7 +963,7 @@ export class AgentGroupRunModel {
       }
 
       if (
-        !TERMINAL_NODE_STATUSES.includes(node.status) ||
+        !RETRYABLE_NODE_STATUSES.includes(node.status) ||
         !TERMINAL_RUN_STATUSES.includes(node.runStatus as (typeof TERMINAL_RUN_STATUSES)[number])
       ) {
         throw new Error(AGENT_GROUP_RUN_RETRY_NOT_ALLOWED);
@@ -837,7 +987,7 @@ export class AgentGroupRunModel {
         throw new Error(AGENT_GROUP_RUN_RETRY_LIMIT_EXCEEDED);
       }
 
-      const { attempt } = await this.ensureAttempt(tx, params);
+      const { attempt } = await this.ensureAttempt(tx, params, { allowTerminalNode: true });
       const startedAt = new Date();
       const [updated] = await tx
         .update(agentGroupRunAttempts)
@@ -974,6 +1124,7 @@ export class AgentGroupRunModel {
         status: nodeStatus,
         type: 'node.terminal',
       });
+      await this.advancePipeline(tx, node.runId, `attempt:${updated.id}`);
       await this.settleRunIfTerminal(tx, node.runId, `attempt:${updated.id}`);
 
       return updated;
@@ -999,6 +1150,7 @@ export class AgentGroupRunModel {
         status: 'failed',
         type: 'node.terminal',
       });
+      await this.advancePipeline(tx, node.runId, `node:${node.id}:start_failed`);
       await this.settleRunIfTerminal(tx, node.runId, `node:${node.id}:start_failed`);
     });
 

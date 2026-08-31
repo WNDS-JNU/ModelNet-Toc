@@ -1,6 +1,6 @@
 # ModelNet Agent 级协作互联总体实施计划
 
-> 状态：实施中（M1 持久内部协作与 M2 异构 Agent 协作已通过 Dev 评审；下一步进入 M3 可恢复 pipeline / debate）
+> 状态：实施中（M1、M2 已通过 Dev 评审；M3 pipeline 持久状态机第一片完成，下一步接入 ready-node 调度与结构化交接）
 > 版本：V2.0
 > 重构日期：2026-08-30
 > 代码基线：4A100，/home/duxianghe/ModelNet-toc，33190eda5f
@@ -71,7 +71,7 @@
 4. dev 默认 LocalQueueServiceImpl 使用 setTimeout；App 进程重启时，排队工作本身不具备持久恢复保证。
 5. 群组工具只有 disableTools 布尔量，尚未形成成员权限、群组权限和节点权限的交集策略。
 6. 普通 Agent 的服务端群组执行已成立，但异构 Agent 是否在所有群组入口都严格复用 ExecutionPlan 需要补齐契约测试。
-7. pipeline、debate、vote 尚无可持久恢复的协议计划和状态机。
+7. pipeline 已具备计划校验和持久依赖状态推进，但 ready-node 自动调度、结构化上下文交接与恢复接管尚未接入；debate、vote 仍无可恢复状态机。
 8. Work、Verify、Tasks、Goals 与群组节点之间还没有统一关联契约。
 9. 代码写入虽已有本地/沙箱/设备执行基础，但没有群组节点级隔离工作区、变更交接和合并门禁。
 10. 外部 A2A 只有市场元数据痕迹，没有真实执行适配器、信任配置和协议测试。
@@ -448,6 +448,8 @@ A2A 是 Member Dispatcher 的外部执行 Adapter，不是 Router 协议，也�
 - vote 和 summarize 只在有明确状态契约后开放。
 
 退出条件：中途重启、单节点失败和人工暂停均不会破坏协议顺序或重复下游执行。
+
+状态（2026-08-31，M3 pipeline 状态机第一片）：复用既有不可变 `planSnapshot`、Node `dependencies` 和无环校验，不新增表。`pipeline` 根节点创建时持久为 `ready`，其余节点保持 `pending`；Attempt 只允许从已就绪节点启动。节点成功后仅当全部必需依赖为 `completed / skipped` 才解锁下游，失败或取消会把未启动后代递归持久为 `blocked + dependency_failed`，Run 以失败收敛。显式重试成功后，原先因依赖失败而 blocked 的节点会按 DAG 顺序逐层恢复为 `ready`。依赖投影推进前对 Run 行加锁，避免多个上游并发完成时各自看不到对方提交、导致汇合节点永久停在 pending；事件写入和终态投影继续保持幂等。PGlite 与一次性隔离 Dev PostgreSQL 的 `agentGroupRun` 定向测试均为 18 项通过，定向 ESLint 和项目 TypeScript 通过，覆盖双根汇合、并发汇合、提前启动拒绝、递归阻断、重试恢复和跨 Model 实例读取；测试数据库已删除。v18 Dev 镜像构建在读取 `node:24-slim` 元数据时被当前 Docker mirror 的 403 阻断，未生成镜像也未替换容器；现有 v17 app / worker 继续 healthy，3181 / 3192 / 3193 均为 200。当前第一片只闭合持久状态机；下一片接入 ready-node 的原子认领 / 持久派发、重启恢复和结构化上游摘要 / Work 引用，`createWorkflow` 仍保持“草案—用户确认—创建运行”门禁，生产未推广。
 
 ### 阶段 6：Work、Verify 与隔离代码协作
 
