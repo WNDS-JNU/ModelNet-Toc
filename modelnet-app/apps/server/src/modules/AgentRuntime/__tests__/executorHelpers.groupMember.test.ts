@@ -6,6 +6,7 @@ import { type RuntimeExecutorContext } from '../context';
 import { buildServerAgentMemberRunner, resolveGroupMemberId } from '../executorHelpers';
 
 const collaboration = vi.hoisted(() => ({
+  completeAttempt: vi.fn(),
   createAttempt: vi.fn(),
   createRun: vi.fn(),
   enabled: false,
@@ -22,6 +23,7 @@ vi.mock('@/envs/app', () => ({
 
 vi.mock('@/server/services/agentGroupCollaboration', () => ({
   AgentGroupCollaborationService: class {
+    completeAttempt = collaboration.completeAttempt;
     createAttempt = collaboration.createAttempt;
     createRun = collaboration.createRun;
     failNodeStart = collaboration.failNodeStart;
@@ -57,6 +59,7 @@ describe('buildServerAgentMemberRunner', () => {
 
   beforeEach(() => {
     collaboration.enabled = false;
+    collaboration.completeAttempt.mockReset().mockResolvedValue(undefined);
     collaboration.createAttempt.mockReset().mockResolvedValue(undefined);
     collaboration.createRun.mockReset();
     collaboration.failNodeStart.mockReset().mockResolvedValue(undefined);
@@ -313,6 +316,92 @@ describe('buildServerAgentMemberRunner', () => {
         runtimeKind: 'normal',
       }),
     );
+  });
+
+  it('persists a heterogeneous Attempt and resolved sandbox plan before dispatch returns', async () => {
+    collaboration.enabled = true;
+    collaboration.createRun.mockResolvedValue({
+      attempts: [],
+      created: true,
+      nodes: [{ id: 'node-1' }],
+      operations: [],
+      run: { id: 'run-1' },
+    });
+    const execGroupMember = vi.fn().mockImplementation(async (params) => {
+      await params.onOperationPrepared?.({
+        executionPlan: { kind: 'sandbox', target: 'sandbox' },
+        operationId: 'heterogeneous-operation',
+        runtimeKind: 'heterogeneous',
+      });
+      return {
+        executionPlan: { kind: 'sandbox', target: 'sandbox' },
+        operationId: 'heterogeneous-operation',
+        runtimeKind: 'heterogeneous',
+        started: true,
+      };
+    });
+    const { runner } = build({ execGroupMember });
+
+    const result = await runner!.run({
+      members: [{ agentId: 'agt_member', instruction: 'Inspect the repository' }],
+      mode: 'isolated',
+      onComplete: 'resume',
+    });
+
+    expect(result).toMatchObject({ started: true, startedCount: 1 });
+    expect(collaboration.createAttempt).toHaveBeenCalledTimes(1);
+    expect(collaboration.createAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionTargetSnapshot: expect.objectContaining({
+          executionPlan: { kind: 'sandbox', target: 'sandbox' },
+          mode: 'isolated',
+        }),
+        operationId: 'heterogeneous-operation',
+        runtimeKind: 'heterogeneous',
+      }),
+    );
+  });
+
+  it('fails a prepared Attempt instead of leaving it running when dispatch fails', async () => {
+    collaboration.enabled = true;
+    collaboration.createRun.mockResolvedValue({
+      attempts: [],
+      created: true,
+      nodes: [{ id: 'node-1' }],
+      operations: [],
+      run: { id: 'run-1' },
+    });
+    const execGroupMember = vi.fn().mockImplementation(async (params) => {
+      await params.onOperationPrepared?.({
+        executionPlan: { deviceId: 'device-1', kind: 'device', target: 'device' },
+        operationId: 'heterogeneous-operation',
+        runtimeKind: 'heterogeneous',
+      });
+      return {
+        error: 'device dispatch failed',
+        operationId: 'heterogeneous-operation',
+        runtimeKind: 'heterogeneous',
+        started: false,
+      };
+    });
+    const { runner } = build({ execGroupMember });
+
+    const result = await runner!.run({
+      members: [{ agentId: 'agt_member' }],
+      mode: 'isolated',
+      onComplete: 'resume',
+    });
+
+    expect(result).toEqual({ started: false, startedCount: 0 });
+    expect(collaboration.completeAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        completionReason: 'start_failed',
+        operationId: 'heterogeneous-operation',
+        runtimeKind: 'heterogeneous',
+        status: 'failed',
+      }),
+    );
+    expect(collaboration.failNodeStart).not.toHaveBeenCalled();
   });
 
   it('does not relaunch members for an idempotent durable-run replay', async () => {

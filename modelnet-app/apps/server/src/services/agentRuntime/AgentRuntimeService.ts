@@ -1040,7 +1040,10 @@ export class AgentRuntimeService {
       // RetryGroupNode uses this exact boundary to create/re-open its durable
       // Attempt. The operation row, Redis state and serialized completion hook
       // already exist, while no worker can execute the first step yet.
-      await onOperationPrepared?.(operationId);
+      await onOperationPrepared?.(operationId, {
+        executionPlan,
+        runtimeKind: 'normal',
+      });
 
       throwIfAborted(signal, 'Agent execution aborted before first step scheduling');
 

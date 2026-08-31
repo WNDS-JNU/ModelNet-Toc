@@ -159,6 +159,7 @@ import { createServerAgentToolsEngine } from '@/server/modules/Mecha';
 import type { ServerUserMemoryConfig } from '@/server/modules/Mecha/ContextEngineering/types';
 import { AgentService } from '@/server/services/agent';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
+import { AgentGroupCollaborationService } from '@/server/services/agentGroupCollaboration';
 import type {
   AgentExecutionParams,
   AgentExecutionResult,
@@ -167,17 +168,18 @@ import type {
   SubAgentBridgeParams,
 } from '@/server/services/agentRuntime';
 import { AgentRuntimeService } from '@/server/services/agentRuntime';
-import { AgentGroupCollaborationService } from '@/server/services/agentGroupCollaboration';
 import { getAbortError, isAbortError, throwIfAborted } from '@/server/services/agentRuntime/abort';
 import { CompletionLifecycle } from '@/server/services/agentRuntime/CompletionLifecycle';
 import { hookDispatcher } from '@/server/services/agentRuntime/hooks';
 import type { AgentHook } from '@/server/services/agentRuntime/hooks/types';
 import type {
+  AgentOperationPreparedContext,
   ExecGroupMemberParams,
   ExecGroupMemberResult,
   GroupActionMemberBridgeParams,
   GroupActionMemberMode,
   GroupActionOnComplete,
+  GroupMemberPreparedOperation,
   StepLifecycleCallbacks,
 } from '@/server/services/agentRuntime/types';
 import { enqueueAgentSignalSourceEvent } from '@/server/services/agentSignal';
@@ -487,8 +489,6 @@ interface InternalExecAgentParams extends ExecAgentParams {
   interactiveStart?: boolean;
   /** Maximum steps for the agent operation */
   maxSteps?: number;
-  /** Server-only hook after operation persistence and before first queue delivery. */
-  onOperationPrepared?: (operationId: string) => Promise<void>;
   /**
    * Agents the user @-mentioned in this message (multi-mention). When present
    * (and non-group), the run enables the callAgent tool and persists the mentioned
@@ -497,6 +497,11 @@ interface InternalExecAgentParams extends ExecAgentParams {
    * instead of answering itself. Mirrors the client runtime's mention wiring.
    */
   mentionedAgents?: RuntimeMentionedAgent[];
+  /** Server-only hook after operation persistence and before first queue delivery. */
+  onOperationPrepared?: (
+    operationId: string,
+    context: AgentOperationPreparedContext,
+  ) => Promise<void>;
   /** Parent message ID to continue from. Only takes effect when resume is true */
   parentMessageId?: string;
   queueRetries?: number;
@@ -3188,6 +3193,11 @@ export class AiAgentService {
           })
           .catch((err) => log('execAgent: failed to init stream for remote hetero: %O', err));
 
+        await onOperationPrepared?.(operationId, {
+          executionPlan: platformPlan!,
+          runtimeKind: 'heterogeneous',
+        });
+
         // lh connect only handles tool_call_request (not agent_run_request),
         // so we use executeToolCall with the runHeteroTask tool instead of dispatchAgentRun.
         const result = await deviceGateway.executeToolCall(
@@ -3377,6 +3387,11 @@ export class AiAgentService {
               })
             : undefined;
 
+          await onOperationPrepared?.(operationId, {
+            executionPlan: heteroPlan,
+            runtimeKind: 'heterogeneous',
+          });
+
           const result = await deviceGateway.dispatchAgentRun({
             ...heteroParams,
             args: heteroExecArgs,
@@ -3454,6 +3469,10 @@ export class AiAgentService {
           const { spawnHeteroSandbox } =
             await import('@/server/services/heterogeneousAgent/sandboxRunner');
           const marketService = await this.getMarketService();
+          await onOperationPrepared?.(operationId, {
+            executionPlan: heteroPlan,
+            runtimeKind: 'heterogeneous',
+          });
           // The sandbox authenticates its nested `lh` calls with this JWT. The
           // narrow `hetero-operation` token (used for the device-dispatch path
           // above) is rejected by `oidcAuth`, so CC capabilities that hit
@@ -5599,6 +5618,28 @@ export class AiAgentService {
     });
 
   /**
+   * Classify the member before its completion hook is serialized. The actual
+   * prepared callback later asserts this preflight decision against the branch
+   * execAgent selected, preventing a durable Attempt from being mislabeled.
+   */
+  private async resolveGroupMemberRuntimeKind(
+    agentId: string,
+    topicId: string,
+  ): Promise<'normal' | 'heterogeneous'> {
+    const agentConfig = await this.resolveAgentConfigOrThrow(agentId);
+    const configuredHeterogeneousType = agentConfig.agencyConfig?.heterogeneousProvider?.type;
+    if (configuredHeterogeneousType) return 'heterogeneous';
+
+    // Match execAgent's legacy-model fallback after its shared-topic model pin
+    // is applied. Modern Claude/Codex rows use heterogeneousProvider.type.
+    const topic = await this.topicModel.findById(topicId);
+    const effectiveModel = topic?.model ?? agentConfig.model;
+    return effectiveModel && isHeterogeneousAgentModelId(effectiveModel)
+      ? 'heterogeneous'
+      : 'normal';
+  }
+
+  /**
    * Fork a single group member ("call agent member") under a `lobe-group-management`
    * tool call. Dispatches to the in-group (non-isolated, shared group session)
    * or isolated (own thread) path, installing the group-action member completion
@@ -5608,6 +5649,21 @@ export class AiAgentService {
    * delegate.
    */
   execGroupMember = async (params: ExecGroupMemberParams): Promise<ExecGroupMemberResult> => {
+    const runtimeKind = params.collaboration
+      ? await this.resolveGroupMemberRuntimeKind(params.agentId, params.topicId)
+      : undefined;
+    const collaboration =
+      params.collaboration && runtimeKind
+        ? { ...params.collaboration, runtimeKind }
+        : params.collaboration;
+    let preparedOperation: GroupMemberPreparedOperation | undefined;
+    const onOperationPrepared = params.onOperationPrepared
+      ? async (prepared: GroupMemberPreparedOperation) => {
+          preparedOperation = prepared;
+          await params.onOperationPrepared!(prepared);
+        }
+      : undefined;
+
     if (params.mode === 'isolated') {
       // Isolated members reuse the sub-agent isolation-thread machinery, swapping
       // in the group-action member bridge (K=N barrier + resume/finish).
@@ -5626,7 +5682,7 @@ export class AiAgentService {
           bridgeHookFactory: (threadId) =>
             this.createGroupActionMemberBridgeHook({
               anchorMessageId: params.anchorMessageId,
-              collaboration: params.collaboration,
+              collaboration,
               expectedMembers: params.expectedMembers,
               groupToolMessageId: params.groupToolMessageId,
               mode: 'isolated',
@@ -5639,8 +5695,9 @@ export class AiAgentService {
           // Tag the op as a group member so the abandon path routes its parent
           // resume through the group bridge (its own timeout), not the sub-agent one.
           orchestrationRole: 'member',
-          onOperationPrepared: params.onOperationPrepared,
+          onOperationPrepared,
           resumeParentOnComplete: true,
+          runtimeKind,
         },
       );
 
@@ -5651,7 +5708,7 @@ export class AiAgentService {
         await this.agentRuntimeService.scheduleGroupMemberTimeout(
           {
             anchorMessageId: params.anchorMessageId,
-            collaboration: params.collaboration,
+            collaboration,
             expectedMembers: params.expectedMembers,
             groupToolMessageId: params.groupToolMessageId,
             memberOperationId: result.operationId,
@@ -5665,13 +5722,24 @@ export class AiAgentService {
 
       return {
         error: result.error,
+        executionPlan: preparedOperation?.executionPlan,
         operationId: result.operationId,
+        runtimeKind: preparedOperation?.runtimeKind ?? runtimeKind,
         started: result.success ?? false,
         threadId: result.threadId,
       };
     }
 
-    return this.execAgentMember(params);
+    const result = await this.execAgentMember({
+      ...params,
+      collaboration,
+      onOperationPrepared,
+    });
+    return {
+      ...result,
+      executionPlan: preparedOperation?.executionPlan,
+      runtimeKind: preparedOperation?.runtimeKind ?? runtimeKind,
+    };
   };
 
   /**
@@ -5774,9 +5842,17 @@ export class AiAgentService {
           parentOperationId,
         }),
       ],
-      onOperationPrepared: onOperationPrepared
-        ? (operationId) => onOperationPrepared(operationId)
-        : undefined,
+      onOperationPrepared:
+        onOperationPrepared && collaboration
+          ? async (operationId, context) => {
+              if (context.runtimeKind !== collaboration.runtimeKind) {
+                throw new Error(
+                  `Group member runtime changed before dispatch: expected ${collaboration.runtimeKind}, got ${context.runtimeKind}`,
+                );
+              }
+              await onOperationPrepared({ ...context, operationId });
+            }
+          : undefined,
       parentMessageId: supervisorMessageId ?? groupToolMessageId,
       parentOperationId,
       prompt: speakerInstruction,
@@ -5834,8 +5910,9 @@ export class AiAgentService {
        * NOT `completeSubAgentBridge`.
        */
       orchestrationRole?: 'member';
-      onOperationPrepared?: (operationId: string, threadId?: string) => Promise<void>;
+      onOperationPrepared?: ExecGroupMemberParams['onOperationPrepared'];
       resumeParentOnComplete?: boolean;
+      runtimeKind?: 'normal' | 'heterogeneous';
     },
   ): Promise<ExecSubAgentResult> {
     const { groupId, topicId, parentMessageId, agentId, instruction, title, parentOperationId } =
@@ -5952,11 +6029,17 @@ export class AiAgentService {
       hooks,
       // Explicit sub-agent model override resolved at the spawn site.
       model: options.model,
-      onOperationPrepared: options.onOperationPrepared
-        ? async (operationId) => {
-            await options.onOperationPrepared!(operationId, thread.id);
-          }
-        : undefined,
+      onOperationPrepared:
+        options.onOperationPrepared && options.runtimeKind
+          ? async (operationId, context) => {
+              if (context.runtimeKind !== options.runtimeKind) {
+                throw new Error(
+                  `Group member runtime changed before dispatch: expected ${options.runtimeKind}, got ${context.runtimeKind}`,
+                );
+              }
+              await options.onOperationPrepared!({ ...context, operationId, threadId: thread.id });
+            }
+          : undefined,
       parentOperationId,
       prompt: instruction,
       provider: options.provider,
@@ -6700,8 +6783,13 @@ export class AiAgentService {
         instruction: node.instruction,
         mode,
         onComplete,
-        onOperationPrepared: async (operationId, threadId) => {
+        onOperationPrepared: async ({ executionPlan, operationId, runtimeKind, threadId }) => {
           preparedOperationId = operationId;
+          if (runtimeKind !== previousAttempt.runtimeKind) {
+            throw new Error(
+              `Group member runtime changed before retry dispatch: expected ${previousAttempt.runtimeKind}, got ${runtimeKind}`,
+            );
+          }
           await collaborationService.startRetryAttempt({
             attemptNo,
             executionTargetSnapshot: {
@@ -6711,6 +6799,7 @@ export class AiAgentService {
               mode,
               onComplete,
               parentOperationId,
+              ...(executionPlan ? { executionPlan } : {}),
               ...(threadId ? { threadId } : {}),
             },
             ...(threadId ? { externalExecutionRef: { taskId: threadId } } : {}),

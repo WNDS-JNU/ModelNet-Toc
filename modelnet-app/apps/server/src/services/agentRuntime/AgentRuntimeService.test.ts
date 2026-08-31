@@ -494,8 +494,13 @@ describe('AgentRuntimeService', () => {
 
       await service.createOperation({
         ...mockParams,
-        onOperationPrepared: async (operationId) => {
+        executionPlan: { kind: 'sandbox', target: 'sandbox' },
+        onOperationPrepared: async (operationId, context) => {
           expect(operationId).toBe('test-operation-1');
+          expect(context).toEqual({
+            executionPlan: { kind: 'sandbox', target: 'sandbox' },
+            runtimeKind: 'normal',
+          });
           expect(mockCoordinator.createAgentOperation).toHaveBeenCalled();
           expect(mockCoordinator.saveAgentState).toHaveBeenCalled();
           order.push('prepared');

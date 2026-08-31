@@ -1,6 +1,6 @@
 # ModelNet Agent 级协作互联总体实施计划
 
-> 状态：实施中（M1 持久内部协作已通过 Dev 评审；PR 1–5、single / broadcast / parallel_tasks、恢复故障注入、显式重试、乱序回调及安全暂停/恢复均已闭环；下一步进入 M2 异构 Agent 协作）
+> 状态：实施中（M1 持久内部协作已通过 Dev 评审；M2 第一片已完成异构成员运行时类型与 ExecutionPlan 的 prepared-boundary 持久化，真实 Codex / Claude 混合群组验收待连接执行端后继续）
 > 版本：V2.0
 > 重构日期：2026-08-30
 > 代码基线：4A100，/home/duxianghe/ModelNet-toc，33190eda5f
@@ -432,6 +432,8 @@ A2A 是 Member Dispatcher 的外部执行 Adapter，不是 Router 协议，也�
 
 退出条件：同一群组可混合普通 Agent 与 Claude/Codex 等异构 Agent，且执行位置、权限和失败原因可审计。
 
+状态（2026-08-31）：M2 第一片已在隔离 Dev 栈完成。群组 Member Dispatcher 不再把全部 Attempt 硬编码为 `normal`；普通成员与异构成员都在首次 queue / device / sandbox 分发之前经过 `onOperationPrepared` 边界，Attempt 在该边界先持久化真实 `runtimeKind`、operation / thread 桥接字段以及已解析的 `ExecutionPlan` 快照。prepared 后分发失败会终态化对应 Attempt，不再遗留 `running` 记录；重试会校验运行时类型未发生静默变化并写入新的执行计划快照。服务端定向 Vitest 139 项、项目 TypeScript、定向 ESLint、Worker bundle 和 Next standalone build 均通过；v13 开发镜像的 app / agent-worker 均为 healthy，Router 与 Device Gateway 未重建，生产栈未推广。当前未把 M2 标记完成：还需连接真实已登录的 Codex 或 Claude 执行端，完成一次只读的普通 Agent + 异构 Agent 混合群组验收，再继续工具权限交集、离线/重连/重放和 Intervention。
+
 ### 阶段 5：pipeline 与 debate
 
 - 实现无环计划验证、依赖就绪、屏障和结构化上下文交接。
@@ -616,7 +618,7 @@ A2A 是 Member Dispatcher 的外部执行 Adapter，不是 Router 协议，也�
 
 状态（2026-08-31）：Dev 代码、部署和 M1 主协议真实恢复验收完成。Redis Stream 模式的内部成员回调改由 worker bearer 鉴权直投，不再依赖 QStash；取消会在请求内幂等终态化 supervisor 与全部 active member operation。真实 Dev 证据：`agr_HUYxYOPMquEK` 在 317 ms 内把 Run、2 Node、2 Attempt 和 3 个 operation 全部收敛为取消/中断终态；`agr_xRRyZU6mUWNh` 在 Redis pending 消息和 supervisor `waiting_for_async_tool` 两个时点重建 app / worker 后恢复完成，Attempt 始终只有 2 个且均为 attemptNo=1；`agr_HO8Ch2cttQrZ` 的 1000 ms watchdog 将 2 Node 收敛为 `failed + timeout`、2 Attempt 收敛为 `timed_out + timeout`；`agr_8y48G98pFfCj` 以 1 Node / 1 Attempt 完成 `single`；`agr_CgGkeaIlitzF` 以 2 Node / 2 Attempt 完成 `broadcast`；`agr_l0IsBNLsiYDM` 在 Dev Redis 暂停 8 秒并恢复后自动完成，2 个成员仍各只有 attemptNo=1，同一成员完成回调再重复投递两次均返回 `resumed=false`，没有新增 Attempt 或 operation；`agr_bezBBtFdWwtb` 首轮以 2 Node / 2 Attempt 完成 `broadcast`，随后对节点 `71e9e8ed-4c7c-45f7-a04c-f9d78b2fcab8` 显式重试，Run 从 completed 重开并以 attemptNo=2 再次完成，`node.retry_started`、`run.reopened` 和第二组 node/run terminal 事件完整，再次重试被 `PRECONDITION_FAILED` 拒绝，Attempt 总数保持 3、operation 总数保持 4。v11 又在该 Run 已完成 attemptNo=2 后重放旧 attemptNo=1 的矛盾 `error` 回调，回调返回 `resumed=false`，Run 仍为 completed，Attempt / operation / event 分别保持 3 / 4 / 19，旧 anchor 仍为 completed 且无 plugin error。v12 的 `agr_vs6KJTbhYPJ8` 在 supervisor 到达 `waiting_for_async_tool` 屏障后原子暂停为 Run `waiting + manual_pause` 和 operation `waiting_for_group_resume`；两名成员及各自 attemptNo=1 均完成后，Run 仍保持人工暂停，恢复前事件为 `run.paused=1 / run.resumed=0 / run.terminal=0`；显式恢复返回 `resumed=true` 并一次收敛为 completed，最终 `run.paused / run.resumed / run.terminal` 各 1，重复恢复被 `PRECONDITION_FAILED` 拒绝，Attempt / operation 总数保持 2 / 3。Attempt 的明确原因由迁移 `0155_charming_miracleman.sql` 持久化。PGlite 46 项、服务端定向 Vitest 188 项、项目 TypeScript、Worker bundle、Next standalone build、Dev 迁移和 v12 容器 health 均通过；既有更宽的服务端定向 Vitest 216 项恢复验证仍有效。`AGENT_GROUP_DURABLE_RUNS=1` 仍只存在于忽略版本控制的 `.env.dev`，生产 compose 和生产开关未改。M1 Dev 评审通过；下一步进入 M2 异构 Agent / ExecutionPlan 契约收口，不自动推广生产。
 
-上述五个 PR 已完成 M1 Dev 评审。下一批只进入 M2 异构 Agent / ExecutionPlan 契约收口；A2A 仍保持后置，生产推广仍需独立审批。
+上述五个 PR 已完成 M1 Dev 评审；M2 第一片已完成异构 Agent / ExecutionPlan 的 prepared-boundary 契约收口并部署到隔离 Dev 栈。下一步只做真实只读混合群组验收及阶段 4 剩余门禁；A2A 仍保持后置，生产推广仍需独立审批。
 
 ## 十九、最终验收清单
 

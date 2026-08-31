@@ -509,6 +509,27 @@ export const buildServerAgentMemberRunner = (
                   runtimeKind: 'normal' as const,
                 }
               : undefined;
+          const executionTargetSnapshot = (prepared: {
+            executionPlan?: unknown;
+            threadId?: string;
+          }) => ({
+            anchorMessageId,
+            expectedMembers,
+            groupToolMessageId: groupTool.id,
+            mode,
+            onComplete,
+            parentOperationId: ctx.operationId,
+            ...(prepared.executionPlan ? { executionPlan: prepared.executionPlan } : {}),
+            ...(prepared.threadId ? { threadId: prepared.threadId } : {}),
+          });
+          let preparedAttempt:
+            | {
+                executionPlan?: unknown;
+                operationId: string;
+                runtimeKind: 'normal' | 'heterogeneous';
+                threadId?: string;
+              }
+            | undefined;
           let startError: string | undefined;
           try {
             const result = await execGroupMember({
@@ -522,6 +543,21 @@ export const buildServerAgentMemberRunner = (
               instruction: member.instruction,
               mode,
               onComplete,
+              onOperationPrepared:
+                collaborationService && collaboration
+                  ? async (prepared) => {
+                      await collaborationService!.createAttempt({
+                        ...collaboration,
+                        executionTargetSnapshot: executionTargetSnapshot(prepared),
+                        ...(prepared.threadId
+                          ? { externalExecutionRef: { taskId: prepared.threadId } }
+                          : {}),
+                        operationId: prepared.operationId,
+                        runtimeKind: prepared.runtimeKind,
+                      });
+                      preparedAttempt = prepared;
+                    }
+                  : undefined,
               parentOperationId: ctx.operationId,
               // The supervisor assistant message owning this tool call — council
               // members parent their response here (siblings of the council tool).
@@ -530,6 +566,13 @@ export const buildServerAgentMemberRunner = (
               topicId,
             });
             if (result?.started) {
+              if (
+                preparedAttempt &&
+                result.operationId &&
+                preparedAttempt.operationId !== result.operationId
+              ) {
+                throw new Error('Prepared group member operation does not match dispatch result.');
+              }
               startedCount += 1;
               if (result.operationId) {
                 startedTasks.push({
@@ -537,23 +580,21 @@ export const buildServerAgentMemberRunner = (
                   ...(result.threadId ? { threadId: result.threadId } : {}),
                 });
               }
-              if (collaborationService && collaboration && result.operationId) {
+              if (
+                collaborationService &&
+                collaboration &&
+                result.operationId &&
+                !preparedAttempt
+              ) {
                 try {
                   await collaborationService.createAttempt({
                     ...collaboration,
-                    executionTargetSnapshot: {
-                      anchorMessageId,
-                      expectedMembers,
-                      groupToolMessageId: groupTool.id,
-                      mode,
-                      onComplete,
-                      parentOperationId: ctx.operationId,
-                      ...(result.threadId ? { threadId: result.threadId } : {}),
-                    },
+                    executionTargetSnapshot: executionTargetSnapshot(result),
                     ...(result.threadId
                       ? { externalExecutionRef: { taskId: result.threadId } }
                       : {}),
                     operationId: result.operationId,
+                    runtimeKind: result.runtimeKind ?? collaboration.runtimeKind,
                   });
                 } catch (error) {
                   // The completion callback carries the same lineage and can
@@ -576,7 +617,27 @@ export const buildServerAgentMemberRunner = (
               error,
             );
           }
-          if (collaborationService && durableNode) {
+          if (collaborationService && collaboration && preparedAttempt) {
+            try {
+              await collaborationService.completeAttempt({
+                ...collaboration,
+                completionReason: 'start_failed',
+                error: {
+                  code: 'AGENT_MEMBER_START_FAILED',
+                  message: startError || `Agent member "${member.agentId}" failed to start.`,
+                },
+                operationId: preparedAttempt.operationId,
+                runtimeKind: preparedAttempt.runtimeKind,
+                status: 'failed',
+              });
+            } catch (error) {
+              log(
+                'buildServerAgentMemberRunner: failed to settle prepared attempt %s: %O',
+                preparedAttempt.operationId,
+                error,
+              );
+            }
+          } else if (collaborationService && durableNode) {
             try {
               await collaborationService.failNodeStart({
                 error: {

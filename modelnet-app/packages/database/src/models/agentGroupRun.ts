@@ -282,7 +282,7 @@ export class AgentGroupRunModel {
             and(
               eq(agentGroupRuns.status, 'waiting'),
               eq(agentGroupRuns.completionReason, AGENT_GROUP_RUN_MANUAL_PAUSE_REASON),
-            ),
+            )!,
           ),
         ),
       )

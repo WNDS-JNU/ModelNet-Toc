@@ -9,6 +9,7 @@ import type {
 } from '@lobechat/context-engine';
 import type {
   AgentGroupRunAttemptRef,
+  AgentGroupRunRuntimeKind,
   ChatTopicBotContext,
   EvalToolForwardingConfig,
   ExpertiseContextSnapshot,
@@ -242,6 +243,21 @@ export type GroupActionMemberMode = 'in_group' | 'isolated';
 export type GroupActionOnComplete = 'resume' | 'finish';
 
 /**
+ * Immutable execution decision available after an operation is durable but
+ * before its first queue/device/sandbox dispatch can run.
+ */
+export interface AgentOperationPreparedContext {
+  executionPlan?: ExecutionPlan;
+  runtimeKind: Exclude<AgentGroupRunRuntimeKind, 'external'>;
+}
+
+/** Durable group-member Attempt materialized at the prepared boundary. */
+export interface GroupMemberPreparedOperation extends AgentOperationPreparedContext {
+  operationId: string;
+  threadId?: string;
+}
+
+/**
  * Params for the group-action member completion bridge — see
  * `AgentRuntimeService.completeGroupActionMember`. Mirrors the sub-agent bridge
  * but enforces a K=N member barrier: each member backfills its own anchor, and
@@ -324,7 +340,7 @@ export interface ExecGroupMemberParams {
    * Durable retry hook invoked after the child operation and completion hook
    * are persisted but before its first queue message is scheduled.
    */
-  onOperationPrepared?: (operationId: string, threadId?: string) => Promise<void>;
+  onOperationPrepared?: (prepared: GroupMemberPreparedOperation) => Promise<void>;
   /** Parent (supervisor) operation id. */
   parentOperationId: string;
   /**
@@ -343,8 +359,12 @@ export interface ExecGroupMemberParams {
 
 export interface ExecGroupMemberResult {
   error?: string;
+  /** Resolved plan persisted on the durable Attempt when available. */
+  executionPlan?: ExecutionPlan;
   /** Forked member operation id (when started). */
   operationId?: string;
+  /** Actual runtime branch selected by execAgent. */
+  runtimeKind?: Exclude<AgentGroupRunRuntimeKind, 'external'>;
   /** Whether the member op was forked. */
   started: boolean;
   /** Isolation thread id (isolated mode only). */
@@ -485,7 +505,10 @@ export interface OperationCreationParams {
    * Server-only lifecycle hook invoked after runtime state and hooks are
    * durable, but before the first queue delivery. Throwing aborts startup.
    */
-  onOperationPrepared?: (operationId: string) => Promise<void>;
+  onOperationPrepared?: (
+    operationId: string,
+    context: AgentOperationPreparedContext,
+  ) => Promise<void>;
   operationId: string;
   /** Operation-level skill set for SkillResolver */
   operationSkillSet?: OperationSkillSet;
