@@ -547,6 +547,7 @@ export class AgentGroupRunModel {
         .update(agentGroupRunAttempts)
         .set({
           completedAt,
+          completionReason: params.completionReason,
           error: params.error,
           startedAt: attempt.startedAt ?? completedAt,
           status: params.status,

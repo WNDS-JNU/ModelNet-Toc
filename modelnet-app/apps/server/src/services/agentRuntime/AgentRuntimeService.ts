@@ -563,6 +563,38 @@ export class AgentRuntimeService {
     return true;
   }
 
+  /**
+   * Ensure an interrupted operation reaches the ordinary terminal lifecycle.
+   *
+   * A running step observes the interrupted Redis state at its next boundary,
+   * but a supervisor parked on `waiting_for_async_tool` has no next delivery.
+   * Complete that lifecycle in the cancellation request itself: queueing a
+   * synthetic boundary can strand it behind the very long-running member HTTP
+   * deliveries that cancellation is trying to stop. Completion persistence and
+   * hooks are idempotent, so recovery can safely call this again after a crash.
+   */
+  async ensureInterruptedOperationFinalized(operationId: string): Promise<boolean> {
+    const state = await this.coordinator.loadAgentState(operationId);
+
+    if (!state) {
+      // Redis state can expire between cancellation and recovery. The durable
+      // operation row is still authoritative; converge it directly when no
+      // lifecycle payload remains to replay.
+      return this.agentOperationModel.recordCompletion(operationId, {
+        completedAt: new Date(),
+        completionReason: 'interrupted',
+        status: 'interrupted',
+      });
+    }
+
+    if (state.status !== 'interrupted') return false;
+
+    const reason = 'interrupted' as const;
+    await this.completionLifecycle.emitSignalEvents(operationId, state, reason);
+    await this.completionLifecycle.dispatchHooks(operationId, state, reason);
+    return true;
+  }
+
   /** Load the authoritative runtime state for a deterministic intervention continuation. */
   async loadInterventionContinuationState(operationId: string): Promise<AgentState | null> {
     return this.coordinator.loadAgentState(operationId);

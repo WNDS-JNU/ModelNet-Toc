@@ -35,6 +35,7 @@ interface RecoveryBridgeSnapshot {
 
 export interface AgentGroupRunRecoveryRuntime {
   completeMember: (params: GroupActionMemberBridgeParams) => Promise<boolean>;
+  finalizeInterruptedOperation: (operationId: string) => Promise<boolean>;
   interruptOperation: (operationId: string) => Promise<boolean>;
 }
 
@@ -135,6 +136,19 @@ export class AgentGroupRunRecoveryCoordinator {
       (result): result is PromiseRejectedResult => result.status === 'rejected',
     );
     if (rejected) throw rejected.reason;
+
+    // Persist every interrupted operation through the ordinary terminal
+    // lifecycle before declaring the durable Run cancelled. In-flight member
+    // requests may not observe their Redis abort flag until a provider call
+    // returns; doing this here makes cancellation immediately authoritative in
+    // PostgreSQL while the later step-boundary replay remains idempotent.
+    const finalizations = await Promise.allSettled(
+      operationIds.map((operationId) => runtime.finalizeInterruptedOperation(operationId)),
+    );
+    const rejectedFinalization = finalizations.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    if (rejectedFinalization) throw rejectedFinalization.reason;
 
     // Backfill the same message barrier used by normal completion. This also
     // idempotently settles each Attempt before the final Run cancellation.
@@ -288,6 +302,8 @@ export class AgentGroupRunRecoveryCoordinator {
     });
     return {
       completeMember: (params) => service.completeGroupActionMember(params),
+      finalizeInterruptedOperation: (operationId) =>
+        service.ensureInterruptedTaskFinalized(operationId),
       interruptOperation: async (operationId) =>
         (await service.interruptTask({ operationId })).success,
     };

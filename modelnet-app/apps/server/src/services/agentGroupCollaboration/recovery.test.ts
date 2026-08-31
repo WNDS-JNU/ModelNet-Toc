@@ -67,6 +67,7 @@ describe('AgentGroupRunRecoveryCoordinator', () => {
   let completeAttempt: ReturnType<typeof vi.fn>;
   let completeMember: ReturnType<typeof vi.fn>;
   let finalizeCancellation: ReturnType<typeof vi.fn>;
+  let finalizeInterruptedOperation: ReturnType<typeof vi.fn>;
   let getRun: ReturnType<typeof vi.fn>;
   let beginCancellation: ReturnType<typeof vi.fn>;
   let interruptOperation: ReturnType<typeof vi.fn>;
@@ -78,9 +79,10 @@ describe('AgentGroupRunRecoveryCoordinator', () => {
     completeAttempt = vi.fn();
     completeMember = vi.fn().mockResolvedValue(true);
     finalizeCancellation = vi.fn();
+    finalizeInterruptedOperation = vi.fn().mockResolvedValue(true);
     getRun = vi.fn();
     interruptOperation = vi.fn().mockResolvedValue(true);
-    runtime = { completeMember, interruptOperation };
+    runtime = { completeMember, finalizeInterruptedOperation, interruptOperation };
     service = {
       beginCancellation,
       completeAttempt,
@@ -148,6 +150,9 @@ describe('AgentGroupRunRecoveryCoordinator', () => {
     expect(interruptOperation).toHaveBeenCalledTimes(2);
     expect(interruptOperation).toHaveBeenCalledWith('supervisor-operation-1');
     expect(interruptOperation).toHaveBeenCalledWith('member-operation-1');
+    expect(finalizeInterruptedOperation).toHaveBeenCalledTimes(2);
+    expect(finalizeInterruptedOperation).toHaveBeenCalledWith('supervisor-operation-1');
+    expect(finalizeInterruptedOperation).toHaveBeenCalledWith('member-operation-1');
     expect(completeMember).toHaveBeenCalledWith(
       expect.objectContaining({ operationId: 'member-operation-1', reason: 'interrupted' }),
     );

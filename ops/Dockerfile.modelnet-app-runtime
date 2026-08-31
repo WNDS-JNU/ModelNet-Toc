@@ -31,6 +31,7 @@ COPY --chown=1001:1001 .next/static /app/.next/static
 COPY --chown=1001:1001 public/_spa /app/public/_spa
 COPY --chown=1001:1001 packages/database/migrations /app/migrations
 COPY --chown=1001:1001 scripts/migrateServerDB/docker.cjs /app/docker.cjs
+COPY --chown=1001:1001 apps/server/dist-agent-worker/agent-worker.mjs /app/agent-worker.mjs
 ENV NODE_ENV="production" \
     NODE_OPTIONS="--dns-result-order=ipv4first --use-openssl-ca" \
     SSL_CERT_FILE="/etc/ssl/certs/ca-certificates.crt" \

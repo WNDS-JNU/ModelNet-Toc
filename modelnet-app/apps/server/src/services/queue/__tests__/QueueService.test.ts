@@ -337,6 +337,21 @@ describe('QueueService', () => {
       const { isQueueAgentRuntimeEnabled } = await import('../impls');
       expect(isQueueAgentRuntimeEnabled()).toBe(true);
     });
+
+    it('should identify Redis Stream only when queue mode and provider both match', async () => {
+      const { isRedisStreamAgentRuntimeEnabled } = await import('../impls');
+
+      mockAppEnv.enableQueueAgentRuntime = true;
+      mockAppEnv.agentRuntimeQueueProvider = 'redis-stream';
+      expect(isRedisStreamAgentRuntimeEnabled()).toBe(true);
+
+      mockAppEnv.agentRuntimeQueueProvider = 'qstash';
+      expect(isRedisStreamAgentRuntimeEnabled()).toBe(false);
+
+      mockAppEnv.enableQueueAgentRuntime = false;
+      mockAppEnv.agentRuntimeQueueProvider = 'redis-stream';
+      expect(isRedisStreamAgentRuntimeEnabled()).toBe(false);
+    });
   });
 
   describe('calculateDelay', () => {

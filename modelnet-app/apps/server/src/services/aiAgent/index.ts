@@ -1253,7 +1253,7 @@ export class AiAgentService {
   }
 
   /**
-   * Group-action member completion bridge entry point — driven by the QStash
+   * Group-action member completion bridge entry point — driven by the queue
    * `group-member-callback` webhook (queue mode). Forwards to the workspace-scoped
    * runtime so the member-anchor backfill + K=N barrier + resume/finish read the
    * same workspace rows. See `AgentRuntimeService.completeGroupActionMember`.
@@ -6323,7 +6323,8 @@ export class AiAgentService {
    * `AgentRuntimeService.completeGroupActionMember`: backfill the member anchor,
    * enforce the K=N member barrier, then resume/finish the parked supervisor.
    * Transport mirrors {@link createSubAgentBridgeHook} — in-process in local
-   * mode, QStash → `/api/agent/webhooks/group-member-callback` in queue mode.
+   * mode, configured queue transport → `/api/agent/webhooks/group-member-callback`
+   * in queue mode.
    */
   private createGroupActionMemberBridgeHook(params: {
     anchorMessageId: string;
@@ -6534,6 +6535,11 @@ export class AiAgentService {
       success: true,
       threadId: thread?.id,
     };
+  }
+
+  /** Complete the ordinary terminal lifecycle for an already interrupted op. */
+  ensureInterruptedTaskFinalized(operationId: string): Promise<boolean> {
+    return this.agentRuntimeService.ensureInterruptedOperationFinalized(operationId);
   }
 
   /**

@@ -268,7 +268,7 @@ describe('AgentGroupRunModel', () => {
     const snapshot = await model.findById(created.run.id);
 
     expect(repeatedCompletion.id).toBe(completed.id);
-    expect(snapshot?.attempts[0].status).toBe('completed');
+    expect(snapshot?.attempts[0]).toMatchObject({ completionReason: 'done', status: 'completed' });
     expect(snapshot?.nodes[0].status).toBe('completed');
     expect(snapshot?.run.status).toBe('completed');
     expect(snapshot?.operations.map((operation) => operation.id)).toEqual([

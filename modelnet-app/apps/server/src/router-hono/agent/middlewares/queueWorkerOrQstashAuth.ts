@@ -9,7 +9,8 @@ const log = debug('lobe-server:agent:queue-worker-or-qstash-auth');
 
 /**
  * Accepts either a QStash signature or the internal Redis Stream worker token.
- * The token path is restricted to the Agent Runtime step endpoint by routing.
+ * The token path is restricted by routing to Agent Runtime steps and their
+ * internal completion-bridge callbacks.
  */
 export const queueWorkerOrQstashAuth = (): MiddlewareHandler => async (c, next) => {
   const rawBody = await c.req.text();

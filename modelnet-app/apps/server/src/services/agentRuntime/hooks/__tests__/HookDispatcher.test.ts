@@ -6,6 +6,7 @@ import type { AgentHook, AgentHookEvent } from '../types';
 // Mock isQueueAgentRuntimeEnabled to control local vs production mode
 vi.mock('@/server/services/queue/impls', () => ({
   isQueueAgentRuntimeEnabled: vi.fn(() => false), // Default: local mode
+  isRedisStreamAgentRuntimeEnabled: vi.fn(() => false),
 }));
 
 const mockPublishJSON = vi.hoisted(() => vi.fn());
@@ -18,7 +19,9 @@ vi.mock('@upstash/qstash', () => ({
   },
 }));
 
-const { isQueueAgentRuntimeEnabled } = await import('@/server/services/queue/impls');
+const { isQueueAgentRuntimeEnabled, isRedisStreamAgentRuntimeEnabled } = await import(
+  '@/server/services/queue/impls'
+);
 
 describe('HookDispatcher', () => {
   let dispatcher: HookDispatcher;
@@ -36,6 +39,7 @@ describe('HookDispatcher', () => {
   beforeEach(() => {
     dispatcher = new HookDispatcher();
     vi.mocked(isQueueAgentRuntimeEnabled).mockReturnValue(false);
+    vi.mocked(isRedisStreamAgentRuntimeEnabled).mockReturnValue(false);
   });
 
   afterEach(() => {
@@ -271,6 +275,7 @@ describe('HookDispatcher', () => {
 
   describe('deliverWebhook qstash fallback', () => {
     const originalToken = process.env.QSTASH_TOKEN;
+    const originalWorkerToken = process.env.AGENT_WORKER_TOKEN;
 
     beforeEach(() => {
       global.fetch = vi.fn().mockResolvedValue({ status: 200 });
@@ -281,6 +286,8 @@ describe('HookDispatcher', () => {
     afterEach(() => {
       if (originalToken === undefined) delete process.env.QSTASH_TOKEN;
       else process.env.QSTASH_TOKEN = originalToken;
+      if (originalWorkerToken === undefined) delete process.env.AGENT_WORKER_TOKEN;
+      else process.env.AGENT_WORKER_TOKEN = originalWorkerToken;
       vi.restoreAllMocks();
     });
 
@@ -313,6 +320,53 @@ describe('HookDispatcher', () => {
       ).rejects.toThrow('qstash down');
 
       expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('uses an authenticated internal callback in Redis Stream mode', async () => {
+      vi.mocked(isRedisStreamAgentRuntimeEnabled).mockReturnValue(true);
+      process.env.AGENT_WORKER_TOKEN = 'worker-secret';
+
+      await deliverWebhook(
+        { delivery: 'qstash', fallback: 'none', url: '/api/agent/webhooks/group-member-callback' },
+        { operationId },
+      );
+
+      expect(mockPublishJSON).not.toHaveBeenCalled();
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('api/agent/webhooks/group-member-callback'),
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: 'Bearer worker-secret' }),
+          method: 'POST',
+        }),
+      );
+
+      delete process.env.AGENT_WORKER_TOKEN;
+    });
+
+    it('keeps Redis Stream control-flow delivery critical when the worker token is missing', async () => {
+      vi.mocked(isRedisStreamAgentRuntimeEnabled).mockReturnValue(true);
+      delete process.env.AGENT_WORKER_TOKEN;
+
+      await expect(
+        deliverWebhook(
+          { delivery: 'qstash', fallback: 'none', url: '/api/agent/webhooks/group-member-callback' },
+          { operationId },
+        ),
+      ).rejects.toThrow(/AGENT_WORKER_TOKEN not available/);
+
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('never sends the worker token to an absolute external webhook', async () => {
+      vi.mocked(isRedisStreamAgentRuntimeEnabled).mockReturnValue(true);
+      process.env.AGENT_WORKER_TOKEN = 'worker-secret';
+
+      await deliverWebhook({ delivery: 'qstash', url: 'https://example.com/hook' }, { operationId });
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://example.com/hook',
+        expect.objectContaining({ headers: { 'Content-Type': 'application/json' } }),
+      );
     });
 
     it('dispatch rejects a no-fallback delivery failure after delivering other hooks', async () => {

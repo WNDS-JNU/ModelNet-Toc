@@ -155,6 +155,7 @@ export const agentGroupRunAttempts = pgTable(
     externalExecutionRef:
       jsonb('external_execution_ref').$type<AgentGroupRunExternalExecutionRef>(),
     status: text('status', { enum: agentGroupRunAttemptStatuses }).default('pending').notNull(),
+    completionReason: text('completion_reason'),
     error: jsonb('error').$type<AgentGroupRunError>(),
     startedAt: timestamptz('started_at'),
     completedAt: timestamptz('completed_at'),

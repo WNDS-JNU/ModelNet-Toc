@@ -1,6 +1,6 @@
 # ModelNet Agent 级协作互联总体实施计划
 
-> 状态：实施中（PR 1–5 Dev 代码与部署完成，待 M1 真实运行验收）
+> 状态：实施中（PR 1–5 Dev 代码与部署完成；parallel_tasks 恢复验收通过，待 single / broadcast 真实运行验收）
 > 版本：V2.0
 > 重构日期：2026-08-30
 > 代码基线：4A100，/home/duxianghe/ModelNet-toc，33190eda5f
@@ -614,7 +614,7 @@ A2A 是 Member Dispatcher 的外部执行 Adapter，不是 Router 协议，也�
 - 增加恢复 sweeper、Run 事件和最小查询 UI。
 - 仅在 dev 为测试用户打开 AGENT_GROUP_DURABLE_RUNS。
 
-状态（2026-08-30）：Dev 代码与部署完成。服务端群组 `interrupt` 已接到真实 AgentRuntime 中断路径；Run 状态变更同步写入幂等事件流，恢复协调器可重放丢失回调、收敛超时并继续完成取消；Redis Stream worker 通过受保护的内部端点定时触发恢复扫描。群组 Header 已提供 Run / Node / Attempt / Event 查询与取消入口。`AGENT_GROUP_DURABLE_RUNS=1` 只写入忽略版本控制的 `.env.dev`，生产 compose 和生产开关未改。定向 Vitest、数据库 PGlite、项目 TypeScript、Worker bundle 与完整 SPA / Next 构建均通过；Dev 数据库迁移、app / worker health、恢复端点 200、未授权 401 和 TOC 200 已验证。M1 评审前仍需用 Dev 测试用户完成一次真实 Run → cancel、一次 app / worker 重启恢复和一次 timeout 演练，并对齐同一组 runId / operationId / Redis / DB 证据。
+状态（2026-08-31）：Dev 代码、部署和 `parallel_tasks` 真实恢复验收完成。Redis Stream 模式的内部成员回调改由 worker bearer 鉴权直投，不再依赖 QStash；取消会在请求内幂等终态化 supervisor 与全部 active member operation。真实 Dev 证据：`agr_HUYxYOPMquEK` 在 317 ms 内把 Run、2 Node、2 Attempt 和 3 个 operation 全部收敛为取消/中断终态；`agr_xRRyZU6mUWNh` 在 Redis pending 消息和 supervisor `waiting_for_async_tool` 两个时点重建 app / worker 后恢复完成，Attempt 始终只有 2 个且均为 attemptNo=1；`agr_HO8Ch2cttQrZ` 的 1000 ms watchdog 将 2 Node 收敛为 `failed + timeout`、2 Attempt 收敛为 `timed_out + timeout`。Attempt 的明确原因由迁移 `0155_charming_miracleman.sql` 持久化。PGlite 10 项、服务端定向 Vitest 216 项、项目 TypeScript、Worker bundle、Next build、Dev 迁移和容器 health 均通过。`AGENT_GROUP_DURABLE_RUNS=1` 仍只存在于忽略版本控制的 `.env.dev`，生产 compose 和生产开关未改。M1 评审仍需补 single / broadcast 的真实运行证据，并完成 Redis 短暂不可用与重复/乱序回调演练。
 
 完成这五个 PR 后再评审 M1，未通过恢复验收前不得开始异构 Agent 或 A2A 接入。
 

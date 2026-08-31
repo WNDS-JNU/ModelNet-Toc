@@ -1961,6 +1961,46 @@ describe('AgentRuntimeService', () => {
     });
   });
 
+  describe('ensureInterruptedOperationFinalized', () => {
+    it('completes the ordinary terminal lifecycle inline for a parked interrupted operation', async () => {
+      mockCoordinator.loadAgentState.mockResolvedValue({
+        operationId: 'op-parked',
+        status: 'interrupted',
+        stepCount: 4,
+      });
+      const emitSignalEvents = vi
+        .spyOn((service as any).completionLifecycle, 'emitSignalEvents')
+        .mockResolvedValue([]);
+      const dispatchHooks = vi
+        .spyOn((service as any).completionLifecycle, 'dispatchHooks')
+        .mockResolvedValue(undefined);
+
+      const result = await service.ensureInterruptedOperationFinalized('op-parked');
+
+      expect(result).toBe(true);
+      expect(emitSignalEvents).toHaveBeenCalledWith('op-parked', expect.any(Object), 'interrupted');
+      expect(dispatchHooks).toHaveBeenCalledWith('op-parked', expect.any(Object), 'interrupted');
+      expect(mockQueueService.scheduleMessage).not.toHaveBeenCalled();
+    });
+
+    it('converges the durable row directly when interrupted Redis state is gone', async () => {
+      mockCoordinator.loadAgentState.mockResolvedValue(null);
+      const recordCompletion = vi
+        .spyOn((service as any).agentOperationModel, 'recordCompletion')
+        .mockResolvedValue(true);
+
+      const result = await service.ensureInterruptedOperationFinalized('op-expired');
+
+      expect(result).toBe(true);
+      expect(recordCompletion).toHaveBeenCalledWith('op-expired', {
+        completedAt: expect.any(Date),
+        completionReason: 'interrupted',
+        status: 'interrupted',
+      });
+      expect(mockQueueService.scheduleMessage).not.toHaveBeenCalled();
+    });
+  });
+
   // Stream events at step / operation boundaries should carry the canonical
   // UIChatMessage[] snapshot so the client can use the pushed payload as
   // Source of Truth instead of refetching from DB.

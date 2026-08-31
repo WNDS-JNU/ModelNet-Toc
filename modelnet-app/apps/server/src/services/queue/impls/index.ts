@@ -14,6 +14,15 @@ export const isQueueAgentRuntimeEnabled = (): boolean => {
 };
 
 /**
+ * Check whether the self-hosted Redis Stream queue is the active runtime.
+ * Lifecycle control-flow webhooks use this to select the same delivery
+ * transport as agent steps instead of requiring QStash in self-hosted mode.
+ */
+export const isRedisStreamAgentRuntimeEnabled = (): boolean => {
+  return isQueueAgentRuntimeEnabled() && appEnv.agentRuntimeQueueProvider === 'redis-stream';
+};
+
+/**
  * Create queue service module
  *
  * When enableQueueAgentRuntime=true (AGENT_RUNTIME_MODE=queue):

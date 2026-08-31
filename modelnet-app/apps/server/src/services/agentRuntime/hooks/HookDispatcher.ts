@@ -3,7 +3,10 @@ import debug from 'debug';
 import urlJoin from 'url-join';
 
 import { OtelQstashClient } from '@/libs/qstash';
-import { isQueueAgentRuntimeEnabled } from '@/server/services/queue/impls';
+import {
+  isQueueAgentRuntimeEnabled,
+  isRedisStreamAgentRuntimeEnabled,
+} from '@/server/services/queue/impls';
 
 import type {
   AgentHook,
@@ -40,9 +43,19 @@ export async function deliverWebhook(
   const resolvedUrl = url.startsWith('http')
     ? url
     : urlJoin(process.env.INTERNAL_APP_URL || process.env.APP_URL || '', url);
+  const isInternalWebhook = !url.startsWith('http');
 
   if (delivery === 'qstash') {
     try {
+      if (isInternalWebhook && isRedisStreamAgentRuntimeEnabled()) {
+        const workerToken = process.env.AGENT_WORKER_TOKEN;
+        if (!workerToken) {
+          throw new Error(`AGENT_WORKER_TOKEN not available for internal webhook: ${url}`);
+        }
+        await fetchDeliver(resolvedUrl, payload, workerToken);
+        return;
+      }
+
       const qstashToken = process.env.QSTASH_TOKEN;
       if (!qstashToken) {
         if (fallback === 'none') {
@@ -77,10 +90,17 @@ export async function deliverWebhook(
   }
 }
 
-async function fetchDeliver(url: string, payload: Record<string, unknown>): Promise<void> {
+async function fetchDeliver(
+  url: string,
+  payload: Record<string, unknown>,
+  workerToken?: string,
+): Promise<void> {
   const res = await fetch(url, {
     body: JSON.stringify(payload),
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      ...(workerToken && { Authorization: `Bearer ${workerToken}` }),
+      'Content-Type': 'application/json',
+    },
     method: 'POST',
   });
   if (res.status < 200 || res.status >= 300) {

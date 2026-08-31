@@ -85,11 +85,11 @@ app.post('/gateway/desired-connections', gatewayDesiredConnections);
 // POST /api/agent/webhooks/bot-callback — agent step/completion webhooks (QStash)
 app.post('/webhooks/bot-callback', qstashAuth(), botCallback);
 
-// POST /api/agent/webhooks/subagent-callback — sub-agent completion bridge (QStash)
-app.post('/webhooks/subagent-callback', qstashAuth(), subAgentCallback);
+// POST /api/agent/webhooks/subagent-callback — sub-agent completion bridge (queue delivery)
+app.post('/webhooks/subagent-callback', queueWorkerOrQstashAuth(), subAgentCallback);
 
-// POST /api/agent/webhooks/group-member-callback — group-action member bridge (QStash)
-app.post('/webhooks/group-member-callback', qstashAuth(), groupMemberCallback);
+// POST /api/agent/webhooks/group-member-callback — group-action member bridge (queue delivery)
+app.post('/webhooks/group-member-callback', queueWorkerOrQstashAuth(), groupMemberCallback);
 
 // POST /api/agent/webhooks/:platform[/:appId] — Chat SDK bot platform webhooks
 app.post('/webhooks/:platform/:appId?', platformWebhook);
