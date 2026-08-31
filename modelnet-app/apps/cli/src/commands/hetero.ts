@@ -18,6 +18,7 @@ import type {
   AgentImageSource,
   AgentPromptInput,
   AgentStreamEvent,
+  HeterogeneousPermissionProfile,
   UploadHeterogeneousImage,
 } from '@lobechat/heterogeneous-agents/spawn';
 import {
@@ -95,6 +96,7 @@ interface ExecOptions {
   mode?: string;
   model?: string;
   operationId?: string;
+  permissionProfile?: HeterogeneousPermissionProfile;
   prompt?: string;
   /**
    * When set, persist the agent process's RAW stdout/stderr (pre-adapter
@@ -381,6 +383,10 @@ const exec = async (options: ExecOptions): Promise<void> => {
     log.error(
       `Unsupported --type "${options.type}". Supported: ${[...SUPPORTED_AGENT_TYPES].join(', ')}`,
     );
+    process.exit(2);
+  }
+  if (options.permissionProfile && options.permissionProfile !== 'read-only') {
+    log.error(`Unsupported --permission-profile "${options.permissionProfile}".`);
     process.exit(2);
   }
 
@@ -852,6 +858,7 @@ const exec = async (options: ExecOptions): Promise<void> => {
       includePartialMessages: options.type === 'claude-code',
       initialModel: options.type === 'trae' ? options.model : undefined,
       operationId,
+      permissionProfile: options.permissionProfile,
       prompt: resolved.prompt,
       resumeSessionId: options.resume,
       uploadImage,
@@ -887,6 +894,7 @@ const exec = async (options: ExecOptions): Promise<void> => {
         includePartialMessages: options.type === 'claude-code',
         initialModel: options.type === 'trae' ? options.model : undefined,
         operationId,
+        permissionProfile: options.permissionProfile,
         prompt: resolved.resumeFallbackPrompt ?? resolved.prompt,
         uploadImage,
         // No resumeSessionId — start fresh
@@ -1006,6 +1014,10 @@ export function registerHeteroCommand(program: Command) {
     .option('--mode <mode>', 'Forward a resolved Amp agent mode selection to the agent CLI')
     .option('--model <model>', 'Forward a resolved model selection to the agent CLI')
     .option('--effort <level>', 'Forward a resolved reasoning effort selection to the agent CLI')
+    .option(
+      '--permission-profile <profile>',
+      'Enforce a host permission ceiling for orchestrated runs (read-only)',
+    )
     .option(
       '--speed <mode>',
       'Forward a resolved speed selection to the agent CLI (codex only; `fast` requests the Fast service tier)',

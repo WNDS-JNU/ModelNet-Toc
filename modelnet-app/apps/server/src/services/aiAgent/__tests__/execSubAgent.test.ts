@@ -167,8 +167,85 @@ describe('AiAgentService.execSubAgent', () => {
 
       expect(execAgentSpy).toHaveBeenCalledWith(
         expect.objectContaining({
+          disableTools: true,
           parentOperationId: 'parent-op-1',
           topicStartOwnerOperationId: 'parent-op-1',
+          userInterventionConfig: { approvalMode: 'headless' },
+        }),
+      );
+    });
+
+    it('requires manual intervention when shared-session group tools are enabled', async () => {
+      const execAgentSpy = vi.spyOn(service, 'execAgent').mockResolvedValue({
+        agentId: 'agent-1',
+        assistantMessageId: 'assistant-msg-1',
+        autoStarted: true,
+        createdAt: new Date().toISOString(),
+        message: 'Agent operation created successfully',
+        messageId: 'queue-msg-1',
+        operationId: 'op-123',
+        status: 'created',
+        success: true,
+        timestamp: new Date().toISOString(),
+        topicId: 'topic-1',
+        userMessageId: 'user-msg-1',
+      });
+
+      await service.execGroupMember({
+        agentId: 'agent-1',
+        anchorMessageId: 'anchor-msg-1',
+        expectedMembers: 1,
+        groupId: 'group-1',
+        groupToolMessageId: 'tool-msg-1',
+        instruction: 'Use only approved tools',
+        mode: 'in_group',
+        onComplete: 'finish',
+        parentOperationId: 'parent-op-1',
+        supervisorMessageId: 'supervisor-msg-1',
+        topicId: 'topic-1',
+      });
+
+      expect(execAgentSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userInterventionConfig: { approvalMode: 'manual' },
+        }),
+      );
+    });
+
+    it('forwards the hard tool disable into isolated group execution', async () => {
+      const execAgentSpy = vi.spyOn(service, 'execAgent').mockResolvedValue({
+        agentId: 'agent-1',
+        assistantMessageId: 'assistant-msg-1',
+        autoStarted: true,
+        createdAt: new Date().toISOString(),
+        message: 'Agent operation created successfully',
+        messageId: 'queue-msg-1',
+        operationId: 'op-123',
+        status: 'created',
+        success: true,
+        timestamp: new Date().toISOString(),
+        topicId: 'topic-1',
+        userMessageId: 'user-msg-1',
+      });
+
+      await service.execGroupMember({
+        agentId: 'agent-1',
+        anchorMessageId: 'anchor-msg-1',
+        disableTools: true,
+        expectedMembers: 1,
+        groupId: 'group-1',
+        groupToolMessageId: 'tool-msg-1',
+        instruction: 'Return a tool-free result',
+        mode: 'isolated',
+        onComplete: 'finish',
+        parentOperationId: 'parent-op-1',
+        topicId: 'topic-1',
+      });
+
+      expect(execAgentSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          disableTools: true,
+          userInterventionConfig: { approvalMode: 'headless' },
         }),
       );
     });

@@ -2916,7 +2916,7 @@ export class AiAgentService {
         runAttachments.imageList && runAttachments.imageList.length > 0
           ? runAttachments.imageList.map((image) => ({ id: image.id, url: image.url }))
           : undefined;
-      const heteroExecArgs = isLocalHeterogeneousType(heteroType)
+      const configuredHeteroExecArgs = isLocalHeterogeneousType(heteroType)
         ? buildHeteroExecArgs(
             heterogeneousProvider?.type === heteroType
               ? applyTopicModelToHeterogeneousProvider(
@@ -2926,6 +2926,10 @@ export class AiAgentService {
               : { type: heteroType },
           )
         : undefined;
+      const heteroExecArgs =
+        params.disableTools && isLocalHeterogeneousType(heteroType)
+          ? [...(configuredHeteroExecArgs ?? []), '--permission-profile', 'read-only']
+          : configuredHeteroExecArgs;
 
       const heteroParams = {
         agentType: heteroType,
@@ -5690,6 +5694,7 @@ export class AiAgentService {
               parentOperationId: params.parentOperationId,
               threadId,
             }),
+          disableTools: params.disableTools,
           isSubAgent: true,
           logScope: 'execVirtualSubAgent',
           // Tag the op as a group member so the abandon path routes its parent
@@ -5698,6 +5703,9 @@ export class AiAgentService {
           onOperationPrepared,
           resumeParentOnComplete: true,
           runtimeKind,
+          userInterventionConfig: {
+            approvalMode: params.disableTools ? 'headless' : 'manual',
+          },
         },
       );
 
@@ -5859,7 +5867,9 @@ export class AiAgentService {
       suppressUserMessage: true,
       topicStartOwnerOperationId: parentOperationId,
       trigger: inheritedTrigger,
-      userInterventionConfig: { approvalMode: 'headless' },
+      userInterventionConfig: {
+        approvalMode: disableTools ? 'headless' : 'manual',
+      },
     });
 
     log(
@@ -5891,6 +5901,8 @@ export class AiAgentService {
        * Only set by the callSubAgent path.
        */
       chatConfig?: Partial<LobeAgentChatConfig> | null;
+      /** Group-level hard disable forwarded into the member's real execution. */
+      disableTools?: boolean;
       isSubAgent: boolean;
       logScope: 'execSubAgent' | 'execVirtualSubAgent';
       /**
@@ -5913,6 +5925,8 @@ export class AiAgentService {
       onOperationPrepared?: ExecGroupMemberParams['onOperationPrepared'];
       resumeParentOnComplete?: boolean;
       runtimeKind?: 'normal' | 'heterogeneous';
+      /** Group members use manual approval so required tools reach AgentIntervention. */
+      userInterventionConfig?: InternalExecAgentParams['userInterventionConfig'];
     },
   ): Promise<ExecSubAgentResult> {
     const { groupId, topicId, parentMessageId, agentId, instruction, title, parentOperationId } =
@@ -6018,14 +6032,15 @@ export class AiAgentService {
       topicId,
     };
 
-    // 4. Delegate to execAgent with threadId in appContext and hooks
-    // The instruction will be created as user message in the Thread
-    // Use headless mode to skip human approval in async agent execution
+    // 4. Delegate to execAgent with threadId in appContext and hooks.
+    // Ordinary sub-agents keep the existing headless default. Group members
+    // provide a stricter policy: either no tools, or manual AgentIntervention.
     const result = await this.execAgent({
       agentId,
       appContext,
       autoStart: true,
       chatConfigOverride: options.chatConfig,
+      disableTools: options.disableTools,
       hooks,
       // Explicit sub-agent model override resolved at the spawn site.
       model: options.model,
@@ -6044,7 +6059,7 @@ export class AiAgentService {
       prompt: instruction,
       provider: options.provider,
       trigger: inheritedTrigger,
-      userInterventionConfig: { approvalMode: 'headless' },
+      userInterventionConfig: options.userInterventionConfig ?? { approvalMode: 'headless' },
     });
 
     log(

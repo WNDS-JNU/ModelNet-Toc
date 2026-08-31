@@ -530,6 +530,26 @@ describe('AiAgentService.execAgent - hetero early-exit file attachments', () => 
     );
   });
 
+  it('should append the read-only permission profile for tool-disabled Codex runs', async () => {
+    heteroAgentConfig.model = 'codex';
+    heteroAgentConfig.provider = 'codex';
+    heteroAgentConfig.agencyConfig.heterogeneousProvider = {
+      type: 'codex',
+    } as any;
+
+    await service.execAgent({
+      agentId: 'agent-1',
+      disableTools: true,
+      prompt: 'Review without making changes',
+    });
+
+    expect(mockSpawnHeteroSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        args: ['--permission-profile', 'read-only'],
+      }),
+    );
+  });
+
   it('reserves cloud conversation history for a retry without native resume', async () => {
     mockGetHeterogeneousResumeSessionId.mockResolvedValue('cloud-session-existing');
     mockMessageQuery.mockResolvedValue([

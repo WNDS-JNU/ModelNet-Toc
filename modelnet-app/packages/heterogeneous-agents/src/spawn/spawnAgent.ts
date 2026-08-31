@@ -17,6 +17,8 @@ import { buildAgentInput } from './input';
 import { buildTraeAcpPrompt, TraeAcpSession } from './traeAcpSession';
 import { assertSpawnableWorkingDirectory } from './workingDirectory';
 
+export type HeterogeneousPermissionProfile = 'read-only';
+
 export interface SpawnAgentOptions {
   /** Registered local heterogeneous-agent type key. */
   agentType: string;
@@ -65,6 +67,8 @@ export interface SpawnAgentOptions {
    * events still carry the conventional shape.
    */
   operationId: string;
+  /** Host-enforced permission ceiling for orchestrated runs. */
+  permissionProfile?: HeterogeneousPermissionProfile;
   /**
    * User prompt. A plain string is sugar for a single text block; the array
    * form supports mixed text + image content blocks (URL / path / base64).
@@ -231,23 +235,111 @@ interface BuildSpawnArgsParams {
   includePartialMessages: boolean;
   /** Per-agent input args produced by `buildAgentInput` (e.g. Codex `--image`). */
   inputArgs: string[];
+  /** Host-enforced permission ceiling for orchestrated runs. */
+  permissionProfile: HeterogeneousPermissionProfile | undefined;
   /** Native session id for resume; undefined for fresh runs. */
   resumeSessionId: string | undefined;
 }
+
+const stripCliOptions = (
+  args: string[],
+  valueFlags: readonly string[],
+  booleanFlags: readonly string[],
+): string[] => {
+  const result: string[] = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (booleanFlags.some((flag) => arg === flag || arg.startsWith(`${flag}=`))) continue;
+    if (valueFlags.includes(arg)) {
+      index += 1;
+      continue;
+    }
+    if (valueFlags.some((flag) => arg.startsWith(`${flag}=`))) continue;
+    result.push(arg);
+  }
+
+  return result;
+};
+
+const sanitizeClaudeReadOnlyArgs = (args: string[]): string[] =>
+  stripCliOptions(
+    args,
+    ['--add-dir', '--allowed-tools', '--allowedTools', '--permission-mode', '--tools'],
+    ['--dangerously-skip-permissions'],
+  );
+
+const SAFE_CODEX_READ_ONLY_CONFIG_KEYS = new Set([
+  'model',
+  'model_reasoning_effort',
+  'service_tier',
+]);
+
+const isSafeCodexReadOnlyConfig = (assignment: string): boolean => {
+  const separator = assignment.indexOf('=');
+  if (separator < 1) return false;
+  return SAFE_CODEX_READ_ONLY_CONFIG_KEYS.has(assignment.slice(0, separator).trim());
+};
+
+const sanitizeCodexReadOnlyArgs = (args: string[]): string[] => {
+  const stripped = stripCliOptions(
+    args,
+    ['--add-dir', '--cd', '--profile', '--sandbox', '-C', '-p', '-s'],
+    [
+      '--approve-for-me',
+      '--dangerously-bypass-approvals-and-sandbox',
+      '--dangerously-bypass-hook-trust',
+      '--full-auto',
+    ],
+  );
+  const result: string[] = [];
+
+  for (let index = 0; index < stripped.length; index += 1) {
+    const arg = stripped[index]!;
+    if (arg === '-c' || arg === '--config') {
+      const assignment = stripped[index + 1];
+      index += 1;
+      if (assignment && isSafeCodexReadOnlyConfig(assignment)) {
+        result.push(arg, assignment);
+      }
+      continue;
+    }
+    const configPrefix = arg.startsWith('-c=')
+      ? '-c='
+      : arg.startsWith('--config=')
+        ? '--config='
+        : '';
+    if (configPrefix) {
+      const assignment = arg.slice(configPrefix.length);
+      if (isSafeCodexReadOnlyConfig(assignment)) result.push(arg);
+      continue;
+    }
+    result.push(arg);
+  }
+
+  return result;
+};
 
 const buildClaudeCodeArgs = ({
   extraArgs,
   includePartialMessages,
   inputArgs,
+  permissionProfile,
   resumeSessionId,
-}: BuildSpawnArgsParams) => [
-  ...CLAUDE_CODE_BASE_ARGS,
-  ...(includePartialMessages ? ['--include-partial-messages'] : []),
-  ...CLAUDE_CODE_PERMISSION_ARGS(),
-  ...(resumeSessionId ? ['--resume', resumeSessionId] : []),
-  ...inputArgs,
-  ...extraArgs,
-];
+}: BuildSpawnArgsParams) => {
+  const readOnly = permissionProfile === 'read-only';
+  const safeExtraArgs = readOnly ? sanitizeClaudeReadOnlyArgs(extraArgs) : extraArgs;
+
+  return [
+    ...CLAUDE_CODE_BASE_ARGS,
+    ...(includePartialMessages ? ['--include-partial-messages'] : []),
+    ...(!readOnly ? CLAUDE_CODE_PERMISSION_ARGS() : []),
+    ...(resumeSessionId ? ['--resume', resumeSessionId] : []),
+    ...inputArgs,
+    ...safeExtraArgs,
+    ...(readOnly ? ['--permission-mode', 'plan'] : []),
+  ];
+};
 
 const buildCodeBuddyArgs = ({
   extraArgs,
@@ -264,11 +356,20 @@ const buildCodeBuddyArgs = ({
   ...extraArgs,
 ];
 
-const buildCodexArgs = ({ extraArgs, inputArgs, resumeSessionId }: BuildSpawnArgsParams) => {
-  const executionModeArgs = hasAnyFlag(extraArgs, CODEX_EXECUTION_MODE_FLAGS)
-    ? []
-    : [...CODEX_DEFAULT_EXECUTION_ARGS];
-  const optionArgs = [...CODEX_REQUIRED_ARGS, ...executionModeArgs, ...inputArgs, ...extraArgs];
+const buildCodexArgs = ({
+  extraArgs,
+  inputArgs,
+  permissionProfile,
+  resumeSessionId,
+}: BuildSpawnArgsParams) => {
+  const readOnly = permissionProfile === 'read-only';
+  const safeExtraArgs = readOnly ? sanitizeCodexReadOnlyArgs(extraArgs) : extraArgs;
+  const executionModeArgs = readOnly
+    ? ['--ignore-user-config', '--sandbox', 'read-only']
+    : hasAnyFlag(safeExtraArgs, CODEX_EXECUTION_MODE_FLAGS)
+      ? []
+      : [...CODEX_DEFAULT_EXECUTION_ARGS];
+  const optionArgs = [...CODEX_REQUIRED_ARGS, ...executionModeArgs, ...inputArgs, ...safeExtraArgs];
 
   return resumeSessionId
     ? ['exec', 'resume', ...optionArgs, resumeSessionId, '-']
@@ -577,6 +678,15 @@ const spawnCursorAcpAgent = async (
  * failed image fetch surfaces before the child starts.
  */
 export const spawnAgent = async (options: SpawnAgentOptions): Promise<SpawnAgentHandle> => {
+  if (
+    options.permissionProfile === 'read-only' &&
+    options.agentType !== 'claude-code' &&
+    options.agentType !== 'codex'
+  ) {
+    throw new Error(
+      `spawnAgent: read-only permission profile is not enforceable for agent type "${options.agentType}"`,
+    );
+  }
   if (options.agentType === 'trae') return spawnTraeAcpAgent(options);
 
   const command = resolveHeterogeneousAgentCommand(options.agentType, options.command);
@@ -595,6 +705,7 @@ export const spawnAgent = async (options: SpawnAgentOptions): Promise<SpawnAgent
     extraArgs: options.extraArgs ?? [],
     includePartialMessages: options.includePartialMessages ?? false,
     inputArgs: inputPlan.args,
+    permissionProfile: options.permissionProfile,
     resumeSessionId: options.resumeSessionId,
   });
   const childEnv = {

@@ -383,6 +383,25 @@ describe('spawnAgent', () => {
     for (const event of events) expect(event.operationId).toBe('op-1');
   });
 
+  it('forces Claude Code into plan mode for the read-only permission profile', async () => {
+    nextFakeProc = createFakeProc().proc;
+    const { spawnAgent } = await import('./spawnAgent');
+    await spawnAgent({
+      agentType: 'claude-code',
+      extraArgs: ['--permission-mode', 'bypassPermissions', '--allowed-tools', 'Bash,Write,Edit'],
+      operationId: 'op-read-only',
+      permissionProfile: 'read-only',
+      prompt: 'review only',
+    });
+
+    const { args } = spawnCalls[0];
+    const permissionIndex = args.lastIndexOf('--permission-mode');
+    expect(args[permissionIndex + 1]).toBe('plan');
+    expect(args).not.toContain('bypassPermissions');
+    expect(args).not.toContain('--allowed-tools');
+    expect(args).not.toContain('Bash,Write,Edit');
+  });
+
   it('runs Grok Build through ACP and exposes its native session to CLI callers', async () => {
     const fake = createGrokAcpProc();
     nextFakeProc = fake.proc;
@@ -938,6 +957,53 @@ describe('spawnAgent', () => {
     expect(args).toContain('--skip-git-repo-check');
     expect(args).toContain('--dangerously-bypass-approvals-and-sandbox');
     expect(args).not.toContain('--full-auto');
+  });
+
+  it('forces Codex into a read-only sandbox and strips permission broadening overrides', async () => {
+    nextFakeProc = createFakeProc().proc;
+    const { spawnAgent } = await import('./spawnAgent');
+    await spawnAgent({
+      agentType: 'codex',
+      extraArgs: [
+        '--dangerously-bypass-approvals-and-sandbox',
+        '--sandbox',
+        'danger-full-access',
+        '--add-dir',
+        '/tmp/writable',
+        '-c',
+        'sandbox_permissions=["disk-full-read-access"]',
+        '-c',
+        'model="gpt-5.5"',
+      ],
+      operationId: 'op-read-only',
+      permissionProfile: 'read-only',
+      prompt: 'review only',
+    });
+
+    const { args } = spawnCalls[0];
+    const sandboxIndex = args.indexOf('--sandbox');
+    expect(args[sandboxIndex + 1]).toBe('read-only');
+    expect(args).toContain('--ignore-user-config');
+    expect(args).toContain('model="gpt-5.5"');
+    expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
+    expect(args).not.toContain('danger-full-access');
+    expect(args).not.toContain('--add-dir');
+    expect(args).not.toContain('/tmp/writable');
+    expect(args).not.toContain('sandbox_permissions=["disk-full-read-access"]');
+  });
+
+  it('rejects read-only orchestration for runtimes without an enforceable profile', async () => {
+    const { spawnAgent } = await import('./spawnAgent');
+
+    await expect(
+      spawnAgent({
+        agentType: 'amp',
+        operationId: 'op-read-only',
+        permissionProfile: 'read-only',
+        prompt: 'review only',
+      }),
+    ).rejects.toThrow('read-only permission profile is not enforceable');
+    expect(spawnCalls).toHaveLength(0);
   });
 
   it('does not add the default codex execution mode when extraArgs already choose one', async () => {
