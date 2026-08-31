@@ -1,6 +1,6 @@
 # ModelNet Agent 级协作互联总体实施计划
 
-> 状态：实施中（M1、M2 已通过 Dev 评审；M3 pipeline 持久状态机第一片完成，下一步接入 ready-node 调度与结构化交接）
+> 状态：实施中（M1、M2 已通过 Dev 评审；M3 pipeline ready-node 原子认领已完成，下一步接入持久队列派发与摘要 / Work 交接）
 > 版本：V2.0
 > 重构日期：2026-08-30
 > 代码基线：4A100，/home/duxianghe/ModelNet-toc，33190eda5f
@@ -450,6 +450,8 @@ A2A 是 Member Dispatcher 的外部执行 Adapter，不是 Router 协议，也�
 退出条件：中途重启、单节点失败和人工暂停均不会破坏协议顺序或重复下游执行。
 
 状态（2026-08-31，M3 pipeline 状态机第一片）：复用既有不可变 `planSnapshot`、Node `dependencies` 和无环校验，不新增表。`pipeline` 根节点创建时持久为 `ready`，其余节点保持 `pending`；Attempt 只允许从已就绪节点启动。节点成功后仅当全部必需依赖为 `completed / skipped` 才解锁下游，失败或取消会把未启动后代递归持久为 `blocked + dependency_failed`，Run 以失败收敛。显式重试成功后，原先因依赖失败而 blocked 的节点会按 DAG 顺序逐层恢复为 `ready`。依赖投影推进前对 Run 行加锁，避免多个上游并发完成时各自看不到对方提交、导致汇合节点永久停在 pending；事件写入和终态投影继续保持幂等。PGlite 与一次性隔离 Dev PostgreSQL 的 `agentGroupRun` 定向测试均为 18 项通过，定向 ESLint 和项目 TypeScript 通过，覆盖双根汇合、并发汇合、提前启动拒绝、递归阻断、重试恢复和跨 Model 实例读取；测试数据库已删除。v18 Dev 镜像构建在读取 `node:24-slim` 元数据时被当前 Docker mirror 的 403 阻断，未生成镜像也未替换容器；现有 v17 app / worker 继续 healthy，3181 / 3192 / 3193 均为 200。当前第一片只闭合持久状态机；下一片接入 ready-node 的原子认领 / 持久派发、重启恢复和结构化上游摘要 / Work 引用，`createWorkflow` 仍保持“草案—用户确认—创建运行”门禁，生产未推广。
+
+状态续（2026-08-31，M3 ready-node 调度第二片前半）：迁移 `0156_agent_group_run_dispatch_claims` 为 pipeline Node 增加完整的短租约三元组（claim id / claimed at / expires at）、完整性约束和调度索引。认领与依赖推进共同在 Run 行上串行化：活租约不会重复派发，过期租约用新 fencing token 接管并写入 `node.dispatch_lease_expired` 事件，旧 worker 无法释放或提交新 Attempt；`createClaimedAttempt` 只允许当前 token 在首次 queue 之前把 Node 原子推进为 running，重复 prepared 回调按 operationId 幂等返回。claim 同时返回直接上游的 node / Attempt / operation / runtime / external execution 引用，为后续摘要和 Work 查询提供结构化、非正文交接边界。PGlite 与一次性隔离 Dev PostgreSQL 的定向测试均为 22 项通过，覆盖并发只产生一个 winner、活租约跳过、到期接管、旧 token fencing、prepared 重放、租约释放和上游引用；项目 TypeScript 通过，测试数据库已删除，生产未触碰。当前尚未把 pipeline claim 接到 `execGroupMember` 的稳定 Redis dedupe / queue ACK 和恢复补投，也尚未持久化最终摘要 / WorkVersion 引用；这是下一片，`createWorkflow` 的用户确认门禁保持不变。
 
 ### 阶段 6：Work、Verify 与隔离代码协作
 

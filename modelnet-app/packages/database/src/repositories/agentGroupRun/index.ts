@@ -1,11 +1,14 @@
 import {
   AgentGroupRunModel,
   type AgentGroupRunSnapshot,
+  type ClaimReadyAgentGroupRunNodesParams,
   type CompleteAgentGroupRunAttemptParams,
   type CreateAgentGroupRunAttemptParams,
   type CreateAgentGroupRunParams,
+  type CreateClaimedAgentGroupRunAttemptParams,
   type FailAgentGroupRunNodeStartParams,
   type ParkAgentGroupRunAttemptParams,
+  type ReleaseAgentGroupRunDispatchClaimParams,
   type StartAgentGroupRunNodeRetryParams,
 } from '../../models/agentGroupRun';
 import { ChatGroupModel } from '../../models/chatGroup';
@@ -34,6 +37,12 @@ export class AgentGroupRunRepository {
   }
 
   createAttempt = (params: CreateAgentGroupRunAttemptParams) => this.runModel.createAttempt(params);
+
+  createClaimedAttempt = (params: CreateClaimedAgentGroupRunAttemptParams) =>
+    this.runModel.createClaimedAttempt(params);
+
+  claimReadyNodes = (params: ClaimReadyAgentGroupRunNodesParams, now?: Date) =>
+    this.runModel.claimReadyNodes(params, now);
 
   completeAttempt = (params: CompleteAgentGroupRunAttemptParams) =>
     this.runModel.completeAttempt(params);
@@ -68,6 +77,9 @@ export class AgentGroupRunRepository {
     this.runModel.listByChatGroup(chatGroupId, limit);
 
   pauseAtBarrier = (runId: string) => this.runModel.pauseAtBarrier(runId);
+
+  releaseDispatchClaim = (params: ReleaseAgentGroupRunDispatchClaimParams) =>
+    this.runModel.releaseDispatchClaim(params);
 
   resumeFromBarrier = (runId: string) => this.runModel.resumeFromBarrier(runId);
 

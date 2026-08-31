@@ -1,0 +1,5 @@
+ALTER TABLE "agent_group_run_nodes" ADD COLUMN "dispatch_claim_id" uuid;--> statement-breakpoint
+ALTER TABLE "agent_group_run_nodes" ADD COLUMN "dispatch_claimed_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "agent_group_run_nodes" ADD COLUMN "dispatch_claim_expires_at" timestamp with time zone;--> statement-breakpoint
+CREATE INDEX "agent_group_run_nodes_dispatch_idx" ON "agent_group_run_nodes" USING btree ("run_id","status","dispatch_claim_expires_at","sort_order");--> statement-breakpoint
+ALTER TABLE "agent_group_run_nodes" ADD CONSTRAINT "agent_group_run_nodes_dispatch_claim_complete" CHECK (("agent_group_run_nodes"."dispatch_claim_id" IS NULL AND "agent_group_run_nodes"."dispatch_claimed_at" IS NULL AND "agent_group_run_nodes"."dispatch_claim_expires_at" IS NULL) OR ("agent_group_run_nodes"."dispatch_claim_id" IS NOT NULL AND "agent_group_run_nodes"."dispatch_claimed_at" IS NOT NULL AND "agent_group_run_nodes"."dispatch_claim_expires_at" IS NOT NULL));

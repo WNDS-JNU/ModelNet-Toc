@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type {
   AgentGroupRunAttemptStatus,
   AgentGroupRunBudgetSnapshot,
@@ -24,6 +26,8 @@ import { buildWorkspacePayload, buildWorkspaceWhere } from '../utils/workspace';
 export const AGENT_GROUP_RUN_NOT_FOUND = 'AGENT_GROUP_RUN_NOT_FOUND';
 export const AGENT_GROUP_RUN_IDEMPOTENCY_CONFLICT = 'AGENT_GROUP_RUN_IDEMPOTENCY_CONFLICT';
 export const AGENT_GROUP_RUN_OPERATION_MISMATCH = 'AGENT_GROUP_RUN_OPERATION_MISMATCH';
+export const AGENT_GROUP_RUN_DISPATCH_CLAIM_CONFLICT = 'AGENT_GROUP_RUN_DISPATCH_CLAIM_CONFLICT';
+export const AGENT_GROUP_RUN_DISPATCH_CLAIM_INVALID = 'AGENT_GROUP_RUN_DISPATCH_CLAIM_INVALID';
 export const AGENT_GROUP_RUN_NODE_NOT_READY = 'AGENT_GROUP_RUN_NODE_NOT_READY';
 export const AGENT_GROUP_RUN_RETRY_LIMIT_EXCEEDED = 'AGENT_GROUP_RUN_RETRY_LIMIT_EXCEEDED';
 export const AGENT_GROUP_RUN_RETRY_NOT_ALLOWED = 'AGENT_GROUP_RUN_RETRY_NOT_ALLOWED';
@@ -52,6 +56,41 @@ export interface CreateAgentGroupRunAttemptParams {
   operationId: string;
   runNodeId: string;
   runtimeKind: AgentGroupRunRuntimeKind;
+}
+
+export interface CreateClaimedAgentGroupRunAttemptParams extends CreateAgentGroupRunAttemptParams {
+  dispatchClaimId: string;
+}
+
+export interface ClaimReadyAgentGroupRunNodesParams {
+  leaseDurationMs: number;
+  limit?: number;
+  runId: string;
+}
+
+export interface AgentGroupRunUpstreamRef {
+  attemptNo: number;
+  completionReason: string | null;
+  externalExecutionRef: AgentGroupRunExternalExecutionRef | null;
+  nodeKey: string;
+  operationId: string;
+  runNodeId: string;
+  runtimeKind: AgentGroupRunRuntimeKind;
+}
+
+export interface AgentGroupRunDispatchClaim {
+  attemptNo: number;
+  claimedAt: Date;
+  claimId: string;
+  expiresAt: Date;
+  node: typeof agentGroupRunNodes.$inferSelect;
+  upstream: AgentGroupRunUpstreamRef[];
+}
+
+export interface ReleaseAgentGroupRunDispatchClaimParams {
+  claimId: string;
+  reason: string;
+  runNodeId: string;
 }
 
 export interface CompleteAgentGroupRunAttemptParams extends CreateAgentGroupRunAttemptParams {
@@ -113,6 +152,8 @@ const RETRYABLE_NODE_STATUSES: AgentGroupRunNodeStatus[] = [
 const BLOCKING_DEPENDENCY_STATUSES: AgentGroupRunNodeStatus[] = ['blocked', 'cancelled', 'failed'];
 const TERMINAL_RUN_STATUSES = ['cancelled', 'completed', 'failed'] as const;
 const ACTIVE_ATTEMPT_STATUSES: AgentGroupRunAttemptStatus[] = ['pending', 'running', 'waiting'];
+export const AGENT_GROUP_RUN_DISPATCH_LEASE_MIN_MS = 1_000;
+export const AGENT_GROUP_RUN_DISPATCH_LEASE_MAX_MS = 15 * 60_000;
 
 /** Internal, owner-agnostic scan used only by the trusted recovery worker. */
 export const listRecoverableAgentGroupRuns = async (
@@ -178,6 +219,8 @@ export class AgentGroupRunModel {
       .select({
         agentId: agentGroupRunNodes.agentId,
         chatGroupId: agentGroupRuns.chatGroupId,
+        dispatchClaimExpiresAt: agentGroupRunNodes.dispatchClaimExpiresAt,
+        dispatchClaimId: agentGroupRunNodes.dispatchClaimId,
         id: agentGroupRunNodes.id,
         maxAttempts: agentGroupRunNodes.maxAttempts,
         protocol: agentGroupRuns.protocol,
@@ -198,7 +241,7 @@ export class AgentGroupRunModel {
   private ensureAttempt = async (
     tx: Transaction,
     params: CreateAgentGroupRunAttemptParams,
-    options: { allowTerminalNode?: boolean } = {},
+    options: { allowTerminalNode?: boolean; dispatchClaimId?: string } = {},
   ): Promise<{
     attempt: typeof agentGroupRunAttempts.$inferSelect;
     node: Awaited<ReturnType<AgentGroupRunModel['loadAccessibleNode']>>;
@@ -241,6 +284,10 @@ export class AgentGroupRunModel {
       .limit(1);
     if (existingByOperation) return { attempt: validateIdentity(existingByOperation), node };
 
+    if (options.dispatchClaimId && node.dispatchClaimId !== options.dispatchClaimId) {
+      throw new Error(AGENT_GROUP_RUN_DISPATCH_CLAIM_CONFLICT);
+    }
+
     if (
       !options.allowTerminalNode &&
       node.protocol === 'pipeline' &&
@@ -277,6 +324,171 @@ export class AgentGroupRunModel {
 
     return { attempt: validateIdentity(winner), node };
   };
+
+  /**
+   * Atomically lease ready pipeline nodes before creating any child operation.
+   *
+   * The Run row is the short serialization point shared with dependency
+   * advancement. A live lease is skipped; an expired lease is reclaimed with
+   * a new fencing token and an append-only recovery event. No transaction is
+   * held while the caller resolves an ExecutionPlan or publishes to Redis.
+   */
+  claimReadyNodes = async (
+    params: ClaimReadyAgentGroupRunNodesParams,
+    now = new Date(),
+  ): Promise<AgentGroupRunDispatchClaim[]> => {
+    const limit = params.limit ?? 16;
+    if (
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 100 ||
+      !Number.isSafeInteger(params.leaseDurationMs) ||
+      params.leaseDurationMs < AGENT_GROUP_RUN_DISPATCH_LEASE_MIN_MS ||
+      params.leaseDurationMs > AGENT_GROUP_RUN_DISPATCH_LEASE_MAX_MS ||
+      Number.isNaN(now.getTime())
+    ) {
+      throw new Error(AGENT_GROUP_RUN_DISPATCH_CLAIM_INVALID);
+    }
+
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ protocol: agentGroupRuns.protocol, status: agentGroupRuns.status })
+        .from(agentGroupRuns)
+        .innerJoin(chatGroups, eq(agentGroupRuns.chatGroupId, chatGroups.id))
+        .where(and(eq(agentGroupRuns.id, params.runId), this.groupAccess()))
+        .limit(1)
+        .for('update');
+      if (!row) throw new Error(AGENT_GROUP_RUN_NOT_FOUND);
+      if (row.protocol !== 'pipeline' || !['pending', 'running'].includes(row.status)) return [];
+
+      const nodes = await tx
+        .select()
+        .from(agentGroupRunNodes)
+        .where(eq(agentGroupRunNodes.runId, params.runId))
+        .orderBy(asc(agentGroupRunNodes.sortOrder), asc(agentGroupRunNodes.id));
+      const nodeByKey = new Map(nodes.map((node) => [node.nodeKey, node]));
+      const attempts =
+        nodes.length === 0
+          ? []
+          : await tx
+              .select()
+              .from(agentGroupRunAttempts)
+              .where(
+                inArray(
+                  agentGroupRunAttempts.runNodeId,
+                  nodes.map((node) => node.id),
+                ),
+              )
+              .orderBy(desc(agentGroupRunAttempts.attemptNo));
+      const latestAttemptByNode = new Map<string, typeof agentGroupRunAttempts.$inferSelect>();
+      for (const attempt of attempts) {
+        if (!latestAttemptByNode.has(attempt.runNodeId)) {
+          latestAttemptByNode.set(attempt.runNodeId, attempt);
+        }
+      }
+
+      const expiresAt = new Date(now.getTime() + params.leaseDurationMs);
+      const claims: AgentGroupRunDispatchClaim[] = [];
+      for (const node of nodes) {
+        if (claims.length >= limit) break;
+        if (node.status !== 'ready') continue;
+        if (node.dispatchClaimExpiresAt && node.dispatchClaimExpiresAt.getTime() > now.getTime()) {
+          continue;
+        }
+
+        const expiredClaimId = node.dispatchClaimId;
+        if (expiredClaimId) {
+          await this.recordEvent(tx, {
+            data: { claimId: expiredClaimId, expiredAt: node.dispatchClaimExpiresAt },
+            idempotencyKey: `node:${node.id}:dispatch-lease-expired:${expiredClaimId}`,
+            runId: params.runId,
+            runNodeId: node.id,
+            status: 'ready',
+            type: 'node.dispatch_lease_expired',
+          });
+        }
+
+        const claimId = randomUUID();
+        const [claimed] = await tx
+          .update(agentGroupRunNodes)
+          .set({
+            dispatchClaimedAt: now,
+            dispatchClaimExpiresAt: expiresAt,
+            dispatchClaimId: claimId,
+          })
+          .where(and(eq(agentGroupRunNodes.id, node.id), eq(agentGroupRunNodes.status, 'ready')))
+          .returning();
+        if (!claimed) continue;
+
+        const upstream = node.dependencies.flatMap((dependencyKey) => {
+          const dependency = nodeByKey.get(dependencyKey);
+          if (!dependency) return [];
+          const attempt = latestAttemptByNode.get(dependency.id);
+          if (!attempt || !TERMINAL_ATTEMPT_STATUSES.includes(attempt.status)) return [];
+          return [
+            {
+              attemptNo: attempt.attemptNo,
+              completionReason: attempt.completionReason,
+              externalExecutionRef: attempt.externalExecutionRef,
+              nodeKey: dependency.nodeKey,
+              operationId: attempt.operationId,
+              runNodeId: dependency.id,
+              runtimeKind: attempt.runtimeKind,
+            },
+          ];
+        });
+        const latestAttempt = latestAttemptByNode.get(node.id);
+        const attemptNo = (latestAttempt?.attemptNo ?? 0) + 1;
+
+        await this.recordEvent(tx, {
+          data: {
+            attemptNo,
+            claimId,
+            expiresAt,
+            upstreamOperationIds: upstream.map(({ operationId }) => operationId),
+          },
+          idempotencyKey: `node:${node.id}:dispatch-claimed:${claimId}`,
+          runId: params.runId,
+          runNodeId: node.id,
+          status: 'ready',
+          type: 'node.dispatch_claimed',
+        });
+        claims.push({ attemptNo, claimId, claimedAt: now, expiresAt, node: claimed, upstream });
+      }
+
+      return claims;
+    });
+  };
+
+  /** Release only the exact live dispatcher lease; stale workers are fenced. */
+  releaseDispatchClaim = async (
+    params: ReleaseAgentGroupRunDispatchClaimParams,
+  ): Promise<boolean> =>
+    this.db.transaction(async (tx) => {
+      const node = await this.loadAccessibleNode(tx, params.runNodeId);
+      const [released] = await tx
+        .update(agentGroupRunNodes)
+        .set({ dispatchClaimedAt: null, dispatchClaimExpiresAt: null, dispatchClaimId: null })
+        .where(
+          and(
+            eq(agentGroupRunNodes.id, node.id),
+            eq(agentGroupRunNodes.status, 'ready'),
+            eq(agentGroupRunNodes.dispatchClaimId, params.claimId),
+          ),
+        )
+        .returning({ id: agentGroupRunNodes.id });
+      if (!released) return false;
+
+      await this.recordEvent(tx, {
+        data: { claimId: params.claimId, reason: params.reason },
+        idempotencyKey: `node:${node.id}:dispatch-released:${params.claimId}`,
+        runId: node.runId,
+        runNodeId: node.id,
+        status: 'ready',
+        type: 'node.dispatch_released',
+      });
+      return true;
+    });
 
   /**
    * Advance the durable pipeline projection after one node transition.
@@ -327,7 +539,14 @@ export class AgentGroupRunModel {
         };
         const [updated] = await tx
           .update(agentGroupRunNodes)
-          .set({ completionReason: 'dependency_failed', error, status: 'blocked' })
+          .set({
+            completionReason: 'dependency_failed',
+            dispatchClaimedAt: null,
+            dispatchClaimExpiresAt: null,
+            dispatchClaimId: null,
+            error,
+            status: 'blocked',
+          })
           .where(
             and(
               eq(agentGroupRunNodes.id, node.id),
@@ -855,6 +1074,85 @@ export class AgentGroupRunModel {
     });
 
   /**
+   * Commit a leased pipeline dispatch only when the caller still owns the
+   * fencing token. Replayed prepared callbacks for the same operation remain
+   * idempotent after the lease fields have been cleared.
+   */
+  createClaimedAttempt = async (params: CreateClaimedAgentGroupRunAttemptParams) =>
+    this.db.transaction(async (tx) => {
+      const { dispatchClaimId, ...attemptParams } = params;
+      const { attempt, node } = await this.ensureAttempt(tx, attemptParams, {
+        dispatchClaimId,
+      });
+      if (TERMINAL_ATTEMPT_STATUSES.includes(attempt.status) || attempt.status === 'running') {
+        return attempt;
+      }
+
+      const startedAt = attempt.startedAt ?? new Date();
+      const [updated] = await tx
+        .update(agentGroupRunAttempts)
+        .set({ startedAt, status: 'running' })
+        .where(eq(agentGroupRunAttempts.id, attempt.id))
+        .returning();
+      const [committedNode] = await tx
+        .update(agentGroupRunNodes)
+        .set({
+          dispatchClaimedAt: null,
+          dispatchClaimExpiresAt: null,
+          dispatchClaimId: null,
+          status: 'running',
+        })
+        .where(
+          and(
+            eq(agentGroupRunNodes.id, node.id),
+            eq(agentGroupRunNodes.status, 'ready'),
+            eq(agentGroupRunNodes.dispatchClaimId, dispatchClaimId),
+          ),
+        )
+        .returning({ id: agentGroupRunNodes.id });
+      if (!committedNode) throw new Error(AGENT_GROUP_RUN_DISPATCH_CLAIM_CONFLICT);
+
+      await tx
+        .update(agentGroupRuns)
+        .set({ startedAt, status: 'running' })
+        .where(and(eq(agentGroupRuns.id, node.runId), eq(agentGroupRuns.status, 'pending')));
+      await this.recordEvent(tx, {
+        attemptId: updated.id,
+        data: { claimId: dispatchClaimId },
+        idempotencyKey: `node:${node.id}:dispatch-committed:${dispatchClaimId}`,
+        operationId: attemptParams.operationId,
+        runId: node.runId,
+        runNodeId: node.id,
+        status: 'running',
+        type: 'node.dispatch_committed',
+      });
+      await this.recordEvent(tx, {
+        attemptId: updated.id,
+        idempotencyKey: `attempt:${updated.id}:running`,
+        operationId: attemptParams.operationId,
+        runId: node.runId,
+        runNodeId: node.id,
+        status: 'running',
+        type: 'attempt.started',
+      });
+      await this.recordEvent(tx, {
+        idempotencyKey: `node:${node.id}:running`,
+        runId: node.runId,
+        runNodeId: node.id,
+        status: 'running',
+        type: 'node.started',
+      });
+      await this.recordEvent(tx, {
+        idempotencyKey: 'run:running',
+        runId: node.runId,
+        status: 'running',
+        type: 'run.started',
+      });
+
+      return updated;
+    });
+
+  /**
    * Project a member's durable human-intervention park into the collaboration
    * state machine. This is a gate, not a completion: the member anchor and the
    * supervisor barrier must remain untouched until a continuation reaches a
@@ -1063,6 +1361,9 @@ export class AgentGroupRunModel {
         .update(agentGroupRunNodes)
         .set({
           completionReason: params.completionReason,
+          dispatchClaimedAt: null,
+          dispatchClaimExpiresAt: null,
+          dispatchClaimId: null,
           error: params.error,
           status: nodeStatus,
         })
@@ -1135,7 +1436,14 @@ export class AgentGroupRunModel {
       const node = await this.loadAccessibleNode(tx, params.runNodeId);
       await tx
         .update(agentGroupRunNodes)
-        .set({ completionReason: 'start_failed', error: params.error, status: 'failed' })
+        .set({
+          completionReason: 'start_failed',
+          dispatchClaimedAt: null,
+          dispatchClaimExpiresAt: null,
+          dispatchClaimId: null,
+          error: params.error,
+          status: 'failed',
+        })
         .where(
           and(
             eq(agentGroupRunNodes.id, node.id),
@@ -1241,7 +1549,13 @@ export class AgentGroupRunModel {
       }
       await tx
         .update(agentGroupRunNodes)
-        .set({ completionReason: 'cancelled', status: 'cancelled' })
+        .set({
+          completionReason: 'cancelled',
+          dispatchClaimedAt: null,
+          dispatchClaimExpiresAt: null,
+          dispatchClaimId: null,
+          status: 'cancelled',
+        })
         .where(
           and(
             eq(agentGroupRunNodes.runId, runId),

@@ -7,9 +7,12 @@ import type {
 import { TRPCError } from '@trpc/server';
 
 import type {
+  ClaimReadyAgentGroupRunNodesParams,
   CompleteAgentGroupRunAttemptParams,
   CreateAgentGroupRunAttemptParams,
+  CreateClaimedAgentGroupRunAttemptParams,
   FailAgentGroupRunNodeStartParams,
+  ReleaseAgentGroupRunDispatchClaimParams,
   StartAgentGroupRunNodeRetryParams,
 } from '@/database/models/agentGroupRun';
 import { AgentGroupRunRepository } from '@/database/repositories/agentGroupRun';
@@ -84,6 +87,9 @@ export class AgentGroupCollaborationService {
   completeAttempt = (params: CompleteAgentGroupRunAttemptParams) =>
     this.repository.completeAttempt(params);
 
+  claimReadyNodes = (params: ClaimReadyAgentGroupRunNodesParams, now?: Date) =>
+    this.repository.claimReadyNodes(params, now);
+
   parkAttemptForIntervention = (params: CreateAgentGroupRunAttemptParams) =>
     this.repository.parkAttemptForIntervention(params);
 
@@ -91,6 +97,9 @@ export class AgentGroupCollaborationService {
 
   createAttempt = (params: CreateAgentGroupRunAttemptParams) =>
     this.repository.createAttempt(params);
+
+  createClaimedAttempt = (params: CreateClaimedAgentGroupRunAttemptParams) =>
+    this.repository.createClaimedAttempt(params);
 
   failNodeStart = (params: FailAgentGroupRunNodeStartParams) =>
     this.repository.failNodeStart(params);
@@ -106,6 +115,9 @@ export class AgentGroupCollaborationService {
   pauseAtBarrier = (runId: string) => this.repository.pauseAtBarrier(runId);
 
   resumeFromBarrier = (runId: string) => this.repository.resumeFromBarrier(runId);
+
+  releaseDispatchClaim = (params: ReleaseAgentGroupRunDispatchClaimParams) =>
+    this.repository.releaseDispatchClaim(params);
 
   isLatestAttempt = (
     params: Pick<CreateAgentGroupRunAttemptParams, 'attemptNo' | 'operationId' | 'runNodeId'>,

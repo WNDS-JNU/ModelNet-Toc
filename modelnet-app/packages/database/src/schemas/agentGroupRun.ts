@@ -121,6 +121,15 @@ export const agentGroupRunNodes = pgTable(
     status: text('status', { enum: agentGroupRunNodeStatuses }).default('pending').notNull(),
     completionReason: text('completion_reason'),
     error: jsonb('error').$type<AgentGroupRunError>(),
+    /**
+     * Short, fenced lease held while a durable dispatcher turns a `ready`
+     * pipeline node into an AgentOperation-backed Attempt. Keeping this on the
+     * node makes an App/worker restart observable without introducing a second
+     * queue fact or holding a database transaction across external dispatch.
+     */
+    dispatchClaimId: uuid('dispatch_claim_id'),
+    dispatchClaimedAt: timestamptz('dispatch_claimed_at'),
+    dispatchClaimExpiresAt: timestamptz('dispatch_claim_expires_at'),
     maxAttempts: integer('max_attempts').default(1).notNull(),
     timeoutMs: integer('timeout_ms'),
     createdAt: createdAt(),
@@ -129,12 +138,22 @@ export const agentGroupRunNodes = pgTable(
   (t) => [
     uniqueIndex('agent_group_run_nodes_run_key_unique').on(t.runId, t.nodeKey),
     index('agent_group_run_nodes_run_status_order_idx').on(t.runId, t.status, t.sortOrder),
+    index('agent_group_run_nodes_dispatch_idx').on(
+      t.runId,
+      t.status,
+      t.dispatchClaimExpiresAt,
+      t.sortOrder,
+    ),
     index('agent_group_run_nodes_agent_id_idx').on(t.agentId),
     check('agent_group_run_nodes_sort_order_nonnegative', sql`${t.sortOrder} >= 0`),
     check('agent_group_run_nodes_max_attempts_positive', sql`${t.maxAttempts} > 0`),
     check(
       'agent_group_run_nodes_timeout_positive',
       sql`${t.timeoutMs} IS NULL OR ${t.timeoutMs} > 0`,
+    ),
+    check(
+      'agent_group_run_nodes_dispatch_claim_complete',
+      sql`(${t.dispatchClaimId} IS NULL AND ${t.dispatchClaimedAt} IS NULL AND ${t.dispatchClaimExpiresAt} IS NULL) OR (${t.dispatchClaimId} IS NOT NULL AND ${t.dispatchClaimedAt} IS NOT NULL AND ${t.dispatchClaimExpiresAt} IS NOT NULL)`,
     ),
   ],
 );
