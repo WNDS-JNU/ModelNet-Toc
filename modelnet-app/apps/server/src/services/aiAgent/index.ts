@@ -107,6 +107,10 @@ import {
   matchesAgentInterventionContinuationProvenance,
 } from '@/business/server/agent-run/agentInterventionIdentity';
 import { AgentModel } from '@/database/models/agent';
+import {
+  AGENT_GROUP_RUN_RETRY_LIMIT_EXCEEDED,
+  AGENT_GROUP_RUN_RETRY_NOT_ALLOWED,
+} from '@/database/models/agentGroupRun';
 import { AgentOperationModel } from '@/database/models/agentOperation';
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { AiModelModel } from '@/database/models/aiModel';
@@ -129,6 +133,7 @@ import { TopicModel } from '@/database/models/topic';
 import { UserModel } from '@/database/models/user';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import { WorkspaceUserSettingsModel } from '@/database/models/workspaceUserSettings';
+import { appEnv } from '@/envs/app';
 import { toolsEnv } from '@/envs/tools';
 import {
   type ExecutionPlan,
@@ -162,6 +167,7 @@ import type {
   SubAgentBridgeParams,
 } from '@/server/services/agentRuntime';
 import { AgentRuntimeService } from '@/server/services/agentRuntime';
+import { AgentGroupCollaborationService } from '@/server/services/agentGroupCollaboration';
 import { getAbortError, isAbortError, throwIfAborted } from '@/server/services/agentRuntime/abort';
 import { CompletionLifecycle } from '@/server/services/agentRuntime/CompletionLifecycle';
 import { hookDispatcher } from '@/server/services/agentRuntime/hooks';
@@ -481,6 +487,8 @@ interface InternalExecAgentParams extends ExecAgentParams {
   interactiveStart?: boolean;
   /** Maximum steps for the agent operation */
   maxSteps?: number;
+  /** Server-only hook after operation persistence and before first queue delivery. */
+  onOperationPrepared?: (operationId: string) => Promise<void>;
   /**
    * Agents the user @-mentioned in this message (multi-mention). When present
    * (and non-group), the run enables the callAgent tool and persists the mentioned
@@ -1584,6 +1592,7 @@ export class AiAgentService {
       queueRetryDelay,
       parentMessageId,
       parentOperationId,
+      onOperationPrepared,
       resume,
       resumeApproval,
       resumeApprovals,
@@ -5354,6 +5363,7 @@ export class AiAgentService {
           tools,
         },
         operationSkillSet,
+        onOperationPrepared,
         userId: this.userId,
         userInterventionConfig,
         userMemory,
@@ -5629,6 +5639,7 @@ export class AiAgentService {
           // Tag the op as a group member so the abandon path routes its parent
           // resume through the group bridge (its own timeout), not the sub-agent one.
           orchestrationRole: 'member',
+          onOperationPrepared: params.onOperationPrepared,
           resumeParentOnComplete: true,
         },
       );
@@ -5681,6 +5692,7 @@ export class AiAgentService {
       groupToolMessageId,
       instruction,
       onComplete,
+      onOperationPrepared,
       parentOperationId,
       supervisorMessageId,
       topicId,
@@ -5762,11 +5774,14 @@ export class AiAgentService {
           parentOperationId,
         }),
       ],
+      onOperationPrepared: onOperationPrepared
+        ? (operationId) => onOperationPrepared(operationId)
+        : undefined,
       parentMessageId: supervisorMessageId ?? groupToolMessageId,
       parentOperationId,
       prompt: speakerInstruction,
       suppressUserMessage: true,
-      topicStartOwnerOperationId: parentOperationId,
+      topicStartOwnerOperationId: onOperationPrepared ? undefined : parentOperationId,
       trigger: inheritedTrigger,
       userInterventionConfig: { approvalMode: 'headless' },
     });
@@ -5819,6 +5834,7 @@ export class AiAgentService {
        * NOT `completeSubAgentBridge`.
        */
       orchestrationRole?: 'member';
+      onOperationPrepared?: (operationId: string, threadId?: string) => Promise<void>;
       resumeParentOnComplete?: boolean;
     },
   ): Promise<ExecSubAgentResult> {
@@ -5936,6 +5952,11 @@ export class AiAgentService {
       hooks,
       // Explicit sub-agent model override resolved at the spawn site.
       model: options.model,
+      onOperationPrepared: options.onOperationPrepared
+        ? async (operationId) => {
+            await options.onOperationPrepared!(operationId, thread.id);
+          }
+        : undefined,
       parentOperationId,
       prompt: instruction,
       provider: options.provider,
@@ -6535,6 +6556,229 @@ export class AiAgentService {
       success: true,
       threadId: thread?.id,
     };
+  }
+
+  /**
+   * Retry one terminal durable group node as a new immutable Attempt.
+   *
+   * The operation state and completion hook are persisted first. The Attempt
+   * is then atomically registered through onOperationPrepared before Redis can
+   * deliver the member's first step.
+   */
+  async retryGroupNode(params: { runId: string; runNodeId: string }) {
+    if (!appEnv.enableAgentGroupDurableRuns) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Durable Agent Group runs are disabled for this deployment.',
+      });
+    }
+
+    const collaborationService = new AgentGroupCollaborationService(
+      this.db,
+      this.userId,
+      this.workspaceId,
+    );
+    const snapshot = await collaborationService.getRun(params.runId);
+    if (!snapshot) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'Agent Group run not found.' });
+    }
+
+    const node = snapshot.nodes.find(({ id }) => id === params.runNodeId);
+    if (!node || node.runId !== snapshot.run.id) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'Agent Group run node not found.' });
+    }
+    if (!['cancelled', 'completed', 'failed', 'skipped'].includes(node.status)) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Only a terminal Agent Group node can be retried.',
+      });
+    }
+    if (!['cancelled', 'completed', 'failed'].includes(snapshot.run.status)) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'The Agent Group run must be terminal before retrying a node.',
+      });
+    }
+    if (!node.agentId || !snapshot.run.topicId) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'The retry target no longer has an executable agent or topic.',
+      });
+    }
+
+    const attempts = snapshot.attempts
+      .filter(({ runNodeId }) => runNodeId === node.id)
+      .sort((left, right) => left.attemptNo - right.attemptNo);
+    const previousAttempt = attempts.at(-1);
+    if (
+      !previousAttempt ||
+      !['cancelled', 'completed', 'failed', 'timed_out'].includes(previousAttempt.status)
+    ) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'The node has no terminal Attempt that can be retried.',
+      });
+    }
+    if (previousAttempt.runtimeKind !== 'normal') {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'This retry slice currently supports normal Agent members only.',
+      });
+    }
+
+    const attemptNo = previousAttempt.attemptNo + 1;
+    if (attemptNo > node.maxAttempts) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: `Node retry budget exhausted (${node.maxAttempts} attempts).`,
+      });
+    }
+
+    const bridge =
+      previousAttempt.executionTargetSnapshot &&
+      typeof previousAttempt.executionTargetSnapshot === 'object'
+        ? previousAttempt.executionTargetSnapshot
+        : undefined;
+    const stringField = (key: string) => {
+      const value = bridge?.[key];
+      return typeof value === 'string' && value.length > 0 ? value : undefined;
+    };
+    const anchorMessageId = stringField('anchorMessageId');
+    const groupToolMessageId = stringField('groupToolMessageId');
+    const parentOperationId = stringField('parentOperationId');
+    const expectedMembers = Number(bridge?.expectedMembers);
+    const mode =
+      bridge?.mode === 'isolated'
+        ? 'isolated'
+        : bridge?.mode === 'in_group'
+          ? 'in_group'
+          : undefined;
+    const onComplete =
+      bridge?.onComplete === 'resume'
+        ? 'resume'
+        : bridge?.onComplete === 'finish'
+          ? 'finish'
+          : undefined;
+    if (
+      !anchorMessageId ||
+      !groupToolMessageId ||
+      !parentOperationId ||
+      !Number.isSafeInteger(expectedMembers) ||
+      expectedMembers < 1 ||
+      !mode ||
+      !onComplete
+    ) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'The previous Attempt does not contain a recoverable member dispatch snapshot.',
+      });
+    }
+
+    const groupToolMessage = await this.messageModel.findById(groupToolMessageId);
+    if (!groupToolMessage) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'The retry target group tool message is no longer available.',
+      });
+    }
+
+    let preparedOperationId: string | undefined;
+    try {
+      const result = await this.execGroupMember({
+        agentId: node.agentId,
+        anchorMessageId,
+        collaboration: {
+          attemptNo,
+          runId: snapshot.run.id,
+          runNodeId: node.id,
+          runtimeKind: previousAttempt.runtimeKind,
+        },
+        disableTools: Boolean(node.toolPolicySnapshot?.disableTools),
+        expectedMembers,
+        groupId: snapshot.run.chatGroupId,
+        groupToolMessageId,
+        instruction: node.instruction,
+        mode,
+        onComplete,
+        onOperationPrepared: async (operationId, threadId) => {
+          preparedOperationId = operationId;
+          await collaborationService.startRetryAttempt({
+            attemptNo,
+            executionTargetSnapshot: {
+              anchorMessageId,
+              expectedMembers,
+              groupToolMessageId,
+              mode,
+              onComplete,
+              parentOperationId,
+              ...(threadId ? { threadId } : {}),
+            },
+            ...(threadId ? { externalExecutionRef: { taskId: threadId } } : {}),
+            operationId,
+            runNodeId: node.id,
+            runtimeKind: previousAttempt.runtimeKind,
+          });
+
+          // Receipts are a best-effort UI projection. Once the Attempt wins its
+          // transaction, a transient message patch must not block queue dispatch.
+          const anchorReset = await this.messageModel.updateToolMessage(anchorMessageId, {
+            content: '',
+            pluginError: null,
+            pluginState: { status: 'pending', ...(threadId ? { threadId } : {}) },
+          });
+          if (!anchorReset.success) {
+            log('retryGroupNode: failed to reset anchor %s', anchorMessageId);
+          }
+          if (anchorMessageId !== groupToolMessageId) {
+            const groupReset = await this.messageModel.updateToolMessage(groupToolMessageId, {
+              content: '',
+              pluginError: null,
+              pluginState: { expectedMembers, onComplete, status: 'pending' },
+            });
+            if (!groupReset.success) {
+              log('retryGroupNode: failed to reset group tool %s', groupToolMessageId);
+            }
+          }
+        },
+        parentOperationId,
+        supervisorMessageId: groupToolMessage.parentId ?? undefined,
+        timeout: node.timeoutMs ?? undefined,
+        topicId: snapshot.run.topicId,
+      });
+
+      if (!result.started || !result.operationId) {
+        throw new Error(result.error || 'Failed to start Agent Group node retry.');
+      }
+      const refreshed = await collaborationService.getRun(snapshot.run.id);
+      if (!refreshed) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Agent Group run not found.' });
+      }
+      return { attemptNo, operationId: result.operationId, run: refreshed };
+    } catch (error) {
+      if (preparedOperationId) {
+        try {
+          await this.interruptTask({ operationId: preparedOperationId });
+          await this.ensureInterruptedTaskFinalized(preparedOperationId);
+        } catch (cleanupError) {
+          log(
+            'retryGroupNode: failed to finalize aborted retry %s: %O',
+            preparedOperationId,
+            cleanupError,
+          );
+        }
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        message.includes(AGENT_GROUP_RUN_RETRY_LIMIT_EXCEEDED) ||
+        message.includes(AGENT_GROUP_RUN_RETRY_NOT_ALLOWED)
+      ) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'The node retry lost a concurrent state transition.',
+        });
+      }
+      throw error;
+    }
   }
 
   /** Complete the ordinary terminal lifecycle for an already interrupted op. */

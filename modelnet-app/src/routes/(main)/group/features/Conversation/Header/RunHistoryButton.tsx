@@ -14,6 +14,8 @@ import { groupKeys } from '@/libs/swr/keys';
 import { chatGroupService } from '@/services/chatGroup';
 
 const ACTIVE_RUN_STATUSES = new Set(['pending', 'running', 'waiting', 'cancelling']);
+const TERMINAL_NODE_STATUSES = new Set(['cancelled', 'completed', 'failed', 'skipped']);
+const TERMINAL_RUN_STATUSES = new Set(['cancelled', 'completed', 'failed']);
 
 const statusColor = (status: string) => {
   switch (status) {
@@ -50,6 +52,7 @@ const RunHistoryButton = memo<RunHistoryButtonProps>(({ groupId }) => {
   const [open, setOpen] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string>();
   const [cancelling, setCancelling] = useState(false);
+  const [retryingNodeId, setRetryingNodeId] = useState<string>();
 
   const {
     data: runs = [],
@@ -127,6 +130,20 @@ const RunHistoryButton = memo<RunHistoryButtonProps>(({ groupId }) => {
     }
   };
 
+  const retryNode = async (runNodeId: string) => {
+    if (!selectedRun) return;
+    setRetryingNodeId(runNodeId);
+    try {
+      await chatGroupService.retryGroupNode(selectedRun.run.id, runNodeId);
+      await Promise.all([mutateRuns(), mutateEvents()]);
+      toast.success(t('run.retryStarted'));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('run.retryFailed'));
+    } finally {
+      setRetryingNodeId(undefined);
+    }
+  };
+
   return (
     <>
       <ActionIcon
@@ -199,6 +216,11 @@ const RunHistoryButton = memo<RunHistoryButtonProps>(({ groupId }) => {
                     const attempts = selectedRun.attempts.filter(
                       (attempt) => attempt.runNodeId === node.id,
                     );
+                    const canRetry =
+                      TERMINAL_RUN_STATUSES.has(selectedRun.run.status) &&
+                      TERMINAL_NODE_STATUSES.has(node.status) &&
+                      attempts.length > 0 &&
+                      attempts.length < node.maxAttempts;
                     return (
                       <Flexbox
                         gap={4}
@@ -218,6 +240,21 @@ const RunHistoryButton = memo<RunHistoryButtonProps>(({ groupId }) => {
                           {attempts.length} {t('run.attempts')}
                           {attempts.at(-1)?.operationId ? ` · ${attempts.at(-1)?.operationId}` : ''}
                         </Text>
+                        {canRetry && (
+                          <Popconfirm
+                            description={t('run.retryConfirm')}
+                            title={t('run.retry')}
+                            onConfirm={() => retryNode(node.id)}
+                          >
+                            <Button
+                              loading={retryingNodeId === node.id}
+                              size={'small'}
+                              style={{ alignSelf: 'flex-start' }}
+                            >
+                              {t('run.retry')}
+                            </Button>
+                          </Popconfirm>
+                        )}
                       </Flexbox>
                     );
                   })}

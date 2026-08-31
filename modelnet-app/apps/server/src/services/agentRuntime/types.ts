@@ -320,6 +320,11 @@ export interface ExecGroupMemberParams {
   mode: GroupActionMemberMode;
   /** Resume or finish the supervisor once all members complete. */
   onComplete: GroupActionOnComplete;
+  /**
+   * Durable retry hook invoked after the child operation and completion hook
+   * are persisted but before its first queue message is scheduled.
+   */
+  onOperationPrepared?: (operationId: string, threadId?: string) => Promise<void>;
   /** Parent (supervisor) operation id. */
   parentOperationId: string;
   /**
@@ -476,6 +481,11 @@ export interface OperationCreationParams {
   modelRuntimeConfig?: any;
   /** Marks the source claim non-rollbackable once deterministic runtime state is durable. */
   onInterventionPrepared?: () => void;
+  /**
+   * Server-only lifecycle hook invoked after runtime state and hooks are
+   * durable, but before the first queue delivery. Throwing aborts startup.
+   */
+  onOperationPrepared?: (operationId: string) => Promise<void>;
   operationId: string;
   /** Operation-level skill set for SkillResolver */
   operationSkillSet?: OperationSkillSet;

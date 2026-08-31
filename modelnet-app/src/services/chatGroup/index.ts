@@ -114,6 +114,10 @@ class ChatGroupService {
     return lambdaClient.group.cancelGroupRun.mutate({ runId });
   };
 
+  retryGroupNode = (runId: string, runNodeId: string) => {
+    return lambdaClient.group.retryGroupNode.mutate({ runId, runNodeId });
+  };
+
   getGroups = (): Promise<ChatGroupItem[]> => {
     return lambdaClient.group.getGroups.query();
   };

@@ -24,6 +24,8 @@ import { buildWorkspacePayload, buildWorkspaceWhere } from '../utils/workspace';
 export const AGENT_GROUP_RUN_NOT_FOUND = 'AGENT_GROUP_RUN_NOT_FOUND';
 export const AGENT_GROUP_RUN_IDEMPOTENCY_CONFLICT = 'AGENT_GROUP_RUN_IDEMPOTENCY_CONFLICT';
 export const AGENT_GROUP_RUN_OPERATION_MISMATCH = 'AGENT_GROUP_RUN_OPERATION_MISMATCH';
+export const AGENT_GROUP_RUN_RETRY_LIMIT_EXCEEDED = 'AGENT_GROUP_RUN_RETRY_LIMIT_EXCEEDED';
+export const AGENT_GROUP_RUN_RETRY_NOT_ALLOWED = 'AGENT_GROUP_RUN_RETRY_NOT_ALLOWED';
 
 export interface CreateAgentGroupRunParams {
   budgetSnapshot?: AgentGroupRunBudgetSnapshot;
@@ -52,6 +54,8 @@ export interface CompleteAgentGroupRunAttemptParams extends CreateAgentGroupRunA
   error?: AgentGroupRunError;
   status: Extract<AgentGroupRunAttemptStatus, 'cancelled' | 'completed' | 'failed' | 'timed_out'>;
 }
+
+export type StartAgentGroupRunNodeRetryParams = CreateAgentGroupRunAttemptParams;
 
 export interface FailAgentGroupRunNodeStartParams {
   error: AgentGroupRunError;
@@ -160,7 +164,10 @@ export class AgentGroupRunModel {
         agentId: agentGroupRunNodes.agentId,
         chatGroupId: agentGroupRuns.chatGroupId,
         id: agentGroupRunNodes.id,
+        maxAttempts: agentGroupRunNodes.maxAttempts,
         runId: agentGroupRunNodes.runId,
+        runStatus: agentGroupRuns.status,
+        status: agentGroupRunNodes.status,
       })
       .from(agentGroupRunNodes)
       .innerJoin(agentGroupRuns, eq(agentGroupRunNodes.runId, agentGroupRuns.id))
@@ -246,7 +253,7 @@ export class AgentGroupRunModel {
     return { attempt: validateIdentity(winner), node };
   };
 
-  private settleRunIfTerminal = async (tx: Transaction, runId: string) => {
+  private settleRunIfTerminal = async (tx: Transaction, runId: string, transitionKey: string) => {
     const nodeStatuses = await tx
       .select({ status: agentGroupRunNodes.status })
       .from(agentGroupRunNodes)
@@ -273,7 +280,7 @@ export class AgentGroupRunModel {
       .returning({ id: agentGroupRuns.id });
     if (updated) {
       await this.recordEvent(tx, {
-        idempotencyKey: `run:terminal:${status}`,
+        idempotencyKey: `run:terminal:${status}:${transitionKey}`,
         runId,
         status,
         type: 'run.terminal',
@@ -531,6 +538,107 @@ export class AgentGroupRunModel {
       return updated;
     });
 
+  /**
+   * Re-open one terminal node as a new immutable Attempt.
+   *
+   * The member operation row and Redis state already exist when this method is
+   * called, but its first queue delivery has not been scheduled yet. The
+   * `(run_node_id, attempt_no)` uniqueness constraint is therefore the final
+   * concurrency guard: only one retry can win, and a redelivery using the same
+   * operation id reads back the existing Attempt idempotently.
+   */
+  startRetryAttempt = async (params: StartAgentGroupRunNodeRetryParams) =>
+    this.db.transaction(async (tx) => {
+      const node = await this.loadAccessibleNode(tx, params.runNodeId);
+      const [existingByOperation] = await tx
+        .select()
+        .from(agentGroupRunAttempts)
+        .where(eq(agentGroupRunAttempts.operationId, params.operationId))
+        .limit(1);
+      if (existingByOperation) {
+        if (
+          existingByOperation.runNodeId !== params.runNodeId ||
+          existingByOperation.attemptNo !== params.attemptNo
+        ) {
+          throw new Error(AGENT_GROUP_RUN_OPERATION_MISMATCH);
+        }
+        return existingByOperation;
+      }
+
+      if (
+        !TERMINAL_NODE_STATUSES.includes(node.status) ||
+        !TERMINAL_RUN_STATUSES.includes(node.runStatus as (typeof TERMINAL_RUN_STATUSES)[number])
+      ) {
+        throw new Error(AGENT_GROUP_RUN_RETRY_NOT_ALLOWED);
+      }
+
+      const [latestAttempt] = await tx
+        .select()
+        .from(agentGroupRunAttempts)
+        .where(eq(agentGroupRunAttempts.runNodeId, node.id))
+        .orderBy(desc(agentGroupRunAttempts.attemptNo))
+        .limit(1);
+      if (latestAttempt && !TERMINAL_ATTEMPT_STATUSES.includes(latestAttempt.status)) {
+        throw new Error(AGENT_GROUP_RUN_RETRY_NOT_ALLOWED);
+      }
+
+      const expectedAttemptNo = (latestAttempt?.attemptNo ?? 0) + 1;
+      if (params.attemptNo !== expectedAttemptNo || params.attemptNo < 2) {
+        throw new Error(AGENT_GROUP_RUN_RETRY_NOT_ALLOWED);
+      }
+      if (params.attemptNo > node.maxAttempts) {
+        throw new Error(AGENT_GROUP_RUN_RETRY_LIMIT_EXCEEDED);
+      }
+
+      const { attempt } = await this.ensureAttempt(tx, params);
+      const startedAt = new Date();
+      const [updated] = await tx
+        .update(agentGroupRunAttempts)
+        .set({ startedAt, status: 'running' })
+        .where(eq(agentGroupRunAttempts.id, attempt.id))
+        .returning();
+      await tx
+        .update(agentGroupRunNodes)
+        .set({ completionReason: null, error: null, status: 'running' })
+        .where(eq(agentGroupRunNodes.id, node.id));
+      await tx
+        .update(agentGroupRuns)
+        .set({ completedAt: null, completionReason: null, error: null, status: 'running' })
+        .where(eq(agentGroupRuns.id, node.runId));
+
+      await this.recordEvent(tx, {
+        attemptId: updated.id,
+        idempotencyKey: `attempt:${updated.id}:running`,
+        operationId: params.operationId,
+        runId: node.runId,
+        runNodeId: node.id,
+        status: 'running',
+        type: 'attempt.started',
+      });
+      await this.recordEvent(tx, {
+        attemptId: updated.id,
+        data: { attemptNo: params.attemptNo },
+        idempotencyKey: `node:${node.id}:retry:${params.attemptNo}`,
+        operationId: params.operationId,
+        runId: node.runId,
+        runNodeId: node.id,
+        status: 'running',
+        type: 'node.retry_started',
+      });
+      await this.recordEvent(tx, {
+        attemptId: updated.id,
+        data: { attemptNo: params.attemptNo },
+        idempotencyKey: `run:retry:${node.id}:${params.attemptNo}`,
+        operationId: params.operationId,
+        runId: node.runId,
+        runNodeId: node.id,
+        status: 'running',
+        type: 'run.reopened',
+      });
+
+      return updated;
+    });
+
   completeAttempt = async (params: CompleteAgentGroupRunAttemptParams) =>
     this.db.transaction(async (tx) => {
       const { attempt, node } = await this.ensureAttempt(tx, params);
@@ -578,13 +686,13 @@ export class AgentGroupRunModel {
       });
       await this.recordEvent(tx, {
         data: { completionReason: params.completionReason },
-        idempotencyKey: `node:${node.id}:terminal:${nodeStatus}`,
+        idempotencyKey: `node:${node.id}:attempt:${updated.id}:terminal:${nodeStatus}`,
         runId: node.runId,
         runNodeId: node.id,
         status: nodeStatus,
         type: 'node.terminal',
       });
-      await this.settleRunIfTerminal(tx, node.runId);
+      await this.settleRunIfTerminal(tx, node.runId, `attempt:${updated.id}`);
 
       return updated;
     });
@@ -609,7 +717,7 @@ export class AgentGroupRunModel {
         status: 'failed',
         type: 'node.terminal',
       });
-      await this.settleRunIfTerminal(tx, node.runId);
+      await this.settleRunIfTerminal(tx, node.runId, `node:${node.id}:start_failed`);
     });
 
   beginCancellation = async (runId: string): Promise<BeginAgentGroupRunCancellationResult> => {

@@ -10,6 +10,7 @@ import type {
   CompleteAgentGroupRunAttemptParams,
   CreateAgentGroupRunAttemptParams,
   FailAgentGroupRunNodeStartParams,
+  StartAgentGroupRunNodeRetryParams,
 } from '@/database/models/agentGroupRun';
 import { AgentGroupRunRepository } from '@/database/repositories/agentGroupRun';
 import type { LobeChatDatabase } from '@/database/type';
@@ -98,4 +99,7 @@ export class AgentGroupCollaborationService {
   listEvents = (runId: string, limit?: number) => this.repository.listEvents(runId, limit);
 
   listRuns = (chatGroupId: string, limit?: number) => this.repository.listRuns(chatGroupId, limit);
+
+  startRetryAttempt = (params: StartAgentGroupRunNodeRetryParams) =>
+    this.repository.startRetryAttempt(params);
 }

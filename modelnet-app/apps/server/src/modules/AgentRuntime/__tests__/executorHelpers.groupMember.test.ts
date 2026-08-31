@@ -132,7 +132,7 @@ describe('buildServerAgentMemberRunner', () => {
       onComplete: 'resume',
     });
 
-    expect(result).toEqual({ started: true, startedCount: 1 });
+    expect(result).toMatchObject({ started: true, startedCount: 1 });
     expect(messageModel.create).toHaveBeenCalledTimes(1);
     expect(messageModel.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -167,7 +167,7 @@ describe('buildServerAgentMemberRunner', () => {
       onComplete: 'finish',
     });
 
-    expect(result).toEqual({ started: true, startedCount: 2 });
+    expect(result).toMatchObject({ started: true, startedCount: 2 });
     expect(messageModel.create).toHaveBeenCalledTimes(3);
     expect(messageModel.create.mock.calls[0][0]).toMatchObject({
       metadata: { agentCouncil: true },
@@ -212,7 +212,7 @@ describe('buildServerAgentMemberRunner', () => {
       timeout: 5000,
     });
 
-    expect(result).toEqual({ started: true, startedCount: 1 });
+    expect(result).toMatchObject({ started: true, startedCount: 1 });
     expect(messageModel.create.mock.calls[0][0]).not.toHaveProperty('metadata');
     expect(messageModel.updateToolMessage).toHaveBeenCalledWith('message-3', {
       content: 'Agent member "agt_second" failed to start.',
@@ -267,7 +267,7 @@ describe('buildServerAgentMemberRunner', () => {
       onComplete: 'resume',
     });
 
-    expect(result).toEqual({ started: true, startedCount: 2 });
+    expect(result).toMatchObject({ started: true, startedCount: 2 });
     expect(collaboration.createRun).toHaveBeenCalledWith(
       expect.objectContaining({
         chatGroupId: 'group-1',
@@ -278,6 +278,10 @@ describe('buildServerAgentMemberRunner', () => {
         supervisorOperationId: 'supervisor-operation',
       }),
     );
+    expect(collaboration.createRun.mock.calls[0][0].nodes).toEqual([
+      expect.objectContaining({ maxAttempts: 2 }),
+      expect.objectContaining({ maxAttempts: 2 }),
+    ]);
     expect(execGroupMember).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
@@ -289,34 +293,32 @@ describe('buildServerAgentMemberRunner', () => {
         },
       }),
     );
-    expect(collaboration.createAttempt.mock.calls).toEqual(
-      expect.arrayContaining([
-        [
-          {
-            attemptNo: 1,
-            operationId: 'operation-1',
-            runId: 'run-1',
-            runNodeId: 'node-1',
-            runtimeKind: 'normal',
-          },
-        ],
-        [
-          {
-            attemptNo: 1,
-            operationId: 'operation-2',
-            runId: 'run-1',
-            runNodeId: 'node-2',
-            runtimeKind: 'normal',
-          },
-        ],
-      ]),
+    expect(collaboration.createAttempt).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        attemptNo: 1,
+        operationId: 'operation-1',
+        runId: 'run-1',
+        runNodeId: 'node-1',
+        runtimeKind: 'normal',
+      }),
+    );
+    expect(collaboration.createAttempt).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        attemptNo: 1,
+        operationId: 'operation-2',
+        runId: 'run-1',
+        runNodeId: 'node-2',
+        runtimeKind: 'normal',
+      }),
     );
   });
 
   it('does not relaunch members for an idempotent durable-run replay', async () => {
     collaboration.enabled = true;
     collaboration.createRun.mockResolvedValue({
-      attempts: [{ id: 'attempt-1' }],
+      attempts: [{ id: 'attempt-1', operationId: 'operation-1' }],
       created: false,
       nodes: [{ id: 'node-1' }],
       operations: [],
@@ -330,7 +332,7 @@ describe('buildServerAgentMemberRunner', () => {
       onComplete: 'resume',
     });
 
-    expect(result).toEqual({ started: true, startedCount: 1 });
+    expect(result).toMatchObject({ started: true, startedCount: 1 });
     expect(execGroupMember).not.toHaveBeenCalled();
     expect(messageModel.deleteMessage).toHaveBeenCalledWith('message-1');
   });

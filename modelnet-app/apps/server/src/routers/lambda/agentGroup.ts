@@ -39,6 +39,7 @@ import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { AgentGroupService } from '@/server/services/agentGroup';
 import { AgentGroupCollaborationService } from '@/server/services/agentGroupCollaboration';
 import { AgentGroupRunRecoveryCoordinator } from '@/server/services/agentGroupCollaboration/recovery';
+import { AiAgentService } from '@/server/services/aiAgent';
 import { EditLockService } from '@/server/services/editLock';
 import { publishResourceEvent } from '@/server/services/resourceEvents';
 import {
@@ -770,6 +771,32 @@ export const agentGroupRouter = router({
       } catch (error) {
         return toRunNotFound(error);
       }
+    }),
+
+  retryGroupNode: agentGroupProcedureWrite
+    .input(z.object({ runId: z.string().min(1), runNodeId: z.string().uuid() }))
+    .mutation(async ({ input, ctx }) => {
+      const service = new AgentGroupCollaborationService(
+        ctx.serverDB,
+        ctx.userId,
+        ctx.workspaceId ?? undefined,
+      );
+      const run = await service.getRun(input.runId);
+      if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'Agent Group run not found.' });
+      if (ctx.workspaceId) {
+        await assertCanPerformResourceAction({
+          action: 'use',
+          db: ctx.serverDB,
+          resourceId: run.run.chatGroupId,
+          resourceType: 'agentGroup',
+          userId: ctx.userId,
+          workspaceId: ctx.workspaceId,
+        });
+      }
+
+      return new AiAgentService(ctx.serverDB, ctx.userId, {
+        workspaceId: ctx.workspaceId ?? undefined,
+      }).retryGroupNode(input);
     }),
 
   getGroups: agentGroupProcedure.query(async ({ ctx }) => {

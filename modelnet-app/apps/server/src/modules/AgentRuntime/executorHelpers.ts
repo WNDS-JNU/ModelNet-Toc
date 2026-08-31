@@ -451,6 +451,7 @@ export const buildServerAgentMemberRunner = (
                   ? 'Please complete the assigned task.'
                   : 'Please respond to the group conversation.'),
               key: `member-${index + 1}`,
+              maxAttempts: 2,
               role: 'participant',
               ...(timeout ? { timeoutMs: timeout } : {}),
               ...(disableTools ? { toolPolicy: { disableTools: true } } : {}),

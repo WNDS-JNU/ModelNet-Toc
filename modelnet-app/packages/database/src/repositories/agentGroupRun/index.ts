@@ -5,6 +5,7 @@ import {
   type CreateAgentGroupRunAttemptParams,
   type CreateAgentGroupRunParams,
   type FailAgentGroupRunNodeStartParams,
+  type StartAgentGroupRunNodeRetryParams,
 } from '../../models/agentGroupRun';
 import { ChatGroupModel } from '../../models/chatGroup';
 import type { ChatGroupItem } from '../../schemas';
@@ -61,4 +62,7 @@ export class AgentGroupRunRepository {
 
   listRuns = (chatGroupId: string, limit?: number) =>
     this.runModel.listByChatGroup(chatGroupId, limit);
+
+  startRetryAttempt = (params: StartAgentGroupRunNodeRetryParams) =>
+    this.runModel.startRetryAttempt(params);
 }

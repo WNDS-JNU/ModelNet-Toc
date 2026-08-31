@@ -483,6 +483,26 @@ describe('AgentRuntimeService', () => {
       expect(mockQueueService.scheduleMessage).not.toHaveBeenCalled();
     });
 
+    it('runs the durable preparation hook before scheduling the first queue message', async () => {
+      const order: string[] = [];
+      mockQueueService.scheduleMessage.mockImplementationOnce(async () => {
+        order.push('scheduled');
+        return 'message-123';
+      });
+
+      await service.createOperation({
+        ...mockParams,
+        onOperationPrepared: async (operationId) => {
+          expect(operationId).toBe('test-operation-1');
+          expect(mockCoordinator.createAgentOperation).toHaveBeenCalled();
+          expect(mockCoordinator.saveAgentState).toHaveBeenCalled();
+          order.push('prepared');
+        },
+      });
+
+      expect(order).toEqual(['prepared', 'scheduled']);
+    });
+
     it('should handle errors during operation creation', async () => {
       mockCoordinator.saveAgentState.mockRejectedValueOnce(new Error('Database error'));
 

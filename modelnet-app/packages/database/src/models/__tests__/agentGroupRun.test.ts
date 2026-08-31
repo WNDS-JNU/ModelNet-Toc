@@ -11,6 +11,7 @@ import {
   AGENT_GROUP_RUN_IDEMPOTENCY_CONFLICT,
   AGENT_GROUP_RUN_NOT_FOUND,
   AGENT_GROUP_RUN_OPERATION_MISMATCH,
+  AGENT_GROUP_RUN_RETRY_LIMIT_EXCEEDED,
   AgentGroupRunModel,
 } from '../agentGroupRun';
 
@@ -283,8 +284,8 @@ describe('AgentGroupRunModel', () => {
       expect.stringMatching(/^node:.*:running$/),
       'run:running',
       expect.stringMatching(/^attempt:.*:terminal:completed$/),
-      expect.stringMatching(/^node:.*:terminal:completed$/),
-      'run:terminal:completed',
+      expect.stringMatching(/^node:.*:attempt:.*:terminal:completed$/),
+      expect.stringMatching(/^run:terminal:completed:attempt:/),
     ]);
   });
 
@@ -341,6 +342,121 @@ describe('AgentGroupRunModel', () => {
       status: 'completed',
     });
     expect(snapshot?.run.status).toBe('completed');
+  });
+
+  it('reopens a terminal node with a new immutable attempt and settles again', async () => {
+    await seedPersonalGroup();
+    const model = new AgentGroupRunModel(serverDB, userId);
+    const created = await model.create(
+      createParams({
+        planSnapshot: {
+          ...makePlan(),
+          nodes: [{ ...makePlan().nodes[0], maxAttempts: 2 }],
+        },
+      }),
+    );
+    await serverDB.insert(agentOperations).values([
+      {
+        agentId: memberAgentId,
+        chatGroupId: groupId,
+        id: 'retry-member-operation-1',
+        status: 'done',
+        userId,
+      },
+      {
+        agentId: memberAgentId,
+        chatGroupId: groupId,
+        id: 'retry-member-operation-2',
+        status: 'running',
+        userId,
+      },
+    ]);
+    await model.completeAttempt({
+      attemptNo: 1,
+      completionReason: 'error',
+      operationId: 'retry-member-operation-1',
+      runNodeId: created.nodes[0].id,
+      runtimeKind: 'normal',
+      status: 'failed',
+    });
+
+    const retry = await model.startRetryAttempt({
+      attemptNo: 2,
+      operationId: 'retry-member-operation-2',
+      runNodeId: created.nodes[0].id,
+      runtimeKind: 'normal',
+    });
+    const repeated = await model.startRetryAttempt({
+      attemptNo: 2,
+      operationId: 'retry-member-operation-2',
+      runNodeId: created.nodes[0].id,
+      runtimeKind: 'normal',
+    });
+    let snapshot = await model.findById(created.run.id);
+
+    expect(repeated.id).toBe(retry.id);
+    expect(snapshot?.run).toMatchObject({ completionReason: null, status: 'running' });
+    expect(snapshot?.nodes[0]).toMatchObject({ completionReason: null, status: 'running' });
+    expect(snapshot?.attempts.map(({ attemptNo, status }) => ({ attemptNo, status }))).toEqual([
+      { attemptNo: 1, status: 'failed' },
+      { attemptNo: 2, status: 'running' },
+    ]);
+
+    await model.completeAttempt({
+      attemptNo: 2,
+      completionReason: 'done',
+      operationId: 'retry-member-operation-2',
+      runNodeId: created.nodes[0].id,
+      runtimeKind: 'normal',
+      status: 'completed',
+    });
+    snapshot = await model.findById(created.run.id);
+    expect(snapshot?.nodes[0]).toMatchObject({ completionReason: 'done', status: 'completed' });
+    expect(snapshot?.run).toMatchObject({ completionReason: 'completed', status: 'completed' });
+    const events = await model.listEvents(created.run.id);
+    expect(events?.map(({ type }) => type)).toContain('node.retry_started');
+    expect(events?.map(({ type }) => type)).toContain('run.reopened');
+    expect(events?.filter(({ type }) => type === 'node.terminal')).toHaveLength(2);
+    expect(events?.filter(({ type }) => type === 'run.terminal')).toHaveLength(2);
+  });
+
+  it('refuses a retry beyond the immutable node maxAttempts budget', async () => {
+    await seedPersonalGroup();
+    const model = new AgentGroupRunModel(serverDB, userId);
+    const created = await model.create(createParams());
+    await serverDB.insert(agentOperations).values([
+      {
+        agentId: memberAgentId,
+        chatGroupId: groupId,
+        id: 'retry-limit-operation-1',
+        status: 'done',
+        userId,
+      },
+      {
+        agentId: memberAgentId,
+        chatGroupId: groupId,
+        id: 'retry-limit-operation-2',
+        status: 'running',
+        userId,
+      },
+    ]);
+    await model.completeAttempt({
+      attemptNo: 1,
+      completionReason: 'done',
+      operationId: 'retry-limit-operation-1',
+      runNodeId: created.nodes[0].id,
+      runtimeKind: 'normal',
+      status: 'completed',
+    });
+
+    await expect(
+      model.startRetryAttempt({
+        attemptNo: 2,
+        operationId: 'retry-limit-operation-2',
+        runNodeId: created.nodes[0].id,
+        runtimeKind: 'normal',
+      }),
+    ).rejects.toThrowError(AGENT_GROUP_RUN_RETRY_LIMIT_EXCEEDED);
   });
 
   it('marks cancelling before returning active operations and finalizes idempotently', async () => {
