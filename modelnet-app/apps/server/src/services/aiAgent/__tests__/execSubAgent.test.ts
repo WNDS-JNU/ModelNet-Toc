@@ -126,6 +126,54 @@ describe('AiAgentService.execSubAgent', () => {
     service = new AiAgentService(mockDb, userId);
   });
 
+  describe('durable in-group member execution', () => {
+    it('keeps the supervisor as topic owner when a prepared hook is present', async () => {
+      const execAgentSpy = vi.spyOn(service, 'execAgent').mockResolvedValue({
+        agentId: 'agent-1',
+        assistantMessageId: 'assistant-msg-1',
+        autoStarted: true,
+        createdAt: new Date().toISOString(),
+        message: 'Agent operation created successfully',
+        messageId: 'queue-msg-1',
+        operationId: 'op-123',
+        status: 'created',
+        success: true,
+        timestamp: new Date().toISOString(),
+        topicId: 'topic-1',
+        userMessageId: 'user-msg-1',
+      });
+
+      await service.execGroupMember({
+        agentId: 'agent-1',
+        anchorMessageId: 'anchor-msg-1',
+        collaboration: {
+          attemptNo: 1,
+          runId: 'run-1',
+          runNodeId: 'node-1',
+          runtimeKind: 'normal',
+        },
+        disableTools: true,
+        expectedMembers: 2,
+        groupId: 'group-1',
+        groupToolMessageId: 'tool-msg-1',
+        instruction: 'Return a read-only result',
+        mode: 'in_group',
+        onComplete: 'finish',
+        onOperationPrepared: vi.fn().mockResolvedValue(undefined),
+        parentOperationId: 'parent-op-1',
+        supervisorMessageId: 'supervisor-msg-1',
+        topicId: 'topic-1',
+      });
+
+      expect(execAgentSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          parentOperationId: 'parent-op-1',
+          topicStartOwnerOperationId: 'parent-op-1',
+        }),
+      );
+    });
+  });
+
   describe('successful isolated execution', () => {
     it('should create Thread with correct parameters', async () => {
       // Mock execAgent to return success
