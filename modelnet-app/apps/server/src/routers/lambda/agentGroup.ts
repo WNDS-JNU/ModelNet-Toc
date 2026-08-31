@@ -8,6 +8,7 @@ import { withScopedPermission } from '@/business/server/trpc-middlewares/rbacPer
 import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceAuth';
 import { AgentModel } from '@/database/models/agent';
 import { AGENT_COPY_IN_PROGRESS } from '@/database/models/agentCopyJob';
+import { AGENT_GROUP_RUN_NOT_FOUND } from '@/database/models/agentGroupRun';
 import {
   AGENT_TRANSFER_IN_PROGRESS,
   AgentTransferJobModel,
@@ -36,6 +37,8 @@ import { GROUP_MEMBER_ROLES } from '@/database/utils/groupMembership';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { AgentGroupService } from '@/server/services/agentGroup';
+import { AgentGroupCollaborationService } from '@/server/services/agentGroupCollaboration';
+import { AgentGroupRunRecoveryCoordinator } from '@/server/services/agentGroupCollaboration/recovery';
 import { EditLockService } from '@/server/services/editLock';
 import { publishResourceEvent } from '@/server/services/resourceEvents';
 import {
@@ -174,6 +177,13 @@ const agentGroupProcedure = wsCompatProcedure.use(serverDatabase).use(async (opt
 // Write variant gates viewers out of chat-group mutations (create/update/
 // delete + member adds/removes). Reads keep the bare proc.
 const agentGroupProcedureWrite = agentGroupProcedure.use(withScopedPermission('agent:update'));
+
+const toRunNotFound = (error: unknown): never => {
+  if (error instanceof Error && error.message === AGENT_GROUP_RUN_NOT_FOUND) {
+    throw new TRPCError({ code: 'NOT_FOUND', message: 'Agent Group run not found.' });
+  }
+  throw error;
+};
 
 /**
  * Write a group's access level onto the group AND the group-owned virtual
@@ -659,6 +669,107 @@ export const agentGroupRouter = router({
         ...detail,
         agents: ctx.agentGroupService.mergeAgentsDefaultConfig(defaultAgentConfig, detail.agents),
       });
+    }),
+
+  getGroupRun: agentGroupProcedure
+    .input(z.object({ runId: z.string().min(1) }))
+    .query(async ({ input, ctx }) => {
+      const run = await new AgentGroupCollaborationService(
+        ctx.serverDB,
+        ctx.userId,
+        ctx.workspaceId ?? undefined,
+      ).getRun(input.runId);
+      if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'Agent Group run not found.' });
+      if (ctx.workspaceId) {
+        await assertCanPerformResourceAction({
+          action: 'view',
+          db: ctx.serverDB,
+          resourceId: run.run.chatGroupId,
+          resourceType: 'agentGroup',
+          userId: ctx.userId,
+          workspaceId: ctx.workspaceId,
+        });
+      }
+      return run;
+    }),
+
+  listGroupRunEvents: agentGroupProcedure
+    .input(
+      z.object({ limit: z.number().int().min(1).max(1000).optional(), runId: z.string().min(1) }),
+    )
+    .query(async ({ input, ctx }) => {
+      const service = new AgentGroupCollaborationService(
+        ctx.serverDB,
+        ctx.userId,
+        ctx.workspaceId ?? undefined,
+      );
+      const run = await service.getRun(input.runId);
+      if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'Agent Group run not found.' });
+      if (ctx.workspaceId) {
+        await assertCanPerformResourceAction({
+          action: 'view',
+          db: ctx.serverDB,
+          resourceId: run.run.chatGroupId,
+          resourceType: 'agentGroup',
+          userId: ctx.userId,
+          workspaceId: ctx.workspaceId,
+        });
+      }
+      return service.listEvents(input.runId, input.limit);
+    }),
+
+  listGroupRuns: agentGroupProcedure
+    .input(
+      z.object({ groupId: z.string().min(1), limit: z.number().int().min(1).max(50).optional() }),
+    )
+    .query(async ({ input, ctx }) => {
+      if (ctx.workspaceId) {
+        await assertCanPerformResourceAction({
+          action: 'view',
+          db: ctx.serverDB,
+          resourceId: input.groupId,
+          resourceType: 'agentGroup',
+          userId: ctx.userId,
+          workspaceId: ctx.workspaceId,
+        });
+      }
+      return new AgentGroupCollaborationService(
+        ctx.serverDB,
+        ctx.userId,
+        ctx.workspaceId ?? undefined,
+      ).listRuns(input.groupId, input.limit);
+    }),
+
+  cancelGroupRun: agentGroupProcedureWrite
+    .input(z.object({ runId: z.string().min(1) }))
+    .mutation(async ({ input, ctx }) => {
+      const service = new AgentGroupCollaborationService(
+        ctx.serverDB,
+        ctx.userId,
+        ctx.workspaceId ?? undefined,
+      );
+      const run = await service.getRun(input.runId);
+      if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'Agent Group run not found.' });
+      if (ctx.workspaceId) {
+        await assertCanPerformResourceAction({
+          action: 'use',
+          db: ctx.serverDB,
+          resourceId: run.run.chatGroupId,
+          resourceType: 'agentGroup',
+          userId: ctx.userId,
+          workspaceId: ctx.workspaceId,
+        });
+      }
+
+      try {
+        return await new AgentGroupRunRecoveryCoordinator(ctx.serverDB).cancelRun({
+          id: input.runId,
+          userId: run.run.userId,
+          workspaceId: run.run.workspaceId,
+        });
+      } catch (error) {
+        return toRunNotFound(error);
+      }
     }),
 
   getGroups: agentGroupProcedure.query(async ({ ctx }) => {

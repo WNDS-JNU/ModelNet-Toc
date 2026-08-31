@@ -56,7 +56,7 @@ async function getOperationRowDiagnostic(operationId: string) {
  * Execute a single agent step. Invoked by QStash with the body
  * `{ operationId, stepIndex, context, humanInput?, approvedToolCall?, ... }`.
  *
- * Auth: `qstashAuth` on the route — QStash signature required.
+ * Auth: QStash signature or the internal Redis Stream worker token.
  */
 export async function runStep(c: Context): Promise<Response> {
   const startTime = Date.now();

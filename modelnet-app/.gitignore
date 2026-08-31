@@ -58,6 +58,7 @@ bun.lockb
 
 # Build outputs
 dist/
+dist-agent-worker/
 public/_spa/
 public/_spa-auth/
 public/_spa-share/

@@ -16,6 +16,7 @@ import type {
 } from '@lobechat/types';
 import { isNotNull, isNull, sql } from 'drizzle-orm';
 import {
+  bigserial,
   check,
   index,
   integer,
@@ -169,9 +170,49 @@ export const agentGroupRunAttempts = pgTable(
   ],
 );
 
+/**
+ * Append-only lifecycle feed for one collaboration run.
+ *
+ * The normalized Run / Node / Attempt rows remain the current-state source of
+ * truth. Events are written in the same transaction as those state changes so
+ * query/replay and recovery diagnostics never have to infer history from logs.
+ */
+export const agentGroupRunEvents = pgTable(
+  'agent_group_run_events',
+  {
+    id: uuid('id').defaultRandom().primaryKey().notNull(),
+    /** Monotonic database order used for deterministic replay and UI timelines. */
+    sequence: bigserial('sequence', { mode: 'number' }).notNull(),
+    runId: text('run_id')
+      .references(() => agentGroupRuns.id, { onDelete: 'cascade' })
+      .notNull(),
+    runNodeId: uuid('run_node_id').references(() => agentGroupRunNodes.id, {
+      onDelete: 'set null',
+    }),
+    attemptId: uuid('attempt_id').references(() => agentGroupRunAttempts.id, {
+      onDelete: 'set null',
+    }),
+    /** Audit identity retained even when an operation row is archived. */
+    operationId: text('operation_id'),
+    type: text('type').notNull(),
+    status: text('status'),
+    data: jsonb('data').$type<Record<string, unknown>>(),
+    /** Stable execute-once identity for redelivered callbacks and sweepers. */
+    idempotencyKey: text('idempotency_key').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('agent_group_run_events_run_idempotency_unique').on(t.runId, t.idempotencyKey),
+    index('agent_group_run_events_run_sequence_idx').on(t.runId, t.sequence),
+    index('agent_group_run_events_operation_idx').on(t.operationId),
+  ],
+);
+
 export type NewAgentGroupRun = typeof agentGroupRuns.$inferInsert;
 export type AgentGroupRunItem = typeof agentGroupRuns.$inferSelect;
 export type NewAgentGroupRunNode = typeof agentGroupRunNodes.$inferInsert;
 export type AgentGroupRunNodeItem = typeof agentGroupRunNodes.$inferSelect;
 export type NewAgentGroupRunAttempt = typeof agentGroupRunAttempts.$inferInsert;
 export type AgentGroupRunAttemptItem = typeof agentGroupRunAttempts.$inferSelect;
+export type NewAgentGroupRunEvent = typeof agentGroupRunEvents.$inferInsert;
+export type AgentGroupRunEventItem = typeof agentGroupRunEvents.$inferSelect;

@@ -403,6 +403,118 @@ table agent_history_jobs {
   }
 }
 
+table agent_group_run_attempts {
+  id uuid [pk, not null, default: `gen_random_uuid()`]
+  run_node_id uuid [not null]
+  attempt_no integer [not null]
+  operation_id text [not null]
+  runtime_kind text [not null]
+  execution_target_snapshot jsonb
+  external_execution_ref jsonb
+  status text [not null, default: 'pending']
+  error jsonb
+  started_at "timestamp with time zone"
+  completed_at "timestamp with time zone"
+  created_at "timestamp with time zone" [not null, default: `now()`]
+  updated_at "timestamp with time zone" [not null, default: `now()`]
+
+  indexes {
+    (run_node_id, attempt_no) [name: 'agent_group_run_attempts_node_attempt_unique', unique]
+    operation_id [name: 'agent_group_run_attempts_operation_unique', unique]
+    (run_node_id, status) [name: 'agent_group_run_attempts_node_status_idx']
+    (status, updated_at) [name: 'agent_group_run_attempts_status_updated_idx']
+
+  }
+}
+
+table agent_group_run_events {
+  id uuid [pk, not null, default: `gen_random_uuid()`]
+  sequence bigserial [not null, increment]
+  run_id text [not null]
+  run_node_id uuid
+  attempt_id uuid
+  operation_id text
+  type text [not null]
+  status text
+  data jsonb
+  idempotency_key text [not null]
+  created_at "timestamp with time zone" [not null, default: `now()`]
+
+  indexes {
+    (run_id, idempotency_key) [name: 'agent_group_run_events_run_idempotency_unique', unique]
+    (run_id, sequence) [name: 'agent_group_run_events_run_sequence_idx']
+    operation_id [name: 'agent_group_run_events_operation_idx']
+  }
+}
+
+table agent_group_run_nodes {
+  id uuid [pk, not null, default: `gen_random_uuid()`]
+  run_id text [not null]
+  node_key text [not null]
+  agent_id text
+  role text
+  instruction text [not null]
+  dependencies jsonb [not null, default: `[]`]
+  barrier_key text
+  sort_order integer [not null, default: 0]
+  execution_policy_snapshot jsonb
+  tool_policy_snapshot jsonb
+  status text [not null, default: 'pending']
+  completion_reason text
+  error jsonb
+  max_attempts integer [not null, default: 1]
+  timeout_ms integer
+  created_at "timestamp with time zone" [not null, default: `now()`]
+  updated_at "timestamp with time zone" [not null, default: `now()`]
+
+  indexes {
+    (run_id, node_key) [name: 'agent_group_run_nodes_run_key_unique', unique]
+    (run_id, status, sort_order) [name: 'agent_group_run_nodes_run_status_order_idx']
+    agent_id [name: 'agent_group_run_nodes_agent_id_idx']
+
+
+
+  }
+}
+
+table agent_group_runs {
+  id text [pk, not null]
+  user_id text [not null]
+  workspace_id text
+  chat_group_id text [not null]
+  topic_id text
+  thread_id text
+  supervisor_agent_id text
+  supervisor_operation_id text [not null]
+  protocol text [not null]
+  plan_version integer [not null]
+  plan_snapshot jsonb [not null]
+  plan_hash varchar(64) [not null]
+  policy_snapshot jsonb
+  budget_snapshot jsonb
+  status text [not null, default: 'pending']
+  completion_reason text
+  error jsonb
+  idempotency_key text [not null]
+  started_at "timestamp with time zone"
+  completed_at "timestamp with time zone"
+  created_at "timestamp with time zone" [not null, default: `now()`]
+  updated_at "timestamp with time zone" [not null, default: `now()`]
+
+  indexes {
+    (user_id, idempotency_key) [name: 'agent_group_runs_personal_idempotency_unique', unique]
+    (workspace_id, idempotency_key) [name: 'agent_group_runs_workspace_idempotency_unique', unique]
+    (chat_group_id, created_at) [name: 'agent_group_runs_chat_group_created_idx']
+    (topic_id, created_at) [name: 'agent_group_runs_topic_created_idx']
+    supervisor_operation_id [name: 'agent_group_runs_supervisor_operation_idx']
+    (status, updated_at) [name: 'agent_group_runs_status_updated_idx']
+    user_id [name: 'agent_group_runs_user_id_idx']
+    workspace_id [name: 'agent_group_runs_workspace_id_idx']
+
+
+  }
+}
+
 table agent_intervention_resolutions {
   id uuid [pk, not null, default: `gen_random_uuid()`]
   resolution_request_id uuid [not null]
@@ -446,6 +558,9 @@ table agent_intervention_resolutions {
     resolution_request_id [name: 'agent_intervention_resolutions_request_unique', unique]
     (user_id, workspace_id, batch_id) [name: 'agent_intervention_resolutions_owner_batch_idx']
     (status, created_at) [name: 'agent_intervention_resolutions_status_created_idx']
+
+
+
 
 
   }
@@ -3989,6 +4104,26 @@ ref: agent_eval_runs.target_agent_id - agents.id
 ref: agent_eval_runs.user_id - users.id
 
 ref: agent_eval_test_cases.dataset_id > agent_eval_datasets.id
+
+ref: agent_group_run_attempts.run_node_id > agent_group_run_nodes.id
+
+ref: agent_group_run_events.attempt_id - agent_group_run_attempts.id
+
+ref: agent_group_run_events.run_node_id - agent_group_run_nodes.id
+
+ref: agent_group_run_events.run_id > agent_group_runs.id
+
+ref: agent_group_run_nodes.agent_id - agents.id
+
+ref: agent_group_run_nodes.run_id > agent_group_runs.id
+
+ref: agent_group_runs.chat_group_id > chat_groups.id
+
+ref: agent_group_runs.supervisor_agent_id - agents.id
+
+ref: agent_group_runs.user_id - users.id
+
+ref: agent_group_runs.workspace_id - workspaces.id
 
 ref: agents_files.file_id > files.id
 

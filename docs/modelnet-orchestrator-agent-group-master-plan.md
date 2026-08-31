@@ -1,6 +1,6 @@
 # ModelNet Agent 级协作互联总体实施计划
 
-> 状态：待评审
+> 状态：实施中（PR 1–5 Dev 代码与部署完成，待 M1 真实运行验收）
 > 版本：V2.0
 > 重构日期：2026-08-30
 > 代码基线：4A100，/home/duxianghe/ModelNet-toc，33190eda5f
@@ -606,11 +606,15 @@ A2A 是 Member Dispatcher 的外部执行 Adapter，不是 Router 协议，也�
 - 在 docker-compose.dev.yml 中增加 worker，但不改生产 compose。
 - 通过 App / worker 重启和消息重领测试。
 
+状态（2026-08-30）：已在 Dev 栈完成。Redis Stream consumer group、延迟重试、租约心跳与重领、DLQ、worker token 鉴权和相对 endpoint 固定到内部 App origin 均已通过定向测试与运行时验证；生产 compose 未改。
+
 ### PR 5：取消、恢复和观测
 
 - 实现 server interrupt。
 - 增加恢复 sweeper、Run 事件和最小查询 UI。
 - 仅在 dev 为测试用户打开 AGENT_GROUP_DURABLE_RUNS。
+
+状态（2026-08-30）：Dev 代码与部署完成。服务端群组 `interrupt` 已接到真实 AgentRuntime 中断路径；Run 状态变更同步写入幂等事件流，恢复协调器可重放丢失回调、收敛超时并继续完成取消；Redis Stream worker 通过受保护的内部端点定时触发恢复扫描。群组 Header 已提供 Run / Node / Attempt / Event 查询与取消入口。`AGENT_GROUP_DURABLE_RUNS=1` 只写入忽略版本控制的 `.env.dev`，生产 compose 和生产开关未改。定向 Vitest、数据库 PGlite、项目 TypeScript、Worker bundle 与完整 SPA / Next 构建均通过；Dev 数据库迁移、app / worker health、恢复端点 200、未授权 401 和 TOC 200 已验证。M1 评审前仍需用 Dev 测试用户完成一次真实 Run → cancel、一次 app / worker 重启恢复和一次 timeout 演练，并对齐同一组 runId / operationId / Redis / DB 证据。
 
 完成这五个 PR 后再评审 M1，未通过恢复验收前不得开始异构 Agent 或 A2A 接入。
 

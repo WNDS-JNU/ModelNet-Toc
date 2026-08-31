@@ -83,11 +83,19 @@ export class AgentGroupCollaborationService {
   completeAttempt = (params: CompleteAgentGroupRunAttemptParams) =>
     this.repository.completeAttempt(params);
 
+  beginCancellation = (runId: string) => this.repository.beginCancellation(runId);
+
   createAttempt = (params: CreateAgentGroupRunAttemptParams) =>
     this.repository.createAttempt(params);
 
   failNodeStart = (params: FailAgentGroupRunNodeStartParams) =>
     this.repository.failNodeStart(params);
 
+  finalizeCancellation = (runId: string) => this.repository.finalizeCancellation(runId);
+
   getRun = (runId: string) => this.repository.getRun(runId);
+
+  listEvents = (runId: string, limit?: number) => this.repository.listEvents(runId, limit);
+
+  listRuns = (chatGroupId: string, limit?: number) => this.repository.listRuns(chatGroupId, limit);
 }

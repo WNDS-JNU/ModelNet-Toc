@@ -96,6 +96,7 @@ RUN rm -rf src/app/desktop "src/app/(backend)/trpc/desktop"
 
 # run build standalone for docker version
 RUN npm run build:docker
+RUN pnpm exec vite build --config apps/server/viteAgentWorkerBuild.config.ts
 
 # Preserve SWC helpers referenced through pnpm virtual-store symlinks by Next.js.
 RUN mkdir -p /runtime-deps && cp -a node_modules/.pnpm/@swc+helpers@* /runtime-deps/
@@ -117,6 +118,7 @@ COPY --from=builder /app/public/_spa-workbench /app/public/_spa-workbench
 COPY --from=builder /app/packages/database/migrations /app/migrations
 COPY --from=builder /app/scripts/migrateServerDB/docker.cjs /app/docker.cjs
 COPY --from=builder /app/scripts/migrateServerDB/errorHint.js /app/errorHint.js
+COPY --from=builder /app/apps/server/dist-agent-worker/agent-worker.mjs /app/agent-worker.mjs
 
 # copy dependencies
 COPY --from=builder /deps/node_modules/.pnpm /app/node_modules/.pnpm

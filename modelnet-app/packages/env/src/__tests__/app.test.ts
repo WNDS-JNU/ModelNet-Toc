@@ -112,6 +112,23 @@ describe('getServerConfig', () => {
       delete process.env.AGENT_GROUP_DURABLE_RUNS;
     });
   });
+
+  describe('Agent Runtime queue provider', () => {
+    it('defaults to qstash for queue-mode compatibility', async () => {
+      delete process.env.AGENT_RUNTIME_QUEUE_PROVIDER;
+
+      const { getAppConfig } = await import('../app');
+      expect(getAppConfig().agentRuntimeQueueProvider).toBe('qstash');
+    });
+
+    it('selects redis-stream explicitly', async () => {
+      process.env.AGENT_RUNTIME_QUEUE_PROVIDER = 'redis-stream';
+
+      const { getAppConfig } = await import('../app');
+      expect(getAppConfig().agentRuntimeQueueProvider).toBe('redis-stream');
+      delete process.env.AGENT_RUNTIME_QUEUE_PROVIDER;
+    });
+  });
 });
 
 describe('APP_URL fallback', () => {

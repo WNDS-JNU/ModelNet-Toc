@@ -8,7 +8,7 @@ import { type HealthCheckResult, type QueueMessage, type QueueStats } from './ty
  *
  * Execution modes:
  * - Local mode (default): LocalQueueServiceImpl with setTimeout for async step execution
- * - Queue mode (AGENT_RUNTIME_MODE=queue): QStashQueueServiceImpl for production
+ * - Queue mode: QStash or the self-hosted Redis Stream worker
  */
 export class QueueService {
   private impl: QueueServiceImpl;

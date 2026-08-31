@@ -2,6 +2,7 @@ import { appEnv } from '@/envs/app';
 
 import { LocalQueueServiceImpl } from './local';
 import { QStashQueueServiceImpl } from './qstash';
+import { RedisStreamQueueServiceImpl } from './redisStream';
 import { type QueueServiceImpl } from './type';
 
 /**
@@ -16,13 +17,18 @@ export const isQueueAgentRuntimeEnabled = (): boolean => {
  * Create queue service module
  *
  * When enableQueueAgentRuntime=true (AGENT_RUNTIME_MODE=queue):
- *   - QStashQueueServiceImpl (production, requires QSTASH_TOKEN)
+ *   - QStashQueueServiceImpl (default, requires QSTASH_TOKEN)
+ *   - RedisStreamQueueServiceImpl (self-hosted, selected explicitly)
  *
  * When enableQueueAgentRuntime=false (default):
  *   - LocalQueueServiceImpl (local development, uses setTimeout for async execution)
  */
 export const createQueueServiceModule = (): QueueServiceImpl => {
   if (isQueueAgentRuntimeEnabled()) {
+    if (appEnv.agentRuntimeQueueProvider === 'redis-stream') {
+      return RedisStreamQueueServiceImpl.fromEnvironment();
+    }
+
     const qstashToken = process.env.QSTASH_TOKEN;
 
     if (!qstashToken) {
@@ -36,4 +42,5 @@ export const createQueueServiceModule = (): QueueServiceImpl => {
 };
 
 export { LocalQueueServiceImpl } from './local';
+export { RedisStreamQueueServiceImpl } from './redisStream';
 export type { QueueServiceImpl } from './type';

@@ -137,18 +137,20 @@ class GroupManagementExecutionRuntime {
       return buildError('agentId and instruction are required.', 'INVALID_ARGUMENTS');
     }
 
-    const { started } = await ctx.agentMember.run({
+    const result = await ctx.agentMember.run({
       members: [{ agentId: params.agentId, instruction: params.instruction }],
       mode: 'isolated',
       onComplete: params.skipCallSupervisor ? 'finish' : 'resume',
       timeout: params.timeout,
     });
-    if (!started) return START_FAILED;
+    if (!result.started) return START_FAILED;
+
+    const taskId = result.tasks?.[0]?.threadId ?? result.tasks?.[0]?.operationId;
 
     return {
       content: '',
       deferred: true,
-      state: { agentId: params.agentId, status: 'pending', type: 'executeAgentTask' },
+      state: { agentId: params.agentId, status: 'pending', taskId, type: 'executeAgentTask' },
       success: true,
     };
   };
@@ -162,19 +164,24 @@ class GroupManagementExecutionRuntime {
     const tasks = params.tasks ?? [];
     if (tasks.length === 0) return buildError('tasks is required.', 'INVALID_ARGUMENTS');
 
-    const { started } = await ctx.agentMember.run({
+    const result = await ctx.agentMember.run({
       members: tasks.map((task) => ({ agentId: task.agentId, instruction: task.instruction })),
       mode: 'isolated',
       onComplete: params.skipCallSupervisor ? 'finish' : 'resume',
       // Per-task timeouts collapse to the longest; the barrier waits for all.
       timeout: tasks.reduce((max, task) => Math.max(max, task.timeout ?? 0), 0) || undefined,
     });
-    if (!started) return START_FAILED;
+    if (!result.started) return START_FAILED;
 
     return {
       content: '',
       deferred: true,
-      state: { status: 'pending', tasks: tasks.map((t) => t.agentId), type: 'executeAgentTasks' },
+      state: {
+        status: 'pending',
+        taskIds: result.tasks?.map((task) => task.threadId ?? task.operationId),
+        tasks: tasks.map((t) => t.agentId),
+        type: 'executeAgentTasks',
+      },
       success: true,
     };
   };
@@ -183,10 +190,46 @@ class GroupManagementExecutionRuntime {
   // Mirror the client stubs: return inline (non-deferred) results so the
   // supervisor LLM keeps orchestrating instead of parking.
 
-  interrupt = async (params: InterruptParams): Promise<BuiltinServerRuntimeOutput> => ({
-    content: `Interrupt is not yet supported in server orchestration (task ${params.taskId}).`,
-    success: true,
-  });
+  interrupt = async (
+    params: InterruptParams,
+    ctx: ToolExecutionContext,
+  ): Promise<BuiltinServerRuntimeOutput> => {
+    if (!params.taskId) return buildError('taskId is required.', 'INVALID_ARGUMENTS');
+    if (!ctx.serverDB || !ctx.userId) {
+      return buildError(
+        'Agent runtime context is unavailable for interruption.',
+        'AGENT_RUNTIME_UNAVAILABLE',
+      );
+    }
+
+    try {
+      // Dynamic import avoids a static AiAgentService → ToolExecutionService →
+      // groupManagement cycle while still reusing the single interruption path
+      // that reaches runtime state, Device Gateway, and heterogeneous adapters.
+      const { AiAgentService } = await import('@/server/services/aiAgent');
+      const result = await new AiAgentService(ctx.serverDB, ctx.userId, {
+        workspaceId: ctx.workspaceId,
+      }).interruptTask({ threadId: params.taskId });
+      if (!result.success) {
+        return buildError(`Failed to cancel task ${params.taskId}.`, 'AGENT_INTERRUPT_FAILED');
+      }
+
+      return {
+        content: `Task ${params.taskId} has been cancelled successfully.`,
+        state: {
+          cancelled: true,
+          operationId: result.operationId,
+          taskId: params.taskId,
+        },
+        success: true,
+      };
+    } catch (error) {
+      return buildError(
+        `Failed to interrupt task: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        'AGENT_INTERRUPT_FAILED',
+      );
+    }
+  };
 
   summarize = async (_params: SummarizeParams): Promise<BuiltinServerRuntimeOutput> => ({
     content: 'Summarize is not yet implemented in server orchestration.',

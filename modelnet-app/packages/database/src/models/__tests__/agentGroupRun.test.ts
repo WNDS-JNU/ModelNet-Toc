@@ -127,6 +127,9 @@ describe('AgentGroupRunModel', () => {
     });
     expect(result.attempts).toEqual([]);
     expect(result.operations.map((operation) => operation.id)).toEqual(['supervisor-operation-1']);
+
+    const events = await model.listEvents(result.run.id);
+    expect(events?.map(({ type }) => type)).toEqual(['run.created', 'node.created']);
   });
 
   it('returns the existing run for an identical idempotent create', async () => {
@@ -272,6 +275,17 @@ describe('AgentGroupRunModel', () => {
       'supervisor-operation-1',
       'member-operation',
     ]);
+    const events = await model.listEvents(created.run.id);
+    expect(events?.map(({ idempotencyKey }) => idempotencyKey)).toEqual([
+      'run:created',
+      expect.stringMatching(/^node:.*:created$/),
+      expect.stringMatching(/^attempt:.*:running$/),
+      expect.stringMatching(/^node:.*:running$/),
+      'run:running',
+      expect.stringMatching(/^attempt:.*:terminal:completed$/),
+      expect.stringMatching(/^node:.*:terminal:completed$/),
+      'run:terminal:completed',
+    ]);
   });
 
   it('settles a run when its only node fails before launch', async () => {
@@ -327,5 +341,50 @@ describe('AgentGroupRunModel', () => {
       status: 'completed',
     });
     expect(snapshot?.run.status).toBe('completed');
+  });
+
+  it('marks cancelling before returning active operations and finalizes idempotently', async () => {
+    await seedPersonalGroup();
+    const model = new AgentGroupRunModel(serverDB, userId);
+    const created = await model.create(createParams());
+    await serverDB.insert(agentOperations).values({
+      agentId: memberAgentId,
+      chatGroupId: groupId,
+      id: 'cancel-member-operation',
+      status: 'running',
+      userId,
+    });
+    await model.createAttempt({
+      attemptNo: 1,
+      operationId: 'cancel-member-operation',
+      runNodeId: created.nodes[0].id,
+      runtimeKind: 'normal',
+    });
+
+    const transition = await model.beginCancellation(created.run.id);
+    expect(transition).toMatchObject({
+      activeOperationIds: ['cancel-member-operation'],
+      alreadyTerminal: false,
+      supervisorOperationId: 'supervisor-operation-1',
+    });
+    expect(transition.snapshot.run.status).toBe('cancelling');
+
+    const cancelled = await model.finalizeCancellation(created.run.id);
+    const repeated = await model.finalizeCancellation(created.run.id);
+    expect(cancelled.run).toMatchObject({ completionReason: 'cancelled', status: 'cancelled' });
+    expect(cancelled.nodes[0]).toMatchObject({
+      completionReason: 'cancelled',
+      status: 'cancelled',
+    });
+    expect(cancelled.attempts[0].status).toBe('cancelled');
+    expect(repeated.run.status).toBe('cancelled');
+
+    const events = await model.listEvents(created.run.id);
+    expect(
+      events?.filter(({ idempotencyKey }) => idempotencyKey === 'run:cancelling'),
+    ).toHaveLength(1);
+    expect(
+      events?.filter(({ idempotencyKey }) => idempotencyKey === 'run:terminal:cancelled'),
+    ).toHaveLength(1);
   });
 });

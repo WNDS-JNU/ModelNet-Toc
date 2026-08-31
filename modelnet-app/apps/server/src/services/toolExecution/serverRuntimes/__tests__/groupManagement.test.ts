@@ -5,6 +5,11 @@ import type { ToolExecutionContext } from '../../types';
 import { groupManagementRuntime } from '../groupManagement';
 
 const run = vi.fn();
+const interruptTask = vi.fn();
+
+vi.mock('@/server/services/aiAgent', () => ({
+  AiAgentService: vi.fn(() => ({ interruptTask })),
+}));
 
 const makeCtx = (overrides?: Partial<ToolExecutionContext>): ToolExecutionContext =>
   ({
@@ -20,6 +25,8 @@ describe('groupManagementRuntime', () => {
   beforeEach(() => {
     run.mockReset();
     run.mockResolvedValue({ started: true, startedCount: 1 });
+    interruptTask.mockReset();
+    interruptTask.mockResolvedValue({ operationId: 'operation-1', success: true });
   });
 
   describe('speak', () => {
@@ -137,6 +144,11 @@ describe('groupManagementRuntime', () => {
 
   describe('executeAgentTask', () => {
     it('runs an isolated-thread member and resumes', async () => {
+      run.mockResolvedValue({
+        started: true,
+        startedCount: 1,
+        tasks: [{ operationId: 'operation-1', threadId: 'thread-1' }],
+      });
       const result = await runtime().executeAgentTask(
         { agentId: 'agent-a', instruction: 'do work', timeout: 60_000, title: 'work' },
         makeCtx(),
@@ -148,6 +160,7 @@ describe('groupManagementRuntime', () => {
         timeout: 60_000,
       });
       expect(result).toMatchObject({ deferred: true, success: true });
+      expect(result.state.taskId).toBe('thread-1');
     });
 
     it('errors without instruction', async () => {
@@ -215,9 +228,46 @@ describe('groupManagementRuntime', () => {
     });
   });
 
+  describe('interrupt', () => {
+    it('uses the server Agent runtime interruption path', async () => {
+      const ctx = makeCtx({ serverDB: {} as any, workspaceId: 'workspace-1' });
+
+      const result = await runtime().interrupt({ taskId: 'thread-1' }, ctx);
+
+      expect(interruptTask).toHaveBeenCalledWith({ threadId: 'thread-1' });
+      expect(result).toMatchObject({
+        state: { cancelled: true, operationId: 'operation-1', taskId: 'thread-1' },
+        success: true,
+      });
+    });
+
+    it('returns a real failure when the runtime refuses interruption', async () => {
+      interruptTask.mockResolvedValue({ operationId: 'operation-1', success: false });
+
+      const result = await runtime().interrupt(
+        { taskId: 'thread-1' },
+        makeCtx({ serverDB: {} as any }),
+      );
+
+      expect(result).toMatchObject({
+        error: { code: 'AGENT_INTERRUPT_FAILED' },
+        success: false,
+      });
+    });
+
+    it('rejects interruption when the trusted server context is missing', async () => {
+      const result = await runtime().interrupt({ taskId: 'thread-1' }, makeCtx());
+
+      expect(result).toMatchObject({
+        error: { code: 'AGENT_RUNTIME_UNAVAILABLE' },
+        success: false,
+      });
+      expect(interruptTask).not.toHaveBeenCalled();
+    });
+  });
+
   describe('not-yet-implemented server actions', () => {
     it.each([
-      ['interrupt', { taskId: 'task-1' }, 'not yet supported'],
       ['summarize', {}, 'not yet implemented'],
       ['createWorkflow', { name: 'workflow-1' }, 'not yet implemented'],
       ['vote', { question: 'ship it?' }, 'not yet implemented'],

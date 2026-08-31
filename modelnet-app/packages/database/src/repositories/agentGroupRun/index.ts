@@ -39,6 +39,10 @@ export class AgentGroupRunRepository {
   createRun = (params: CreateAgentGroupRunParams): Promise<AgentGroupRunSnapshot> =>
     this.runModel.create(params);
 
+  beginCancellation = (runId: string) => this.runModel.beginCancellation(runId);
+
+  finalizeCancellation = (runId: string) => this.runModel.finalizeCancellation(runId);
+
   getExecutionContext = async (
     chatGroupId: string,
   ): Promise<AgentGroupRunExecutionContext | undefined> => {
@@ -52,4 +56,9 @@ export class AgentGroupRunRepository {
   failNodeStart = (params: FailAgentGroupRunNodeStartParams) => this.runModel.failNodeStart(params);
 
   getRun = (runId: string) => this.runModel.findById(runId);
+
+  listEvents = (runId: string, limit?: number) => this.runModel.listEvents(runId, limit);
+
+  listRuns = (chatGroupId: string, limit?: number) =>
+    this.runModel.listByChatGroup(chatGroupId, limit);
 }

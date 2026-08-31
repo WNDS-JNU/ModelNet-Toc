@@ -3,8 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock appEnv before importing QueueService
 const mockAppEnv = {
+  agentRuntimeQueueProvider: 'qstash' as 'qstash' | 'redis-stream',
   enableQueueAgentRuntime: false,
 };
+
+const redisMocks = vi.hoisted(() => ({
+  client: null as any,
+  getClient: vi.fn(() => redisMocks.client),
+}));
 
 const qstashMocks = vi.hoisted(() => ({
   client: vi.fn(),
@@ -21,11 +27,18 @@ vi.mock('@/libs/qstash', () => ({
   })),
 }));
 
+vi.mock('@/server/modules/AgentRuntime/redis', () => ({
+  getAgentRuntimeRedisClient: redisMocks.getClient,
+}));
+
 describe('QueueService', () => {
   beforeEach(() => {
     vi.resetModules();
     // Reset to default local mode
     mockAppEnv.enableQueueAgentRuntime = false;
+    mockAppEnv.agentRuntimeQueueProvider = 'qstash';
+    redisMocks.client = null;
+    redisMocks.getClient.mockClear();
     qstashMocks.client.mockClear();
     qstashMocks.publishJSON.mockReset();
   });
@@ -172,6 +185,29 @@ describe('QueueService', () => {
 
       // Cleanup
       delete process.env.QSTASH_TOKEN;
+    });
+
+    it('should create RedisStreamQueueServiceImpl for the self-hosted provider', async () => {
+      mockAppEnv.enableQueueAgentRuntime = true;
+      mockAppEnv.agentRuntimeQueueProvider = 'redis-stream';
+      redisMocks.client = { ping: vi.fn() };
+
+      const { createQueueServiceModule } = await import('../impls');
+      const impl = createQueueServiceModule();
+
+      expect(impl.constructor.name).toBe('RedisStreamQueueServiceImpl');
+      expect(redisMocks.getClient).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not silently fall back when Redis is unavailable', async () => {
+      mockAppEnv.enableQueueAgentRuntime = true;
+      mockAppEnv.agentRuntimeQueueProvider = 'redis-stream';
+
+      const { createQueueServiceModule } = await import('../impls');
+
+      expect(() => createQueueServiceModule()).toThrow(
+        'REDIS_URL is required when AGENT_RUNTIME_QUEUE_PROVIDER=redis-stream',
+      );
     });
 
     it('should return false for isLocalExecution when in queue mode', async () => {

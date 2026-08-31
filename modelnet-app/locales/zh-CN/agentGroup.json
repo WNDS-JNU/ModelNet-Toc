@@ -1,5 +1,22 @@
 {
   "avatar.sizeExceeded": "头像大小超过限制",
   "backgroundColor.title": "背景颜色",
-  "name.placeholder": "请输入群组名称"
+  "name.placeholder": "请输入群组名称",
+  "run.attempts": "次尝试",
+  "run.cancel": "取消运行",
+  "run.cancelConfirm": "确认取消这次协作运行并中断仍在执行的成员吗？",
+  "run.cancelFailed": "无法取消这次运行",
+  "run.cancelled": "已发出取消运行请求",
+  "run.empty": "还没有持久化的协作运行",
+  "run.events": "事件",
+  "run.eventsEmpty": "还没有记录事件",
+  "run.nodes": "节点",
+  "run.status.cancelled": "已取消",
+  "run.status.cancelling": "取消中",
+  "run.status.completed": "已完成",
+  "run.status.failed": "失败",
+  "run.status.pending": "等待开始",
+  "run.status.running": "运行中",
+  "run.status.waiting": "等待中",
+  "run.title": "协作运行"
 }

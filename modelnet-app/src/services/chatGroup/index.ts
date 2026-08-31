@@ -98,6 +98,22 @@ class ChatGroupService {
     return lambdaClient.group.getGroupDetail.query({ id });
   };
 
+  getGroupRun = (runId: string) => {
+    return lambdaClient.group.getGroupRun.query({ runId });
+  };
+
+  listGroupRuns = (groupId: string, limit = 20) => {
+    return lambdaClient.group.listGroupRuns.query({ groupId, limit });
+  };
+
+  listGroupRunEvents = (runId: string, limit = 200) => {
+    return lambdaClient.group.listGroupRunEvents.query({ limit, runId });
+  };
+
+  cancelGroupRun = (runId: string) => {
+    return lambdaClient.group.cancelGroupRun.mutate({ runId });
+  };
+
   getGroups = (): Promise<ChatGroupItem[]> => {
     return lambdaClient.group.getGroups.query();
   };

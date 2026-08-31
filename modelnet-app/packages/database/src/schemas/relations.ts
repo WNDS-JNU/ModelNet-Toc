@@ -10,7 +10,12 @@ import {
   agentEvalRunTopics,
   agentEvalTestCases,
 } from './agentEvals';
-import { agentGroupRunAttempts, agentGroupRunNodes, agentGroupRuns } from './agentGroupRun';
+import {
+  agentGroupRunAttempts,
+  agentGroupRunEvents,
+  agentGroupRunNodes,
+  agentGroupRuns,
+} from './agentGroupRun';
 import { agentShares } from './agentShare';
 import { asyncTasks } from './asyncTask';
 import { chatGroups, chatGroupsAgents } from './chatGroup';
@@ -426,6 +431,7 @@ export const agentGroupRunsRelations = relations(agentGroupRuns, ({ many, one })
     references: [chatGroups.id],
   }),
   nodes: many(agentGroupRunNodes),
+  events: many(agentGroupRunEvents),
   supervisorAgent: one(agents, {
     fields: [agentGroupRuns.supervisorAgentId],
     references: [agents.id],
@@ -456,6 +462,21 @@ export const agentGroupRunAttemptsRelations = relations(agentGroupRunAttempts, (
   node: one(agentGroupRunNodes, {
     fields: [agentGroupRunAttempts.runNodeId],
     references: [agentGroupRunNodes.id],
+  }),
+}));
+
+export const agentGroupRunEventsRelations = relations(agentGroupRunEvents, ({ one }) => ({
+  attempt: one(agentGroupRunAttempts, {
+    fields: [agentGroupRunEvents.attemptId],
+    references: [agentGroupRunAttempts.id],
+  }),
+  node: one(agentGroupRunNodes, {
+    fields: [agentGroupRunEvents.runNodeId],
+    references: [agentGroupRunNodes.id],
+  }),
+  run: one(agentGroupRuns, {
+    fields: [agentGroupRunEvents.runId],
+    references: [agentGroupRuns.id],
   }),
 }));
 

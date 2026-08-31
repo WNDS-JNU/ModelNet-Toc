@@ -482,12 +482,19 @@ export const buildServerAgentMemberRunner = (
           return {
             started: durableRun.attempts.length > 0,
             startedCount: durableRun.attempts.length,
+            tasks: durableRun.attempts.map((attempt) => ({
+              operationId: attempt.operationId,
+              ...(attempt.externalExecutionRef?.taskId
+                ? { threadId: attempt.externalExecutionRef.taskId }
+                : {}),
+            })),
           };
         }
       }
 
       // 3. Fork members.
       let startedCount = 0;
+      const startedTasks: Array<{ operationId: string; threadId?: string }> = [];
       await Promise.all(
         resolvedMembers.map(async (member, i) => {
           const anchorMessageId = anchorIds[i];
@@ -523,10 +530,28 @@ export const buildServerAgentMemberRunner = (
             });
             if (result?.started) {
               startedCount += 1;
+              if (result.operationId) {
+                startedTasks.push({
+                  operationId: result.operationId,
+                  ...(result.threadId ? { threadId: result.threadId } : {}),
+                });
+              }
               if (collaborationService && collaboration && result.operationId) {
                 try {
                   await collaborationService.createAttempt({
                     ...collaboration,
+                    executionTargetSnapshot: {
+                      anchorMessageId,
+                      expectedMembers,
+                      groupToolMessageId: groupTool.id,
+                      mode,
+                      onComplete,
+                      parentOperationId: ctx.operationId,
+                      ...(result.threadId ? { threadId: result.threadId } : {}),
+                    },
+                    ...(result.threadId
+                      ? { externalExecutionRef: { taskId: result.threadId } }
+                      : {}),
                     operationId: result.operationId,
                   });
                 } catch (error) {
@@ -591,7 +616,7 @@ export const buildServerAgentMemberRunner = (
         return { started: false, startedCount: 0 };
       }
 
-      return { started: true, startedCount };
+      return { started: true, startedCount, tasks: startedTasks };
     },
   };
 };

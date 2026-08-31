@@ -110,6 +110,8 @@ export interface ServerAgentMemberRunResult {
   started: boolean;
   /** Number of member ops successfully forked. */
   startedCount: number;
+  /** Stable operation/thread ids that a later server-side interrupt can target. */
+  tasks?: Array<{ operationId: string; threadId?: string }>;
 }
 
 /**

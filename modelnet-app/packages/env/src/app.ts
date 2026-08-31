@@ -87,6 +87,8 @@ export const getAppConfig = () => {
        * @default false
        */
       enableAgentGroupDurableRuns: z.boolean().optional(),
+      /** Queue provider used when AGENT_RUNTIME_MODE=queue. */
+      agentRuntimeQueueProvider: z.enum(['qstash', 'redis-stream']).optional(),
       /**
        * Enable Queue-based Agent Runtime
        * When true, use QStash for async agent execution (production)
@@ -134,6 +136,8 @@ export const getAppConfig = () => {
       ENABLE_AGENT_GATEWAY: process.env.ENABLE_AGENT_GATEWAY === '1',
       AGENT_GATEWAY_URL: process.env.AGENT_GATEWAY_URL,
       enableAgentGroupDurableRuns: process.env.AGENT_GROUP_DURABLE_RUNS === '1',
+      agentRuntimeQueueProvider:
+        process.env.AGENT_RUNTIME_QUEUE_PROVIDER === 'redis-stream' ? 'redis-stream' : 'qstash',
       enableQueueAgentRuntime: process.env.AGENT_RUNTIME_MODE === 'queue',
       TELEMETRY_DISABLED: process.env.TELEMETRY_DISABLED === '1',
     },

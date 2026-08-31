@@ -262,6 +262,8 @@ export const groupKeys = {
   queryAgents: def('group:queryAgents', () => ['group:queryAgents']),
   /** Agent picker for the "create group" modal. */
   queryAgentsForCreate: def('group:queryAgentsForCreate', () => ['group:queryAgentsForCreate']),
+  runEvents: def('group:runEvents', (runId: string) => ['group:runEvents', runId]),
+  runs: def('group:runs', (groupId: string) => ['group:runs', groupId]),
 };
 
 // ---- session ------------------------------------------------------------

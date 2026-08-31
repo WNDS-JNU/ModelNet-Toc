@@ -8,10 +8,11 @@ import type {
   AgentGroupRunPolicySnapshot,
   AgentGroupRunRuntimeKind,
 } from '@lobechat/types';
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 
 import {
   agentGroupRunAttempts,
+  agentGroupRunEvents,
   agentGroupRunNodes,
   agentGroupRuns,
   agentOperations,
@@ -66,6 +67,19 @@ export interface AgentGroupRunSnapshot {
   run: typeof agentGroupRuns.$inferSelect;
 }
 
+export interface BeginAgentGroupRunCancellationResult {
+  activeOperationIds: string[];
+  alreadyTerminal: boolean;
+  snapshot: AgentGroupRunSnapshot;
+  supervisorOperationId: string;
+}
+
+export interface RecoverableAgentGroupRunRef {
+  id: string;
+  userId: string;
+  workspaceId: string | null;
+}
+
 const TERMINAL_ATTEMPT_STATUSES: AgentGroupRunAttemptStatus[] = [
   'cancelled',
   'completed',
@@ -78,6 +92,24 @@ const TERMINAL_NODE_STATUSES: AgentGroupRunNodeStatus[] = [
   'failed',
   'skipped',
 ];
+const TERMINAL_RUN_STATUSES = ['cancelled', 'completed', 'failed'] as const;
+const ACTIVE_ATTEMPT_STATUSES: AgentGroupRunAttemptStatus[] = ['pending', 'running', 'waiting'];
+
+/** Internal, owner-agnostic scan used only by the trusted recovery worker. */
+export const listRecoverableAgentGroupRuns = async (
+  db: LobeChatDatabase,
+  limit = 100,
+): Promise<RecoverableAgentGroupRunRef[]> =>
+  db
+    .select({
+      id: agentGroupRuns.id,
+      userId: agentGroupRuns.userId,
+      workspaceId: agentGroupRuns.workspaceId,
+    })
+    .from(agentGroupRuns)
+    .where(inArray(agentGroupRuns.status, ['pending', 'running', 'waiting', 'cancelling']))
+    .orderBy(asc(agentGroupRuns.updatedAt), asc(agentGroupRuns.id))
+    .limit(Math.max(1, Math.min(limit, 500)));
 
 /**
  * Persistence boundary for the collaboration projection. Access is always
@@ -100,6 +132,27 @@ export class AgentGroupRunModel {
 
   private operationScope = () =>
     buildWorkspaceWhere({ userId: this.userId, workspaceId: this.workspaceId }, agentOperations);
+
+  private recordEvent = async (
+    tx: Transaction,
+    event: {
+      attemptId?: string;
+      data?: Record<string, unknown>;
+      idempotencyKey: string;
+      operationId?: string;
+      runId: string;
+      runNodeId?: string;
+      status?: string;
+      type: string;
+    },
+  ) => {
+    await tx
+      .insert(agentGroupRunEvents)
+      .values(event)
+      .onConflictDoNothing({
+        target: [agentGroupRunEvents.runId, agentGroupRunEvents.idempotencyKey],
+      });
+  };
 
   private loadAccessibleNode = async (tx: Transaction, runNodeId: string) => {
     const [node] = await tx
@@ -208,10 +261,24 @@ export class AgentGroupRunModel {
     const hasFailure = nodeStatuses.some((node) => node.status === 'failed');
     const hasCancellation = nodeStatuses.some((node) => node.status === 'cancelled');
     const status = hasFailure ? 'failed' : hasCancellation ? 'cancelled' : 'completed';
-    await tx
+    const [updated] = await tx
       .update(agentGroupRuns)
       .set({ completedAt: new Date(), completionReason: status, status })
-      .where(eq(agentGroupRuns.id, runId));
+      .where(
+        and(
+          eq(agentGroupRuns.id, runId),
+          inArray(agentGroupRuns.status, ['pending', 'running', 'waiting', 'cancelling']),
+        ),
+      )
+      .returning({ id: agentGroupRuns.id });
+    if (updated) {
+      await this.recordEvent(tx, {
+        idempotencyKey: `run:terminal:${status}`,
+        runId,
+        status,
+        type: 'run.terminal',
+      });
+    }
   };
 
   create = async (params: CreateAgentGroupRunParams): Promise<AgentGroupRunSnapshot> => {
@@ -296,22 +363,43 @@ export class AgentGroupRunModel {
         return { created: false, runId: winner.id };
       }
 
-      await tx.insert(agentGroupRunNodes).values(
-        params.planSnapshot.nodes.map((node) => ({
-          agentId: node.agentId,
-          barrierKey: node.barrierKey,
-          dependencies: node.dependencies,
-          executionPolicySnapshot: node.executionPolicy,
-          instruction: node.instruction,
-          maxAttempts: node.maxAttempts,
-          nodeKey: node.key,
-          role: node.role,
+      const createdNodes = await tx
+        .insert(agentGroupRunNodes)
+        .values(
+          params.planSnapshot.nodes.map((node) => ({
+            agentId: node.agentId,
+            barrierKey: node.barrierKey,
+            dependencies: node.dependencies,
+            executionPolicySnapshot: node.executionPolicy,
+            instruction: node.instruction,
+            maxAttempts: node.maxAttempts,
+            nodeKey: node.key,
+            role: node.role,
+            runId: created.id,
+            sortOrder: node.sortOrder,
+            timeoutMs: node.timeoutMs,
+            toolPolicySnapshot: node.toolPolicy,
+          })),
+        )
+        .returning({ id: agentGroupRunNodes.id, nodeKey: agentGroupRunNodes.nodeKey });
+
+      await this.recordEvent(tx, {
+        data: { planHash: params.planHash, protocol: params.planSnapshot.protocol },
+        idempotencyKey: 'run:created',
+        runId: created.id,
+        status: 'pending',
+        type: 'run.created',
+      });
+      for (const node of createdNodes) {
+        await this.recordEvent(tx, {
+          data: { nodeKey: node.nodeKey },
+          idempotencyKey: `node:${node.id}:created`,
           runId: created.id,
-          sortOrder: node.sortOrder,
-          timeoutMs: node.timeoutMs,
-          toolPolicySnapshot: node.toolPolicy,
-        })),
-      );
+          runNodeId: node.id,
+          status: 'pending',
+          type: 'node.created',
+        });
+      }
 
       return { created: true, runId: created.id };
     });
@@ -367,6 +455,31 @@ export class AgentGroupRunModel {
     return { attempts, nodes, operations, run: row.run };
   };
 
+  listByChatGroup = async (chatGroupId: string, limit = 20): Promise<AgentGroupRunSnapshot[]> => {
+    const rows = await this.db
+      .select({ id: agentGroupRuns.id })
+      .from(agentGroupRuns)
+      .innerJoin(chatGroups, eq(agentGroupRuns.chatGroupId, chatGroups.id))
+      .where(and(eq(agentGroupRuns.chatGroupId, chatGroupId), this.groupAccess()))
+      .orderBy(desc(agentGroupRuns.createdAt), desc(agentGroupRuns.id))
+      .limit(Math.max(1, Math.min(limit, 50)));
+
+    const snapshots = await Promise.all(rows.map(({ id }) => this.findById(id)));
+    return snapshots.filter((snapshot): snapshot is AgentGroupRunSnapshot => Boolean(snapshot));
+  };
+
+  listEvents = async (runId: string, limit = 200) => {
+    const accessible = await this.findById(runId);
+    if (!accessible) return undefined;
+
+    return this.db
+      .select()
+      .from(agentGroupRunEvents)
+      .where(eq(agentGroupRunEvents.runId, runId))
+      .orderBy(asc(agentGroupRunEvents.sequence))
+      .limit(Math.max(1, Math.min(limit, 1000)));
+  };
+
   createAttempt = async (params: CreateAgentGroupRunAttemptParams) =>
     this.db.transaction(async (tx) => {
       const { attempt, node } = await this.ensureAttempt(tx, params);
@@ -391,6 +504,29 @@ export class AgentGroupRunModel {
         .update(agentGroupRuns)
         .set({ startedAt, status: 'running' })
         .where(and(eq(agentGroupRuns.id, node.runId), eq(agentGroupRuns.status, 'pending')));
+
+      await this.recordEvent(tx, {
+        attemptId: updated.id,
+        idempotencyKey: `attempt:${updated.id}:running`,
+        operationId: params.operationId,
+        runId: node.runId,
+        runNodeId: node.id,
+        status: 'running',
+        type: 'attempt.started',
+      });
+      await this.recordEvent(tx, {
+        idempotencyKey: `node:${node.id}:running`,
+        runId: node.runId,
+        runNodeId: node.id,
+        status: 'running',
+        type: 'node.started',
+      });
+      await this.recordEvent(tx, {
+        idempotencyKey: 'run:running',
+        runId: node.runId,
+        status: 'running',
+        type: 'run.started',
+      });
 
       return updated;
     });
@@ -429,6 +565,24 @@ export class AgentGroupRunModel {
         .update(agentGroupRuns)
         .set({ startedAt: attempt.startedAt ?? completedAt, status: 'running' })
         .where(and(eq(agentGroupRuns.id, node.runId), eq(agentGroupRuns.status, 'pending')));
+      await this.recordEvent(tx, {
+        attemptId: updated.id,
+        data: params.error ? { error: params.error } : undefined,
+        idempotencyKey: `attempt:${updated.id}:terminal:${params.status}`,
+        operationId: params.operationId,
+        runId: node.runId,
+        runNodeId: node.id,
+        status: params.status,
+        type: 'attempt.terminal',
+      });
+      await this.recordEvent(tx, {
+        data: { completionReason: params.completionReason },
+        idempotencyKey: `node:${node.id}:terminal:${nodeStatus}`,
+        runId: node.runId,
+        runNodeId: node.id,
+        status: nodeStatus,
+        type: 'node.terminal',
+      });
       await this.settleRunIfTerminal(tx, node.runId);
 
       return updated;
@@ -446,6 +600,148 @@ export class AgentGroupRunModel {
             inArray(agentGroupRunNodes.status, ['pending', 'ready']),
           ),
         );
+      await this.recordEvent(tx, {
+        data: { error: params.error },
+        idempotencyKey: `node:${node.id}:terminal:failed`,
+        runId: node.runId,
+        runNodeId: node.id,
+        status: 'failed',
+        type: 'node.terminal',
+      });
       await this.settleRunIfTerminal(tx, node.runId);
     });
+
+  beginCancellation = async (runId: string): Promise<BeginAgentGroupRunCancellationResult> => {
+    const result = await this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ run: agentGroupRuns })
+        .from(agentGroupRuns)
+        .innerJoin(chatGroups, eq(agentGroupRuns.chatGroupId, chatGroups.id))
+        .where(and(eq(agentGroupRuns.id, runId), this.groupAccess()))
+        .limit(1);
+      if (!row) throw new Error(AGENT_GROUP_RUN_NOT_FOUND);
+
+      const alreadyTerminal = TERMINAL_RUN_STATUSES.includes(
+        row.run.status as (typeof TERMINAL_RUN_STATUSES)[number],
+      );
+      if (!alreadyTerminal && row.run.status !== 'cancelling') {
+        await tx
+          .update(agentGroupRuns)
+          .set({ completionReason: 'cancellation_requested', status: 'cancelling' })
+          .where(eq(agentGroupRuns.id, runId));
+        await this.recordEvent(tx, {
+          idempotencyKey: 'run:cancelling',
+          runId,
+          status: 'cancelling',
+          type: 'run.cancelling',
+        });
+      }
+
+      const activeAttempts = await tx
+        .select({ operationId: agentGroupRunAttempts.operationId })
+        .from(agentGroupRunAttempts)
+        .innerJoin(agentGroupRunNodes, eq(agentGroupRunAttempts.runNodeId, agentGroupRunNodes.id))
+        .where(
+          and(
+            eq(agentGroupRunNodes.runId, runId),
+            inArray(agentGroupRunAttempts.status, ACTIVE_ATTEMPT_STATUSES),
+          ),
+        );
+
+      return {
+        activeOperationIds: activeAttempts.map(({ operationId }) => operationId),
+        alreadyTerminal,
+        supervisorOperationId: row.run.supervisorOperationId,
+      };
+    });
+
+    const snapshot = await this.findById(runId);
+    if (!snapshot) throw new Error(AGENT_GROUP_RUN_NOT_FOUND);
+    return { ...result, snapshot };
+  };
+
+  finalizeCancellation = async (runId: string): Promise<AgentGroupRunSnapshot> => {
+    await this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ id: agentGroupRuns.id })
+        .from(agentGroupRuns)
+        .innerJoin(chatGroups, eq(agentGroupRuns.chatGroupId, chatGroups.id))
+        .where(and(eq(agentGroupRuns.id, runId), this.groupAccess()))
+        .limit(1);
+      if (!row) throw new Error(AGENT_GROUP_RUN_NOT_FOUND);
+
+      const activeAttempts = await tx
+        .select({
+          id: agentGroupRunAttempts.id,
+          operationId: agentGroupRunAttempts.operationId,
+          runNodeId: agentGroupRunAttempts.runNodeId,
+        })
+        .from(agentGroupRunAttempts)
+        .innerJoin(agentGroupRunNodes, eq(agentGroupRunAttempts.runNodeId, agentGroupRunNodes.id))
+        .where(
+          and(
+            eq(agentGroupRunNodes.runId, runId),
+            inArray(agentGroupRunAttempts.status, ACTIVE_ATTEMPT_STATUSES),
+          ),
+        );
+      const completedAt = new Date();
+      if (activeAttempts.length > 0) {
+        await tx
+          .update(agentGroupRunAttempts)
+          .set({ completedAt, status: 'cancelled' })
+          .where(
+            inArray(
+              agentGroupRunAttempts.id,
+              activeAttempts.map(({ id }) => id),
+            ),
+          );
+      }
+      await tx
+        .update(agentGroupRunNodes)
+        .set({ completionReason: 'cancelled', status: 'cancelled' })
+        .where(
+          and(
+            eq(agentGroupRunNodes.runId, runId),
+            inArray(agentGroupRunNodes.status, [
+              'pending',
+              'ready',
+              'running',
+              'waiting',
+              'blocked',
+            ]),
+          ),
+        );
+      await tx
+        .update(agentGroupRuns)
+        .set({ completedAt, completionReason: 'cancelled', status: 'cancelled' })
+        .where(
+          and(
+            eq(agentGroupRuns.id, runId),
+            inArray(agentGroupRuns.status, ['pending', 'running', 'waiting', 'cancelling']),
+          ),
+        );
+
+      for (const attempt of activeAttempts) {
+        await this.recordEvent(tx, {
+          attemptId: attempt.id,
+          idempotencyKey: `attempt:${attempt.id}:terminal:cancelled`,
+          operationId: attempt.operationId,
+          runId,
+          runNodeId: attempt.runNodeId,
+          status: 'cancelled',
+          type: 'attempt.terminal',
+        });
+      }
+      await this.recordEvent(tx, {
+        idempotencyKey: 'run:terminal:cancelled',
+        runId,
+        status: 'cancelled',
+        type: 'run.terminal',
+      });
+    });
+
+    const snapshot = await this.findById(runId);
+    if (!snapshot) throw new Error(AGENT_GROUP_RUN_NOT_FOUND);
+    return snapshot;
+  };
 }

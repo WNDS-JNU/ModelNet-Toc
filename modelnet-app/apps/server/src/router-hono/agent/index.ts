@@ -12,12 +12,14 @@ import { messengerInstall } from './handlers/messengerInstall';
 import { messengerOAuthCallback } from './handlers/messengerOAuthCallback';
 import { messengerWebhook } from './handlers/messengerWebhook';
 import { platformWebhook } from './handlers/platformWebhook';
+import { recoverGroupRuns } from './handlers/recoverGroupRuns';
 import { runStep, runStepHealth } from './handlers/runStep';
 import { subAgentCallback } from './handlers/subAgentCallback';
 import { toolResult } from './handlers/toolResult';
 import { bearerSecretAuth } from './middlewares/bearerSecretAuth';
 import { qstashAuth } from './middlewares/qstashAuth';
 import { qstashOrApiKeyAuth } from './middlewares/qstashOrApiKeyAuth';
+import { queueWorkerOrQstashAuth } from './middlewares/queueWorkerOrQstashAuth';
 import { serviceTokenAuth } from './middlewares/serviceTokenAuth';
 
 /**
@@ -33,9 +35,16 @@ const app = new Hono().basePath('/api/agent');
 // POST /api/agent — start a new agent operation (QStash sig OR API key)
 app.post('/', qstashOrApiKeyAuth(), execAgent);
 
-// POST /api/agent/run — execute a single step (QStash signature)
-app.post('/run', qstashAuth(), runStep);
+// POST /api/agent/run — execute a single step (QStash or internal Redis Stream worker)
+app.post('/run', queueWorkerOrQstashAuth(), runStep);
 app.get('/run', runStepHealth);
+
+// POST /api/agent/recover-group-runs — authenticated internal recovery sweep
+app.post(
+  '/recover-group-runs',
+  bearerSecretAuth(() => process.env.AGENT_WORKER_TOKEN),
+  recoverGroupRuns,
+);
 
 // POST /api/agent/tool-result — gateway-side tool result LPUSH'd to Redis
 app.post('/tool-result', serviceTokenAuth(), toolResult);
