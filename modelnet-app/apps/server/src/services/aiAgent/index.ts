@@ -6781,6 +6781,24 @@ export class AiAgentService {
     }
   }
 
+  /** Release a manually paused collaboration barrier and resume/finish once. */
+  async resumeGroupRun(runId: string) {
+    const collaborationService = new AgentGroupCollaborationService(
+      this.db,
+      this.userId,
+      this.workspaceId,
+    );
+    const released = await collaborationService.resumeFromBarrier(runId);
+    const resumed = await this.agentRuntimeService.tryResumeParentFromAsyncTool(
+      { parentOperationId: released.run.supervisorOperationId },
+      { scheduleVerifyOnHold: true },
+    );
+    return {
+      resumed,
+      run: (await collaborationService.getRun(runId)) ?? released,
+    };
+  }
+
   /** Complete the ordinary terminal lifecycle for an already interrupted op. */
   ensureInterruptedTaskFinalized(operationId: string): Promise<boolean> {
     return this.agentRuntimeService.ensureInterruptedOperationFinalized(operationId);

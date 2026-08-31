@@ -6,6 +6,7 @@ export type AgentOperationStatus =
   | 'interrupted'
   | 'running'
   | 'waiting_for_async_tool'
+  | 'waiting_for_group_resume'
   | 'waiting_for_human';
 
 export type AgentOperationCompletionReason =

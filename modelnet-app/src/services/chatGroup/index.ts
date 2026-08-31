@@ -114,6 +114,14 @@ class ChatGroupService {
     return lambdaClient.group.cancelGroupRun.mutate({ runId });
   };
 
+  pauseGroupRun = (runId: string) => {
+    return lambdaClient.group.pauseGroupRun.mutate({ runId });
+  };
+
+  resumeGroupRun = (runId: string) => {
+    return lambdaClient.group.resumeGroupRun.mutate({ runId });
+  };
+
   retryGroupNode = (runId: string, runNodeId: string) => {
     return lambdaClient.group.retryGroupNode.mutate({ runId, runNodeId });
   };

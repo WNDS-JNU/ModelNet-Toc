@@ -8,7 +8,7 @@ import type {
   AgentGroupRunPolicySnapshot,
   AgentGroupRunRuntimeKind,
 } from '@lobechat/types';
-import { and, asc, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, not } from 'drizzle-orm';
 
 import {
   agentGroupRunAttempts,
@@ -26,6 +26,9 @@ export const AGENT_GROUP_RUN_IDEMPOTENCY_CONFLICT = 'AGENT_GROUP_RUN_IDEMPOTENCY
 export const AGENT_GROUP_RUN_OPERATION_MISMATCH = 'AGENT_GROUP_RUN_OPERATION_MISMATCH';
 export const AGENT_GROUP_RUN_RETRY_LIMIT_EXCEEDED = 'AGENT_GROUP_RUN_RETRY_LIMIT_EXCEEDED';
 export const AGENT_GROUP_RUN_RETRY_NOT_ALLOWED = 'AGENT_GROUP_RUN_RETRY_NOT_ALLOWED';
+export const AGENT_GROUP_RUN_PAUSE_NOT_ALLOWED = 'AGENT_GROUP_RUN_PAUSE_NOT_ALLOWED';
+export const AGENT_GROUP_RUN_RESUME_NOT_ALLOWED = 'AGENT_GROUP_RUN_RESUME_NOT_ALLOWED';
+export const AGENT_GROUP_RUN_MANUAL_PAUSE_REASON = 'manual_pause';
 
 export interface CreateAgentGroupRunParams {
   budgetSnapshot?: AgentGroupRunBudgetSnapshot;
@@ -275,6 +278,12 @@ export class AgentGroupRunModel {
         and(
           eq(agentGroupRuns.id, runId),
           inArray(agentGroupRuns.status, ['pending', 'running', 'waiting', 'cancelling']),
+          not(
+            and(
+              eq(agentGroupRuns.status, 'waiting'),
+              eq(agentGroupRuns.completionReason, AGENT_GROUP_RUN_MANUAL_PAUSE_REASON),
+            ),
+          ),
         ),
       )
       .returning({ id: agentGroupRuns.id });
@@ -509,6 +518,137 @@ export class AgentGroupRunModel {
 
       return latest?.attemptNo === params.attemptNo && latest.operationId === params.operationId;
     });
+
+  /**
+   * Pause only at the supervisor's durable async-tool barrier. Member Attempts
+   * keep running and may settle while paused; the parked operation status is
+   * the CAS that prevents callbacks and watchdogs from resuming the supervisor.
+   */
+  pauseAtBarrier = async (runId: string): Promise<AgentGroupRunSnapshot> => {
+    await this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ run: agentGroupRuns })
+        .from(agentGroupRuns)
+        .innerJoin(chatGroups, eq(agentGroupRuns.chatGroupId, chatGroups.id))
+        .where(and(eq(agentGroupRuns.id, runId), this.groupAccess()))
+        .limit(1);
+      if (!row) throw new Error(AGENT_GROUP_RUN_NOT_FOUND);
+
+      const [operation] = await tx
+        .select({ status: agentOperations.status })
+        .from(agentOperations)
+        .where(and(eq(agentOperations.id, row.run.supervisorOperationId), this.operationScope()))
+        .limit(1);
+      const alreadyPaused =
+        row.run.status === 'waiting' &&
+        row.run.completionReason === AGENT_GROUP_RUN_MANUAL_PAUSE_REASON;
+      if (
+        (!alreadyPaused && !['pending', 'running', 'waiting'].includes(row.run.status)) ||
+        !operation ||
+        !['waiting_for_async_tool', 'waiting_for_group_resume'].includes(operation.status)
+      ) {
+        throw new Error(AGENT_GROUP_RUN_PAUSE_NOT_ALLOWED);
+      }
+
+      if (operation.status === 'waiting_for_async_tool') {
+        const [parked] = await tx
+          .update(agentOperations)
+          .set({ status: 'waiting_for_group_resume' })
+          .where(
+            and(
+              eq(agentOperations.id, row.run.supervisorOperationId),
+              eq(agentOperations.status, 'waiting_for_async_tool'),
+              this.operationScope(),
+            ),
+          )
+          .returning({ id: agentOperations.id });
+        if (!parked) throw new Error(AGENT_GROUP_RUN_PAUSE_NOT_ALLOWED);
+      }
+
+      if (!alreadyPaused) {
+        await tx
+          .update(agentGroupRuns)
+          .set({ completionReason: AGENT_GROUP_RUN_MANUAL_PAUSE_REASON, status: 'waiting' })
+          .where(eq(agentGroupRuns.id, runId));
+        await this.recordEvent(tx, {
+          data: { previousStatus: row.run.status },
+          idempotencyKey: `run:paused:${row.run.updatedAt.getTime()}`,
+          operationId: row.run.supervisorOperationId,
+          runId,
+          status: 'waiting',
+          type: 'run.paused',
+        });
+      }
+    });
+
+    const snapshot = await this.findById(runId);
+    if (!snapshot) throw new Error(AGENT_GROUP_RUN_NOT_FOUND);
+    return snapshot;
+  };
+
+  /** Release a manual barrier pause and re-evaluate terminal node convergence. */
+  resumeFromBarrier = async (runId: string): Promise<AgentGroupRunSnapshot> => {
+    await this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ run: agentGroupRuns })
+        .from(agentGroupRuns)
+        .innerJoin(chatGroups, eq(agentGroupRuns.chatGroupId, chatGroups.id))
+        .where(and(eq(agentGroupRuns.id, runId), this.groupAccess()))
+        .limit(1);
+      if (!row) throw new Error(AGENT_GROUP_RUN_NOT_FOUND);
+      if (
+        row.run.status !== 'waiting' ||
+        row.run.completionReason !== AGENT_GROUP_RUN_MANUAL_PAUSE_REASON
+      ) {
+        throw new Error(AGENT_GROUP_RUN_RESUME_NOT_ALLOWED);
+      }
+
+      const [operation] = await tx
+        .select({ status: agentOperations.status })
+        .from(agentOperations)
+        .where(and(eq(agentOperations.id, row.run.supervisorOperationId), this.operationScope()))
+        .limit(1);
+      if (
+        !operation ||
+        !['waiting_for_group_resume', 'waiting_for_async_tool'].includes(operation.status)
+      ) {
+        throw new Error(AGENT_GROUP_RUN_RESUME_NOT_ALLOWED);
+      }
+
+      if (operation.status === 'waiting_for_group_resume') {
+        const [released] = await tx
+          .update(agentOperations)
+          .set({ status: 'waiting_for_async_tool' })
+          .where(
+            and(
+              eq(agentOperations.id, row.run.supervisorOperationId),
+              eq(agentOperations.status, 'waiting_for_group_resume'),
+              this.operationScope(),
+            ),
+          )
+          .returning({ id: agentOperations.id });
+        if (!released) throw new Error(AGENT_GROUP_RUN_RESUME_NOT_ALLOWED);
+      }
+
+      const transitionKey = `resume:${row.run.updatedAt.getTime()}`;
+      await tx
+        .update(agentGroupRuns)
+        .set({ completionReason: null, status: 'running' })
+        .where(eq(agentGroupRuns.id, runId));
+      await this.recordEvent(tx, {
+        idempotencyKey: `run:resumed:${row.run.updatedAt.getTime()}`,
+        operationId: row.run.supervisorOperationId,
+        runId,
+        status: 'running',
+        type: 'run.resumed',
+      });
+      await this.settleRunIfTerminal(tx, runId, transitionKey);
+    });
+
+    const snapshot = await this.findById(runId);
+    if (!snapshot) throw new Error(AGENT_GROUP_RUN_NOT_FOUND);
+    return snapshot;
+  };
 
   createAttempt = async (params: CreateAgentGroupRunAttemptParams) =>
     this.db.transaction(async (tx) => {

@@ -11,6 +11,7 @@ import {
   AGENT_GROUP_RUN_IDEMPOTENCY_CONFLICT,
   AGENT_GROUP_RUN_NOT_FOUND,
   AGENT_GROUP_RUN_OPERATION_MISMATCH,
+  AGENT_GROUP_RUN_PAUSE_NOT_ALLOWED,
   AGENT_GROUP_RUN_RETRY_LIMIT_EXCEEDED,
   AgentGroupRunModel,
 } from '../agentGroupRun';
@@ -471,6 +472,74 @@ describe('AgentGroupRunModel', () => {
         runtimeKind: 'normal',
       }),
     ).rejects.toThrowError(AGENT_GROUP_RUN_RETRY_LIMIT_EXCEEDED);
+  });
+
+  it('parks the supervisor barrier while members settle, then resumes and converges', async () => {
+    await seedPersonalGroup();
+    const model = new AgentGroupRunModel(serverDB, userId);
+    const created = await model.create(createParams());
+    await serverDB.insert(agentOperations).values({
+      agentId: memberAgentId,
+      chatGroupId: groupId,
+      id: 'pause-member-operation',
+      status: 'running',
+      userId,
+    });
+    await model.createAttempt({
+      attemptNo: 1,
+      operationId: 'pause-member-operation',
+      runNodeId: created.nodes[0].id,
+      runtimeKind: 'normal',
+    });
+    await serverDB
+      .update(agentOperations)
+      .set({ status: 'waiting_for_async_tool' })
+      .where(eq(agentOperations.id, 'supervisor-operation-1'));
+
+    const paused = await model.pauseAtBarrier(created.run.id);
+    const repeated = await model.pauseAtBarrier(created.run.id);
+    expect(paused.run).toMatchObject({ completionReason: 'manual_pause', status: 'waiting' });
+    expect(repeated.run).toMatchObject({ completionReason: 'manual_pause', status: 'waiting' });
+    let [supervisorOperation] = await serverDB
+      .select({ status: agentOperations.status })
+      .from(agentOperations)
+      .where(eq(agentOperations.id, 'supervisor-operation-1'));
+    expect(supervisorOperation.status).toBe('waiting_for_group_resume');
+
+    await model.completeAttempt({
+      attemptNo: 1,
+      completionReason: 'done',
+      operationId: 'pause-member-operation',
+      runNodeId: created.nodes[0].id,
+      runtimeKind: 'normal',
+      status: 'completed',
+    });
+    let snapshot = await model.findById(created.run.id);
+    expect(snapshot?.nodes[0].status).toBe('completed');
+    expect(snapshot?.run).toMatchObject({ completionReason: 'manual_pause', status: 'waiting' });
+
+    snapshot = await model.resumeFromBarrier(created.run.id);
+    [supervisorOperation] = await serverDB
+      .select({ status: agentOperations.status })
+      .from(agentOperations)
+      .where(eq(agentOperations.id, 'supervisor-operation-1'));
+    expect(supervisorOperation.status).toBe('waiting_for_async_tool');
+    expect(snapshot.run).toMatchObject({ completionReason: 'completed', status: 'completed' });
+
+    const events = await model.listEvents(created.run.id);
+    expect(events?.filter(({ type }) => type === 'run.paused')).toHaveLength(1);
+    expect(events?.filter(({ type }) => type === 'run.resumed')).toHaveLength(1);
+    expect(events?.filter(({ type }) => type === 'run.terminal')).toHaveLength(1);
+  });
+
+  it('refuses to pause before the supervisor reaches its async-tool barrier', async () => {
+    await seedPersonalGroup();
+    const model = new AgentGroupRunModel(serverDB, userId);
+    const created = await model.create(createParams());
+
+    await expect(model.pauseAtBarrier(created.run.id)).rejects.toThrowError(
+      AGENT_GROUP_RUN_PAUSE_NOT_ALLOWED,
+    );
   });
 
   it('marks cancelling before returning active operations and finalizes idempotently', async () => {

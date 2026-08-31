@@ -8,7 +8,11 @@ import { withScopedPermission } from '@/business/server/trpc-middlewares/rbacPer
 import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceAuth';
 import { AgentModel } from '@/database/models/agent';
 import { AGENT_COPY_IN_PROGRESS } from '@/database/models/agentCopyJob';
-import { AGENT_GROUP_RUN_NOT_FOUND } from '@/database/models/agentGroupRun';
+import {
+  AGENT_GROUP_RUN_NOT_FOUND,
+  AGENT_GROUP_RUN_PAUSE_NOT_ALLOWED,
+  AGENT_GROUP_RUN_RESUME_NOT_ALLOWED,
+} from '@/database/models/agentGroupRun';
 import {
   AGENT_TRANSFER_IN_PROGRESS,
   AgentTransferJobModel,
@@ -769,6 +773,76 @@ export const agentGroupRouter = router({
           workspaceId: run.run.workspaceId,
         });
       } catch (error) {
+        return toRunNotFound(error);
+      }
+    }),
+
+  pauseGroupRun: agentGroupProcedureWrite
+    .input(z.object({ runId: z.string().min(1) }))
+    .mutation(async ({ input, ctx }) => {
+      const service = new AgentGroupCollaborationService(
+        ctx.serverDB,
+        ctx.userId,
+        ctx.workspaceId ?? undefined,
+      );
+      const run = await service.getRun(input.runId);
+      if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'Agent Group run not found.' });
+      if (ctx.workspaceId) {
+        await assertCanPerformResourceAction({
+          action: 'use',
+          db: ctx.serverDB,
+          resourceId: run.run.chatGroupId,
+          resourceType: 'agentGroup',
+          userId: ctx.userId,
+          workspaceId: ctx.workspaceId,
+        });
+      }
+
+      try {
+        return await service.pauseAtBarrier(input.runId);
+      } catch (error) {
+        if (error instanceof Error && error.message === AGENT_GROUP_RUN_PAUSE_NOT_ALLOWED) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'The supervisor has not reached a pausable collaboration barrier.',
+          });
+        }
+        return toRunNotFound(error);
+      }
+    }),
+
+  resumeGroupRun: agentGroupProcedureWrite
+    .input(z.object({ runId: z.string().min(1) }))
+    .mutation(async ({ input, ctx }) => {
+      const service = new AgentGroupCollaborationService(
+        ctx.serverDB,
+        ctx.userId,
+        ctx.workspaceId ?? undefined,
+      );
+      const run = await service.getRun(input.runId);
+      if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'Agent Group run not found.' });
+      if (ctx.workspaceId) {
+        await assertCanPerformResourceAction({
+          action: 'use',
+          db: ctx.serverDB,
+          resourceId: run.run.chatGroupId,
+          resourceType: 'agentGroup',
+          userId: ctx.userId,
+          workspaceId: ctx.workspaceId,
+        });
+      }
+
+      try {
+        return await new AiAgentService(ctx.serverDB, ctx.userId, {
+          workspaceId: ctx.workspaceId ?? undefined,
+        }).resumeGroupRun(input.runId);
+      } catch (error) {
+        if (error instanceof Error && error.message === AGENT_GROUP_RUN_RESUME_NOT_ALLOWED) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'This Agent Group run is not manually paused.',
+          });
+        }
         return toRunNotFound(error);
       }
     }),

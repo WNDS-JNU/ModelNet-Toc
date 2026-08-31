@@ -52,6 +52,8 @@ const RunHistoryButton = memo<RunHistoryButtonProps>(({ groupId }) => {
   const [open, setOpen] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string>();
   const [cancelling, setCancelling] = useState(false);
+  const [pausing, setPausing] = useState(false);
+  const [resuming, setResuming] = useState(false);
   const [retryingNodeId, setRetryingNodeId] = useState<string>();
 
   const {
@@ -78,6 +80,8 @@ const RunHistoryButton = memo<RunHistoryButtonProps>(({ groupId }) => {
     () => runs.find((snapshot) => snapshot.run.id === selectedRunId),
     [runs, selectedRunId],
   );
+  const isManuallyPaused =
+    selectedRun?.run.status === 'waiting' && selectedRun.run.completionReason === 'manual_pause';
 
   const { data: events = [], mutate: mutateEvents } = useClientPollingSWR(
     open && selectedRunId ? groupKeys.runEvents(selectedRunId) : null,
@@ -144,6 +148,34 @@ const RunHistoryButton = memo<RunHistoryButtonProps>(({ groupId }) => {
     }
   };
 
+  const pauseRun = async () => {
+    if (!selectedRun) return;
+    setPausing(true);
+    try {
+      await chatGroupService.pauseGroupRun(selectedRun.run.id);
+      await Promise.all([mutateRuns(), mutateEvents()]);
+      toast.success(t('run.paused'));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('run.pauseFailed'));
+    } finally {
+      setPausing(false);
+    }
+  };
+
+  const resumeRun = async () => {
+    if (!selectedRun) return;
+    setResuming(true);
+    try {
+      await chatGroupService.resumeGroupRun(selectedRun.run.id);
+      await Promise.all([mutateRuns(), mutateEvents()]);
+      toast.success(t('run.resumed'));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('run.resumeFailed'));
+    } finally {
+      setResuming(false);
+    }
+  };
+
   return (
     <>
       <ActionIcon
@@ -193,8 +225,32 @@ const RunHistoryButton = memo<RunHistoryButtonProps>(({ groupId }) => {
                   </Flexbox>
                   <Flexbox horizontal align={'center'} gap={8}>
                     <Tag color={statusColor(selectedRun.run.status)}>
-                      {statusLabel(selectedRun.run.status)}
+                      {isManuallyPaused
+                        ? t('run.status.paused')
+                        : statusLabel(selectedRun.run.status)}
                     </Tag>
+                    {selectedRun.run.status === 'running' && (
+                      <Popconfirm
+                        description={t('run.pauseConfirm')}
+                        title={t('run.pause')}
+                        onConfirm={pauseRun}
+                      >
+                        <Button loading={pausing} size={'small'}>
+                          {t('run.pause')}
+                        </Button>
+                      </Popconfirm>
+                    )}
+                    {isManuallyPaused && (
+                      <Popconfirm
+                        description={t('run.resumeConfirm')}
+                        title={t('run.resume')}
+                        onConfirm={resumeRun}
+                      >
+                        <Button loading={resuming} size={'small'} type={'primary'}>
+                          {t('run.resume')}
+                        </Button>
+                      </Popconfirm>
+                    )}
                     {ACTIVE_RUN_STATUSES.has(selectedRun.run.status) &&
                       selectedRun.run.status !== 'cancelling' && (
                         <Popconfirm

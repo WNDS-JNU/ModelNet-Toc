@@ -256,7 +256,15 @@ export class AbandonOperationService {
     result: FinalizeAbandonedResult,
   ): Promise<void> {
     const op = await this.findOperationRow(operationId);
-    if (!op || !['running', 'waiting_for_human', 'waiting_for_async_tool'].includes(op.status)) {
+    if (
+      !op ||
+      ![
+        'running',
+        'waiting_for_human',
+        'waiting_for_async_tool',
+        'waiting_for_group_resume',
+      ].includes(op.status)
+    ) {
       return;
     }
 

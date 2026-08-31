@@ -89,7 +89,11 @@ const LIVE_OPERATION_STATUSES = new Set([
   'waiting_for_async_tool',
 ]);
 /** Parked states are exempt from the abandoned-age backstop — see above. */
-const UNBOUNDED_OPERATION_STATUSES = new Set(['waiting_for_human', 'waiting_for_async_tool']);
+const UNBOUNDED_OPERATION_STATUSES = new Set([
+  'waiting_for_human',
+  'waiting_for_async_tool',
+  'waiting_for_group_resume',
+]);
 
 export interface TopicListItem extends TopicItem {
   /** The topic's last non-empty assistant reply, truncated with a trailing `…`. Only set when `queryTopics` is called with `withLastMessage`. */

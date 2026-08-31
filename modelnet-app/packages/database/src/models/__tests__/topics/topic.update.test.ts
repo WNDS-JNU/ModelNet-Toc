@@ -24,7 +24,14 @@ const seedOperation = async ({
 }: {
   createdAt?: Date;
   id: string;
-  status: 'done' | 'error' | 'idle' | 'running' | 'waiting_for_async_tool' | 'waiting_for_human';
+  status:
+    | 'done'
+    | 'error'
+    | 'idle'
+    | 'running'
+    | 'waiting_for_async_tool'
+    | 'waiting_for_group_resume'
+    | 'waiting_for_human';
 }) => {
   await serverDB.insert(agentOperations).values({
     id,

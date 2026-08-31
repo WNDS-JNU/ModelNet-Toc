@@ -100,6 +100,10 @@ export class AgentGroupCollaborationService {
 
   listRuns = (chatGroupId: string, limit?: number) => this.repository.listRuns(chatGroupId, limit);
 
+  pauseAtBarrier = (runId: string) => this.repository.pauseAtBarrier(runId);
+
+  resumeFromBarrier = (runId: string) => this.repository.resumeFromBarrier(runId);
+
   isLatestAttempt = (
     params: Pick<CreateAgentGroupRunAttemptParams, 'attemptNo' | 'operationId' | 'runNodeId'>,
   ) => this.repository.isLatestAttempt(params);

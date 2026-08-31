@@ -212,6 +212,7 @@ export class AgentOperationModel {
               'running',
               'waiting_for_human',
               'waiting_for_async_tool',
+              'waiting_for_group_resume',
             ]),
             eq(agentOperations.status, params.status),
           ),

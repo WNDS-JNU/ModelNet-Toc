@@ -327,7 +327,8 @@ export const registerWorksForOperation = async (
       parentStatus === 'idle' ||
       parentStatus === 'running' ||
       parentStatus === 'waiting_for_human' ||
-      parentStatus === 'waiting_for_async_tool';
+      parentStatus === 'waiting_for_async_tool' ||
+      parentStatus === 'waiting_for_group_resume';
     if (parentActive) {
       log(
         '[%s] Skipping file Work registration: parent operation is still active (%s)',
