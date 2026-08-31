@@ -1,6 +1,6 @@
 # ModelNet Agent 级协作互联总体实施计划
 
-> 状态：实施中（M1 持久内部协作已通过 Dev 评审；M2 ExecutionPlan 与工具权限收窄已通过真实普通 Agent + 本机登录态 Codex 混合群组验收，离线重连、事件重放与 Intervention 仍待继续）
+> 状态：实施中（M1 持久内部协作已通过 Dev 评审；M2 ExecutionPlan、工具权限收窄、设备离线/重连幂等与事件重放已通过 Dev 验收，Intervention 仍待继续）
 > 版本：V2.0
 > 重构日期：2026-08-30
 > 代码基线：4A100，/home/duxianghe/ModelNet-toc，33190eda5f
@@ -436,6 +436,8 @@ A2A 是 Member Dispatcher 的外部执行 Adapter，不是 Router 协议，也�
 
 状态续（2026-08-31，M2 工具权限第二片）：群组普通成员在工具可用时改为 `manual` Intervention，不再以 `headless` 自动批准；`disableTools` 会传入共享会话与 isolated thread 的真实执行。异构成员的相同硬上限由 server 追加 `--permission-profile read-only`，CLI 再把 Codex 固定为 `--ignore-user-config --sandbox read-only`、Claude Code 固定为 `--permission-mode plan`，并剥离可扩大权限的用户参数；当前无法可靠执行只读 profile 的其他异构 runtime 会显式拒绝，不再静默放宽。本机独立 smoke 由登录态 Codex 自动选择默认 `gpt-5.6-sol`，一次文件写入被 read-only sandbox 拒绝且 marker 未生成。v15 真实混合 Run `agr_4b2ewwa68iHP` 以 `broadcast / completed` 收敛；普通与 Codex 两个 Node / Attempt 均 completed，两个 `tool_policy_snapshot` 均为 `{disableTools: true}`，Codex Attempt 为 `runtimeKind=heterogeneous`，执行快照为 `executionPlan={kind: device, target: device, deviceId: modelnet-m2-4a100-readonly}`，connector 收到运行并以退出码 0 完成。CLI 84 项、服务端 69 项和异构 spawn 44 项定向 Vitest（合计 197）通过，TypeScript、定向 ESLint、CLI bundle、Worker bundle 与 Next standalone build 通过；v15 Dev app / agent-worker healthy，`3181/signin` 与 `3192/healthz` 均为 200。测试成员已恢复为 `modelnet/modelnet-auto`，临时 API key 已撤销，connector 已离线；生产容器未重建。工具权限“只能收窄不能扩大”验收项完成，M2 仍需继续设备离线/重连/事件重放与 Intervention 运行级门禁。
 
+状态续（2026-08-31，M2 设备恢复第三片）：明确区分 Device Gateway 的写派发与 Agent Gateway 的事件流恢复。`agent_run_request` 不做自动重放；Device Gateway Client 以有界的进程内 ledger 记录 in-flight operation 和最近 256 个 ACK，同一进程断线重连后再次收到相同 `operationId` 时只重发原 ACK，不再触发 CLI/桌面 handler，也不会启动第二个本地进程；设备进程重启后仍要求服务端创建新 Attempt，保持“写任务不自动重放”。Gateway 的 503 JSON 现在归一化为 `DEVICE_OFFLINE`、`DEVICE_DISCONNECTED` 或 `DEVICE_REQUEST_TIMEOUT` 机器码，服务端将其持久为明确失败原因并映射到可读设备错误。事件流继续复用既有 Agent Gateway `resume_complete` 权威状态、按序 flush 和 event-id 去重，不从静默猜测完成。Device Gateway Client 87 项、真实 Gateway 协议 7 项、Agent Gateway Client 源码 34 项、异构服务端 54 项通过，TypeScript、定向 ESLint、Device Gateway build、Worker bundle 和 Next standalone build 通过。真实 Dev 3193 验收依次得到 `offline={error: DEVICE_OFFLINE, success: false}`、首次派发成功、断线离线、同连接重连和相同 `runtime-reconnect-operation-v16` 再派发成功，handler 启动次数始终为 1。v16 镜像 `624e5c88e09d...` 的 app / agent-worker healthy，`3181/signin`、`3192/healthz`、`3193/healthz` 均为 200；Router 与 Device Gateway 容器未重建，生产未推广。M2 现只剩 Intervention 运行级门禁与离线恢复验收。
+
 ### 阶段 5：pipeline 与 debate
 
 - 实现无环计划验证、依赖就绪、屏障和结构化上下文交接。
@@ -620,7 +622,7 @@ A2A 是 Member Dispatcher 的外部执行 Adapter，不是 Router 协议，也�
 
 状态（2026-08-31）：Dev 代码、部署和 M1 主协议真实恢复验收完成。Redis Stream 模式的内部成员回调改由 worker bearer 鉴权直投，不再依赖 QStash；取消会在请求内幂等终态化 supervisor 与全部 active member operation。真实 Dev 证据：`agr_HUYxYOPMquEK` 在 317 ms 内把 Run、2 Node、2 Attempt 和 3 个 operation 全部收敛为取消/中断终态；`agr_xRRyZU6mUWNh` 在 Redis pending 消息和 supervisor `waiting_for_async_tool` 两个时点重建 app / worker 后恢复完成，Attempt 始终只有 2 个且均为 attemptNo=1；`agr_HO8Ch2cttQrZ` 的 1000 ms watchdog 将 2 Node 收敛为 `failed + timeout`、2 Attempt 收敛为 `timed_out + timeout`；`agr_8y48G98pFfCj` 以 1 Node / 1 Attempt 完成 `single`；`agr_CgGkeaIlitzF` 以 2 Node / 2 Attempt 完成 `broadcast`；`agr_l0IsBNLsiYDM` 在 Dev Redis 暂停 8 秒并恢复后自动完成，2 个成员仍各只有 attemptNo=1，同一成员完成回调再重复投递两次均返回 `resumed=false`，没有新增 Attempt 或 operation；`agr_bezBBtFdWwtb` 首轮以 2 Node / 2 Attempt 完成 `broadcast`，随后对节点 `71e9e8ed-4c7c-45f7-a04c-f9d78b2fcab8` 显式重试，Run 从 completed 重开并以 attemptNo=2 再次完成，`node.retry_started`、`run.reopened` 和第二组 node/run terminal 事件完整，再次重试被 `PRECONDITION_FAILED` 拒绝，Attempt 总数保持 3、operation 总数保持 4。v11 又在该 Run 已完成 attemptNo=2 后重放旧 attemptNo=1 的矛盾 `error` 回调，回调返回 `resumed=false`，Run 仍为 completed，Attempt / operation / event 分别保持 3 / 4 / 19，旧 anchor 仍为 completed 且无 plugin error。v12 的 `agr_vs6KJTbhYPJ8` 在 supervisor 到达 `waiting_for_async_tool` 屏障后原子暂停为 Run `waiting + manual_pause` 和 operation `waiting_for_group_resume`；两名成员及各自 attemptNo=1 均完成后，Run 仍保持人工暂停，恢复前事件为 `run.paused=1 / run.resumed=0 / run.terminal=0`；显式恢复返回 `resumed=true` 并一次收敛为 completed，最终 `run.paused / run.resumed / run.terminal` 各 1，重复恢复被 `PRECONDITION_FAILED` 拒绝，Attempt / operation 总数保持 2 / 3。Attempt 的明确原因由迁移 `0155_charming_miracleman.sql` 持久化。PGlite 46 项、服务端定向 Vitest 188 项、项目 TypeScript、Worker bundle、Next standalone build、Dev 迁移和 v12 容器 health 均通过；既有更宽的服务端定向 Vitest 216 项恢复验证仍有效。`AGENT_GROUP_DURABLE_RUNS=1` 仍只存在于忽略版本控制的 `.env.dev`，生产 compose 和生产开关未改。M1 Dev 评审通过；下一步进入 M2 异构 Agent / ExecutionPlan 契约收口，不自动推广生产。
 
-上述五个 PR 已完成 M1 Dev 评审；M2 已完成异构 Agent / ExecutionPlan 的 prepared-boundary 契约和工具权限收窄，并通过真实只读普通 Agent + 本机登录态 Codex 混合群组验收。下一步只做阶段 4 剩余的设备离线/重连/事件重放和 Intervention 门禁；A2A 仍保持后置，生产推广仍需独立审批。
+上述五个 PR 已完成 M1 Dev 评审；M2 已完成异构 Agent / ExecutionPlan 的 prepared-boundary 契约、工具权限收窄、设备离线/重连幂等和事件重放，并通过真实只读普通 Agent + 本机登录态 Codex 混合群组与真实 Dev Gateway 验收。下一步只做阶段 4 剩余的 Intervention 运行级门禁与离线恢复；A2A 仍保持后置，生产推广仍需独立审批。
 
 ## 十九、最终验收清单
 
@@ -629,6 +631,7 @@ A2A 是 Member Dispatcher 的外部执行 Adapter，不是 Router 协议，也�
 - [ ] Run / Node / Attempt / Operation 谱系完整且可查询。
 - [ ] single、broadcast、parallel_tasks 可暂停、取消、恢复和显式重试。
 - [ ] App、worker 或浏览器重启不丢运行，不产生重复执行。
+- [x] 设备离线明确失败；同一进程重连可安全重试 ACK，写任务不自动重放。
 - [ ] 客户端 GroupOrchestration 重复调度路径已安全退役。
 - [x] 普通 Agent 与异构 Agent 使用同一 Member Dispatcher 和 ExecutionPlan。
 - [x] 群组工具权限只能收窄成员原权限。

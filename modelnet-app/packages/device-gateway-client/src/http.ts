@@ -263,7 +263,19 @@ export class GatewayHttpClient {
     const response = await this.post('/api/device/agent/run', params);
     if (!response.ok) {
       const text = await response.text().catch(() => '');
-      return { error: text || `HTTP ${response.status}`, success: false };
+      let error = text;
+      try {
+        const body = asJsonObject(JSON.parse(text));
+        error =
+          typeof body.code === 'string'
+            ? body.code
+            : typeof body.error === 'string'
+              ? body.error
+              : text;
+      } catch {
+        // Older gateways returned a plain-text machine code.
+      }
+      return { error: error || `HTTP ${response.status}`, success: false };
     }
     const data = await readJsonObject(response);
     if (data.success === false || data.status === 'rejected') {

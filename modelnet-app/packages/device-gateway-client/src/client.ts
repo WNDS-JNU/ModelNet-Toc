@@ -28,6 +28,7 @@ const HEARTBEAT_INTERVAL = 30_000; // 30s
 const INITIAL_RECONNECT_DELAY = 1000; // 1s
 const MAX_RECONNECT_DELAY = 30_000; // 30s
 const MAX_MISSED_HEARTBEATS = 3; // Force reconnect after 3 missed acks
+const MAX_RECENT_AGENT_RUN_ACKS = 256;
 
 // ─── Logger Interface ───
 
@@ -99,6 +100,16 @@ export class GatewayClient extends EventEmitter {
   private serverUrl?: string;
   private logger: GatewayClientLogger;
   private autoReconnect: boolean;
+  /**
+   * Agent runs are write operations. Keep their acknowledgement state across a
+   * WebSocket reconnect so an explicit retry of the same operationId can only
+   * replay the ack, never start a second local process. This is deliberately a
+   * bounded, process-local ledger: reconnects are safe, while a device restart
+   * still requires the server to create a new Attempt instead of auto-replaying
+   * an old write.
+   */
+  private readonly agentRunsInFlight = new Set<string>();
+  private readonly recentAgentRunAcks = new Map<string, AgentRunAckMessage>();
 
   constructor(options: GatewayClientOptions) {
     super();
@@ -210,10 +221,13 @@ export class GatewayClient extends EventEmitter {
   }
 
   sendAgentRunAck(response: Omit<AgentRunAckMessage, 'type'>): void {
-    this.sendMessage({
+    const message: AgentRunAckMessage = {
       ...response,
       type: 'agent_run_ack',
-    });
+    };
+    this.agentRunsInFlight.delete(response.operationId);
+    this.rememberAgentRunAck(message);
+    this.sendMessage(message);
   }
 
   // ─── Connection Logic ───
@@ -365,7 +379,29 @@ export class GatewayClient extends EventEmitter {
         }
 
         case 'agent_run_request': {
-          this.emit('agent_run_request', message as AgentRunRequestMessage);
+          const request = message as AgentRunRequestMessage;
+          const cachedAck = this.recentAgentRunAcks.get(request.operationId);
+          if (cachedAck) {
+            this.logger.info(
+              `Replaying cached agent_run_ack without restarting operationId=${request.operationId}`,
+            );
+            this.sendMessage(cachedAck);
+            break;
+          }
+          if (this.agentRunsInFlight.has(request.operationId)) {
+            this.logger.info(
+              `Ignoring duplicate in-flight agent_run_request operationId=${request.operationId}`,
+            );
+            break;
+          }
+          this.agentRunsInFlight.add(request.operationId);
+          try {
+            const handled = this.emit('agent_run_request', request);
+            if (!handled) this.agentRunsInFlight.delete(request.operationId);
+          } catch (error) {
+            this.agentRunsInFlight.delete(request.operationId);
+            throw error;
+          }
           break;
         }
 
@@ -475,6 +511,17 @@ export class GatewayClient extends EventEmitter {
   private sendMessage(data: ClientMessage) {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(data));
+    }
+  }
+
+  private rememberAgentRunAck(message: AgentRunAckMessage): void {
+    // Refresh insertion order when a handler deliberately replaces an ack.
+    this.recentAgentRunAcks.delete(message.operationId);
+    this.recentAgentRunAcks.set(message.operationId, message);
+    while (this.recentAgentRunAcks.size > MAX_RECENT_AGENT_RUN_ACKS) {
+      const oldestOperationId = this.recentAgentRunAcks.keys().next().value;
+      if (!oldestOperationId) break;
+      this.recentAgentRunAcks.delete(oldestOperationId);
     }
   }
 

@@ -648,6 +648,12 @@ interface ResolvedWorkspaceInit {
  * `detail` for diagnostics. Web clients localize via the mapped error type below.
  */
 const HETERO_DISPATCH_ERROR_HEADLINES: Record<string, string> = {
+  DEVICE_DISCONNECTED:
+    'The selected run device disconnected before it accepted this agent run. Reconnect the device, then create a new Attempt.',
+  DEVICE_OFFLINE:
+    'The selected run device is offline. Reconnect that device, then create a new Attempt.',
+  DEVICE_REQUEST_TIMEOUT:
+    'The selected run device did not acknowledge this agent run in time. Check the device connection before creating a new Attempt.',
   GATEWAY_NOT_CONFIGURED:
     "The run device gateway isn't configured on the server, so this agent can't reach a device to run on. Configure the device gateway, or switch this agent to a connected local device.",
 };
@@ -661,6 +667,9 @@ const humanizeHeteroDispatchError = (raw?: string): string =>
  * otherwise mask the specific message). Unknown codes keep the generic type.
  */
 const HETERO_DISPATCH_ERROR_TYPES: Record<string, ErrorType> = {
+  DEVICE_DISCONNECTED: ChatErrorType.DeviceGatewayNotConfigured,
+  DEVICE_OFFLINE: ChatErrorType.DeviceGatewayNotConfigured,
+  DEVICE_REQUEST_TIMEOUT: ChatErrorType.DeviceGatewayNotConfigured,
   GATEWAY_NOT_CONFIGURED: ChatErrorType.DeviceGatewayNotConfigured,
 };
 

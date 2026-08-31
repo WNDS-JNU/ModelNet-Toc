@@ -4,14 +4,14 @@ import { once } from 'node:events';
 
 import {
   GatewayClient,
-  GatewayHttpClient,
   type GatewayClientOptions,
+  GatewayHttpClient,
 } from '@lobechat/device-gateway-client';
 import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 
+import { type StartedGateway,startGatewayServer } from '../src/app.js';
 import type { Authenticator } from '../src/auth.js';
-import { startGatewayServer, type StartedGateway } from '../src/app.js';
 import type { GatewayConfig } from '../src/config.js';
 import { GatewayError } from '../src/errors.js';
 import { silentLogger } from '../src/logger.js';
@@ -264,6 +264,56 @@ describe('Device Gateway protocol', () => {
         userId: 'user-1',
       }),
     ).resolves.toEqual({ success: true });
+  });
+
+  it('reports offline dispatches and does not replay an accepted write after reconnect', async () => {
+    started = await startGatewayServer({
+      authenticator,
+      config: baseConfig(),
+      logger: silentLogger,
+    });
+    const http = new GatewayHttpClient({ gatewayUrl: started.url, serviceToken });
+    const request = {
+      agentType: 'codex',
+      deviceId: 'mac-device',
+      jwt: 'operation-jwt',
+      operationId: 'operation-idempotent',
+      prompt: 'read only',
+      topicId: 'topic-1',
+      userId: 'user-1',
+    };
+
+    await expect(http.dispatchAgentRun(request)).resolves.toEqual({
+      error: 'DEVICE_OFFLINE',
+      success: false,
+    });
+
+    const desktop = await connectClient({
+      channel: 'desktop',
+      connectionId: 'desktop-connection',
+      deviceId: 'mac-device',
+      gatewayUrl: started.url,
+      token: 'valid-token',
+      userId: 'user-1',
+    });
+    clients.push(desktop);
+    let starts = 0;
+    desktop.on('agent_run_request', (agentRun) => {
+      starts += 1;
+      desktop.sendAgentRunAck({ operationId: agentRun.operationId, status: 'accepted' });
+    });
+
+    await expect(http.dispatchAgentRun(request)).resolves.toEqual({ success: true });
+    expect(starts).toBe(1);
+
+    await desktop.disconnect();
+    await waitFor(() => started!.gateway.registry.countDevices('user:user-1') === 0);
+    const reconnected = once(desktop, 'connected');
+    await desktop.connect();
+    await reconnected;
+
+    await expect(http.dispatchAgentRun(request)).resolves.toEqual({ success: true });
+    expect(starts).toBe(1);
   });
 
   it('aggregates channels, prefers desktop, replaces reconnects, and isolates workspace', async () => {

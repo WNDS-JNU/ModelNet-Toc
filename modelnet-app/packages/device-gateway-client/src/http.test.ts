@@ -416,6 +416,30 @@ describe('GatewayHttpClient', () => {
 
       expect(result).toEqual({ error: 'DEVICE_OFFLINE', success: false });
     });
+
+    it('should preserve the machine code from JSON gateway errors', async () => {
+      mockFetch({
+        ok: false,
+        status: 503,
+        text: vi
+          .fn()
+          .mockResolvedValue(
+            JSON.stringify({ code: 'DEVICE_DISCONNECTED', error: 'Device disconnected' }),
+          ),
+      });
+
+      const result = await client.dispatchAgentRun({
+        agentType: 'codex',
+        assistantMessageId: 'asst-1',
+        jwt: 'jwt',
+        operationId: 'op-1',
+        prompt: 'run',
+        topicId: 'tpc-1',
+        userId: 'user-1',
+      });
+
+      expect(result).toEqual({ error: 'DEVICE_DISCONNECTED', success: false });
+    });
   });
 
   describe('executeMcpCall', () => {

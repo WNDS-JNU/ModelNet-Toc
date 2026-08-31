@@ -322,6 +322,54 @@ describe('GatewayClient', () => {
       expect(rpcCb).toHaveBeenCalledWith(msg);
     });
 
+    it('should replay a cached agent run ack without emitting a duplicate write', () => {
+      const agentRunCb = vi.fn();
+      client.on('agent_run_request', agentRunCb);
+      const ws = (client as any).ws;
+      const msg = {
+        agentType: 'codex',
+        jwt: 'operation-jwt',
+        operationId: 'op-idempotent',
+        prompt: 'inspect',
+        topicId: 'topic-1',
+        type: 'agent_run_request',
+      };
+
+      handler(JSON.stringify(msg));
+      expect(agentRunCb).toHaveBeenCalledTimes(1);
+      client.sendAgentRunAck({ operationId: msg.operationId, status: 'accepted' });
+      ws.send.mockClear();
+
+      handler(JSON.stringify(msg));
+
+      expect(agentRunCb).toHaveBeenCalledTimes(1);
+      expect(ws.send).toHaveBeenCalledWith(
+        JSON.stringify({
+          operationId: msg.operationId,
+          status: 'accepted',
+          type: 'agent_run_ack',
+        }),
+      );
+    });
+
+    it('should suppress duplicate agent runs while the first dispatch is still in flight', () => {
+      const agentRunCb = vi.fn();
+      client.on('agent_run_request', agentRunCb);
+      const msg = {
+        agentType: 'codex',
+        jwt: 'operation-jwt',
+        operationId: 'op-in-flight',
+        prompt: 'inspect',
+        topicId: 'topic-1',
+        type: 'agent_run_request',
+      };
+
+      handler(JSON.stringify(msg));
+      handler(JSON.stringify(msg));
+
+      expect(agentRunCb).toHaveBeenCalledTimes(1);
+    });
+
     it('should handle auth_expired', () => {
       const expiredCb = vi.fn();
       client.on('auth_expired', expiredCb);
