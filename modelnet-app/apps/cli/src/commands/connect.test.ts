@@ -277,7 +277,7 @@ describe('connect command', () => {
 
     vi.mocked(resolveToken).mockResolvedValueOnce({
       serverUrl: 'https://app.modelnet.com',
-      token: 'new-tok',
+      token: 'new-token',
       tokenType: 'jwt',
       userId: 'user',
     });

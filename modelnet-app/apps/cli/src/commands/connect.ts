@@ -24,12 +24,7 @@ import type { Command } from 'commander';
 import { createLambdaClient } from '../api/client';
 import { resolveToken } from '../auth/resolveToken';
 import { CLI_API_KEY_ENV } from '../constants/auth';
-import {
-  CLI_CONFIG_DIR_NAME,
-  CLI_CONNECT_SERVICE_NAME,
-  CLI_DISPLAY_NAME,
-  CLI_PRIMARY_BIN,
-} from '../constants/identity';
+import { CLI_CONFIG_DIR_NAME, CLI_DISPLAY_NAME, CLI_PRIMARY_BIN } from '../constants/identity';
 import { OFFICIAL_GATEWAY_URL } from '../constants/urls';
 import {
   appendLog,
@@ -51,14 +46,6 @@ import {
   resolveWorkspaceDeviceIdentity,
 } from '../device/register';
 import {
-  installConnectService,
-  readConnectServiceStatus,
-  restartConnectService,
-  startConnectService,
-  stopConnectService,
-  uninstallConnectService,
-} from '../service/connect';
-import {
   addWorkspaceEnrollment,
   loadOrCreateConnectionId,
   loadSettings,
@@ -70,8 +57,6 @@ import {
 import { executeToolCall } from '../tools';
 import { cleanupAllProcesses } from '../tools/shell';
 import { log, setVerbose } from '../utils/logger';
-
-const CONNECT_SERVICE_NAME = CLI_CONNECT_SERVICE_NAME;
 
 interface ConnectOptions {
   daemon?: boolean;
@@ -371,50 +356,7 @@ async function runConnect(options: ConnectOptions, isDaemonChild: boolean) {
     isDaemonChild,
   };
 
-    try {
-      const data = await executeDeviceRpc(method, params, deviceControlDeps);
-      client.sendRpcResponse({ requestId, result: { data, success: true } });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (isDaemonChild) appendLog(`[RPC ERROR] ${method}: ${message} (${requestId})`);
-      else error(`rpc_request method=${method} failed: ${message}`);
-      client.sendRpcResponse({ requestId, result: { error: message, success: false } });
-    }
-  });
-
-  // Handle gateway-dispatched agent runs (heterogeneous agents, e.g. Claude
-  // Code). Mirrors the desktop app: spawn `modelnet hetero exec`, which owns the full
-  // execution + server-ingest pipeline. Ack with the spawn outcome — `accepted`
-  // once the child starts, `rejected` if it fails to spawn (e.g. bad cwd) — so
-  // a failed dispatch surfaces as an error instead of a stuck assistant message.
-  client.on('agent_run_request', async (request: AgentRunRequestMessage) => {
-    info(
-      `Received agent_run_request: operationId=${request.operationId} type=${request.agentType}`,
-    );
-    try {
-      const ack = await spawnHeteroAgentRun(
-        {
-          agentType: request.agentType,
-          args: request.args,
-          cwd: request.cwd,
-          imageList: request.imageList,
-          jwt: request.jwt,
-          operationId: request.operationId,
-          prompt: request.prompt,
-          resumeSessionId: request.resumeSessionId,
-          serverUrl: auth.serverUrl,
-          systemContext: request.systemContext,
-          topicId: request.topicId,
-        },
-        { error, info },
-      );
-      client.sendAgentRunAck({ operationId: request.operationId, ...ack });
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      error(`agent_run_request failed: ${reason}`);
-      client.sendAgentRunAck({ operationId: request.operationId, reason, status: 'rejected' });
-    }
-  });
+  bindGatewayClientHandlers(client, handlerContext, workspaceId);
 
   client.on('connected', () => {
     updateStatus('connected');
