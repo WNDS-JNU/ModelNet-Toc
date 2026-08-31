@@ -171,7 +171,7 @@ import { AgentRuntimeService } from '@/server/services/agentRuntime';
 import { getAbortError, isAbortError, throwIfAborted } from '@/server/services/agentRuntime/abort';
 import { CompletionLifecycle } from '@/server/services/agentRuntime/CompletionLifecycle';
 import { hookDispatcher } from '@/server/services/agentRuntime/hooks';
-import type { AgentHook } from '@/server/services/agentRuntime/hooks/types';
+import type { AgentHook, SerializedHook } from '@/server/services/agentRuntime/hooks/types';
 import type {
   AgentOperationPreparedContext,
   ExecGroupMemberParams,
@@ -565,6 +565,8 @@ interface InternalExecAgentParams extends ExecAgentParams {
    * downstream (connectors, installed plugins) keep it to the caller's own tools.
    */
   selectedToolIds?: string[];
+  /** Trusted webhook hooks inherited from an intervention's parked source operation. */
+  serializedHooks?: SerializedHook[];
   /** Abort startup before the agent runtime operation is created */
   signal?: AbortSignal;
   /**
@@ -1570,7 +1572,7 @@ export class AiAgentService {
       agentId,
       slug,
       prompt,
-      appContext,
+      appContext: requestedAppContext,
       autoStart = true,
       botContext,
       createdThreadId,
@@ -1584,7 +1586,8 @@ export class AiAgentService {
       fileIds: attachedFileIds,
       files,
       functionTools,
-      hooks,
+      hooks: requestedHooks,
+      serializedHooks: requestedSerializedHooks,
       instructions,
       chatConfigOverride,
       toolModeOverride,
@@ -1601,11 +1604,11 @@ export class AiAgentService {
       disableLocalSystem,
       initialStepCount,
       signal,
-      userInterventionConfig = { approvalMode: 'headless' },
+      userInterventionConfig: requestedUserInterventionConfig,
       queueRetries,
       queueRetryDelay,
       parentMessageId,
-      parentOperationId,
+      parentOperationId: requestedParentOperationId,
       onOperationPrepared,
       resume,
       resumeApproval,
@@ -1618,6 +1621,12 @@ export class AiAgentService {
       suppressUserMessage,
       ephemeralUserMessage,
     } = params;
+
+    let appContext = requestedAppContext;
+    const hooks = requestedHooks;
+    let parentOperationId = requestedParentOperationId;
+    let serializedHooks = requestedSerializedHooks;
+    let userInterventionConfig = requestedUserInterventionConfig;
 
     // Honour client-minted row ids on a FRESH send only. Resume / regeneration
     // replays reach this method too (resumeApproval, resumeToolResult,
@@ -2331,6 +2340,72 @@ export class AiAgentService {
         resumeToolResult.toolCallId,
       );
     }
+
+    // An intervention continuation is a fresh operation, but it is still the
+    // same orchestration member. Recover the trusted internal context and
+    // serialized control-flow hooks from the parked source before creating it.
+    // Without this, a group member approval loses its parent bridge, claims the
+    // supervisor's topic as a top-level run, and can never settle its Attempt.
+    if (approvalSourceOperationId) {
+      const [sourceState, sourceOperation] = await Promise.all([
+        this.agentRuntimeService.loadInterventionContinuationState(approvalSourceOperationId),
+        this.agentOperationModel.findById(approvalSourceOperationId),
+      ]);
+      const sourceMetadata = {
+        ...sourceOperation?.metadata,
+        ...sourceState?.metadata,
+      };
+      const sourceAppContext = (sourceOperation?.appContext ?? {}) as NonNullable<
+        InternalExecAgentParams['appContext']
+      >;
+      const sourceSerializedHooks = Array.isArray(sourceMetadata._hooks)
+        ? (sourceMetadata._hooks as SerializedHook[])
+        : undefined;
+      const sourceIsGroupMember =
+        sourceAppContext.orchestrationRole === 'member' ||
+        sourceMetadata.orchestrationRole === 'member' ||
+        Boolean(sourceOperation?.chatGroupId && sourceOperation.parentOperationId);
+
+      if (sourceIsGroupMember && !sourceSerializedHooks?.length && !serializedHooks?.length) {
+        throw new Error(
+          `Intervention source is missing the durable group-member bridge: ${approvalSourceOperationId}`,
+        );
+      }
+
+      appContext = {
+        ...sourceAppContext,
+        ...appContext,
+        groupId:
+          appContext?.groupId ??
+          sourceAppContext.groupId ??
+          sourceOperation?.chatGroupId ??
+          undefined,
+        isSubAgent:
+          appContext?.isSubAgent ??
+          sourceAppContext.isSubAgent ??
+          (typeof sourceMetadata.isSubAgent === 'boolean' ? sourceMetadata.isSubAgent : undefined),
+        isolationThread:
+          appContext?.isolationThread ??
+          Boolean(sourceOperation?.threadId && sourceOperation.parentOperationId),
+        orchestrationRole:
+          appContext?.orchestrationRole ??
+          sourceAppContext.orchestrationRole ??
+          (sourceIsGroupMember ? 'member' : sourceMetadata.orchestrationRole),
+        subAgentProgress:
+          appContext?.subAgentProgress ??
+          sourceAppContext.subAgentProgress ??
+          sourceMetadata.subAgentProgress,
+        threadId: appContext?.threadId ?? sourceOperation?.threadId ?? undefined,
+        topicId: appContext?.topicId ?? sourceOperation?.topicId ?? undefined,
+      };
+      parentOperationId = parentOperationId ?? sourceOperation?.parentOperationId ?? undefined;
+      serializedHooks = serializedHooks ?? sourceSerializedHooks;
+      userInterventionConfig =
+        userInterventionConfig ??
+        sourceState?.userInterventionConfig ??
+        (sourceMetadata.agentRuntimeUserInterventionConfig as UserInterventionConfig | undefined);
+    }
+    userInterventionConfig ??= { approvalMode: 'headless' };
 
     // 3. Handle topic creation: if no topicId provided, create a new topic; otherwise reuse existing
     let topicId = appContext?.topicId;
@@ -5380,6 +5455,7 @@ export class AiAgentService {
         maxSteps,
         modelRuntimeConfig: { model, provider },
         hooks,
+        serializedHooks,
         operationId,
         parentOperationId,
         signal,
@@ -7036,6 +7112,10 @@ export class AiAgentService {
 
     if (operation.status !== 'interrupted') {
       await this.agentRuntimeService.interruptOperation(operationId);
+    }
+    const lifecycleFinalized =
+      await this.agentRuntimeService.ensureInterruptedOperationFinalized(operationId);
+    if (!lifecycleFinalized && operation.status !== 'interrupted') {
       await this.agentOperationModel.recordCompletion(operationId, {
         completedAt: new Date(),
         completionReason: 'interrupted',

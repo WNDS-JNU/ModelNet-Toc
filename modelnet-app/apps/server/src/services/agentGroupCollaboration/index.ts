@@ -84,6 +84,9 @@ export class AgentGroupCollaborationService {
   completeAttempt = (params: CompleteAgentGroupRunAttemptParams) =>
     this.repository.completeAttempt(params);
 
+  parkAttemptForIntervention = (params: CreateAgentGroupRunAttemptParams) =>
+    this.repository.parkAttemptForIntervention(params);
+
   beginCancellation = (runId: string) => this.repository.beginCancellation(runId);
 
   createAttempt = (params: CreateAgentGroupRunAttemptParams) =>

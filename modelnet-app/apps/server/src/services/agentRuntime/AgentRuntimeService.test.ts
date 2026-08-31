@@ -32,14 +32,17 @@ vi.mock('@lobechat/model-runtime', () => ({
 const { ssrfSafeFetch: mockSsrfSafeFetch } = vi.hoisted(() => ({ ssrfSafeFetch: vi.fn() }));
 vi.mock('@lobechat/ssrf-safe-fetch', () => ({ ssrfSafeFetch: mockSsrfSafeFetch }));
 
-const { completeCollaborationAttempt, isLatestCollaborationAttempt } = vi.hoisted(() => ({
-  completeCollaborationAttempt: vi.fn(),
-  isLatestCollaborationAttempt: vi.fn(),
-}));
+const { completeCollaborationAttempt, isLatestCollaborationAttempt, parkCollaborationAttempt } =
+  vi.hoisted(() => ({
+    completeCollaborationAttempt: vi.fn(),
+    isLatestCollaborationAttempt: vi.fn(),
+    parkCollaborationAttempt: vi.fn(),
+  }));
 vi.mock('@/server/services/agentGroupCollaboration', () => ({
   AgentGroupCollaborationService: class {
     completeAttempt = completeCollaborationAttempt;
     isLatestAttempt = isLatestCollaborationAttempt;
+    parkAttemptForIntervention = parkCollaborationAttempt;
   },
 }));
 
@@ -2435,6 +2438,8 @@ describe('AgentRuntimeService', () => {
     beforeEach(() => {
       completeCollaborationAttempt.mockReset().mockResolvedValue(undefined);
       isLatestCollaborationAttempt.mockReset().mockResolvedValue(true);
+      parkCollaborationAttempt.mockReset().mockResolvedValue({ status: 'waiting' });
+      (service as any).agentOperationModel.findById = vi.fn().mockResolvedValue(undefined);
       updateToolMessage = vi.fn().mockResolvedValue({ success: true });
       (service as any).messageModel.updateToolMessage = updateToolMessage;
       resumeSpy = vi.spyOn(service, 'tryResumeParentFromAsyncTool').mockResolvedValue(true);
@@ -2498,6 +2503,83 @@ describe('AgentRuntimeService', () => {
       });
       expect(completeCollaborationAttempt.mock.invocationCallOrder[0]).toBeLessThan(
         updateToolMessage.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('parks a durable member on intervention without completing its Attempt or parent barrier', async () => {
+      const won = await service.completeGroupActionMember({
+        anchorMessageId: 'grp-tool-review',
+        collaboration: {
+          attemptNo: 1,
+          runId: 'run-1',
+          runNodeId: 'node-review',
+          runtimeKind: 'normal',
+        },
+        expectedMembers: 1,
+        finalState: { ...memberState, status: 'waiting_for_human' } as any,
+        groupToolMessageId: 'grp-tool-review',
+        mode: 'in_group',
+        onComplete: 'resume',
+        operationId: 'child-review',
+        parentOperationId: 'parent-1',
+        reason: 'waiting_for_human',
+      });
+
+      expect(won).toBe(false);
+      expect(parkCollaborationAttempt).toHaveBeenCalledWith({
+        attemptNo: 1,
+        operationId: 'child-review',
+        runId: 'run-1',
+        runNodeId: 'node-review',
+        runtimeKind: 'normal',
+      });
+      expect(completeCollaborationAttempt).not.toHaveBeenCalled();
+      expect(updateToolMessage).not.toHaveBeenCalled();
+      expect(resumeSpy).not.toHaveBeenCalled();
+    });
+
+    it('settles the original Attempt when an intervention continuation completes', async () => {
+      isLatestCollaborationAttempt.mockImplementation(
+        async ({ operationId }) => operationId === 'child-source',
+      );
+      (service as any).agentOperationModel.findById = vi.fn().mockImplementation(async (id) =>
+        id === 'child-continuation'
+          ? {
+              id,
+              metadata: {
+                agentInterventionContinuation: { sourceOperationId: 'child-source' },
+              },
+            }
+          : undefined,
+      );
+
+      const won = await service.completeGroupActionMember({
+        anchorMessageId: 'grp-tool-continued',
+        collaboration: {
+          attemptNo: 1,
+          runId: 'run-1',
+          runNodeId: 'node-continued',
+          runtimeKind: 'normal',
+        },
+        expectedMembers: 1,
+        finalState: memberState as any,
+        groupToolMessageId: 'grp-tool-continued',
+        mode: 'in_group',
+        onComplete: 'resume',
+        operationId: 'child-continuation',
+        parentOperationId: 'parent-1',
+        reason: 'done',
+      });
+
+      expect(won).toBe(true);
+      expect(completeCollaborationAttempt).toHaveBeenCalledWith(
+        expect.objectContaining({ operationId: 'child-source', status: 'completed' }),
+      );
+      expect(isLatestCollaborationAttempt).toHaveBeenCalledWith(
+        expect.objectContaining({ operationId: 'child-continuation' }),
+      );
+      expect(isLatestCollaborationAttempt).toHaveBeenCalledWith(
+        expect.objectContaining({ operationId: 'child-source' }),
       );
     });
 

@@ -30,9 +30,12 @@ export interface AgentOperationAppContext {
   defaultTaskAssigneeAgentId?: string;
   documentId?: string | null;
   groupId?: string | null;
+  isSubAgent?: boolean;
+  orchestrationRole?: string;
   scope?: string | null;
   sessionId?: string;
   sourceMessageId?: string;
+  subAgentProgress?: { parentOperationId: string; toolMessageId: string };
 }
 
 export const agentOperations = pgTable(

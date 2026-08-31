@@ -82,6 +82,9 @@ const RunHistoryButton = memo<RunHistoryButtonProps>(({ groupId }) => {
   );
   const isManuallyPaused =
     selectedRun?.run.status === 'waiting' && selectedRun.run.completionReason === 'manual_pause';
+  const isWaitingForIntervention =
+    selectedRun?.run.status === 'waiting' &&
+    selectedRun.run.completionReason === 'waiting_for_human';
 
   const { data: events = [], mutate: mutateEvents } = useClientPollingSWR(
     open && selectedRunId ? groupKeys.runEvents(selectedRunId) : null,
@@ -227,7 +230,9 @@ const RunHistoryButton = memo<RunHistoryButtonProps>(({ groupId }) => {
                     <Tag color={statusColor(selectedRun.run.status)}>
                       {isManuallyPaused
                         ? t('run.status.paused')
-                        : statusLabel(selectedRun.run.status)}
+                        : isWaitingForIntervention
+                          ? t('run.status.intervention')
+                          : statusLabel(selectedRun.run.status)}
                     </Tag>
                     {selectedRun.run.status === 'running' && (
                       <Popconfirm
@@ -265,6 +270,17 @@ const RunHistoryButton = memo<RunHistoryButtonProps>(({ groupId }) => {
                       )}
                   </Flexbox>
                 </Flexbox>
+
+                {isWaitingForIntervention && (
+                  <Flexbox
+                    gap={4}
+                    padding={12}
+                    style={{ background: cssVar.colorWarningBg, borderRadius: 8 }}
+                  >
+                    <Text strong>{t('run.intervention.title')}</Text>
+                    <Text type={'secondary'}>{t('run.intervention.description')}</Text>
+                  </Flexbox>
+                )}
 
                 <Flexbox gap={8}>
                   <Text strong>{t('run.nodes')}</Text>

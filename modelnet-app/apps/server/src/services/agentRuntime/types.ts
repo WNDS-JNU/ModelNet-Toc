@@ -25,7 +25,7 @@ import type {
 import type { AgentSignalOperationMarker } from '@/server/services/agentSignal/operationMarker';
 import type { DeviceAccessReason } from '@/server/services/aiAgent/deviceAccessPolicy';
 
-import { type AgentHook } from './hooks/types';
+import { type AgentHook, type SerializedHook } from './hooks/types';
 
 // ==================== Operation Tool Set ====================
 
@@ -523,6 +523,12 @@ export interface OperationCreationParams {
   queueRetryDelay?: string;
   /** Search route resolved once before the operation starts. */
   searchDecision?: SearchDecision;
+  /**
+   * Trusted webhook hooks inherited from a parked intervention source.
+   * Handler functions cannot survive a process boundary, so an intervention
+   * continuation carries the already-serialized control-flow hooks instead.
+   */
+  serializedHooks?: SerializedHook[];
   /** Abort startup before the first step is scheduled */
   signal?: AbortSignal;
   /**

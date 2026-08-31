@@ -1,5 +1,8 @@
 {
   "avatar.sizeExceeded": "Avatar size exceeds limit",
   "backgroundColor.title": "Background Color",
-  "name.placeholder": "Enter group name"
+  "name.placeholder": "Enter group name",
+  "run.intervention.description": "A member is safely parked at a human approval gate. Return to the conversation to approve, reject, or stop it; this state is restored after refresh or reconnect.",
+  "run.intervention.title": "Waiting for approval",
+  "run.status.intervention": "Approval required"
 }

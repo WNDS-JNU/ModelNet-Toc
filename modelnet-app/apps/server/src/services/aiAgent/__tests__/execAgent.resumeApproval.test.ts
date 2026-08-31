@@ -26,12 +26,14 @@ const {
   mockRecordCompletion,
   mockRepairAgentInterventionContinuation,
   mockInterruptOperation,
+  mockEnsureInterruptedOperationFinalized,
   mockEnsureInterventionContinuationStarted,
   mockLoadInterventionContinuationState,
   mockReleaseTaskCallbackReservation,
   mockTryReserveTaskCallback,
 } = vi.hoisted(() => ({
   mockEnsureInterventionContinuationStarted: vi.fn(),
+  mockEnsureInterruptedOperationFinalized: vi.fn(),
   mockFindOperationById: vi.fn(),
   mockRecordCompletion: vi.fn(),
   mockRepairAgentInterventionContinuation: vi.fn(),
@@ -78,6 +80,15 @@ vi.mock('@/database/models/message', () => ({
 
 vi.mock('@/database/models/agent', () => ({
   AgentModel: vi.fn().mockImplementation(() => ({ queryAgents: vi.fn().mockResolvedValue([]) })),
+}));
+
+vi.mock('@/database/models/chatGroup', () => ({
+  ChatGroupModel: vi.fn().mockImplementation(() => ({
+    findById: vi.fn().mockResolvedValue({ id: 'group-1', title: 'Test Group' }),
+    getGroupAgentsWithMeta: vi
+      .fn()
+      .mockResolvedValue([{ agentId: 'agent-1', role: 'participant', title: 'Member' }]),
+  })),
 }));
 
 vi.mock('@/server/services/agent', () => ({
@@ -133,6 +144,7 @@ vi.mock('@/server/services/agentRuntime', () => ({
   AgentRuntimeService: vi.fn().mockImplementation(() => ({
     createOperation: mockCreateOperation,
     ensureInterventionContinuationStarted: mockEnsureInterventionContinuationStarted,
+    ensureInterruptedOperationFinalized: mockEnsureInterruptedOperationFinalized,
     interruptOperation: mockInterruptOperation,
     loadInterventionContinuationState: mockLoadInterventionContinuationState,
   })),
@@ -231,6 +243,7 @@ describe('AiAgentService.execAgent - resumeApproval', () => {
     mockResolveHumanApproval.mockResolvedValue('applied');
     mockLoadInterventionContinuationState.mockResolvedValue(null);
     mockEnsureInterventionContinuationStarted.mockResolvedValue('scheduled');
+    mockEnsureInterruptedOperationFinalized.mockResolvedValue(false);
     mockReleaseTaskCallbackReservation.mockResolvedValue('released');
     mockRepairAgentInterventionContinuation.mockResolvedValue('repaired');
     mockTryReserveTaskCallback.mockResolvedValue(true);
@@ -546,6 +559,80 @@ describe('AiAgentService.execAgent - resumeApproval', () => {
           resolutionRequestId: approvalResolutionRequestId,
         }),
         operationId: expect.stringMatching(/^op_intervention_/),
+      }),
+    );
+  });
+
+  it('inherits the durable group bridge and member context from the parked operation', async () => {
+    const approvalResolutionRequestId = '018fbd8e-7baf-7c6d-8000-000000000096';
+    const groupBridge = {
+      id: 'group-member-bridge',
+      type: 'onComplete' as const,
+      webhook: {
+        body: { operationId: 'op-group-member' },
+        delivery: 'qstash' as const,
+        url: '/api/agent/webhooks/group-member-callback',
+      },
+    };
+    mockFindMessagePlugin.mockResolvedValue({
+      ...pendingToolPlugin,
+      intervention: { operationId: 'op-group-member', status: 'pending' },
+    });
+    mockLoadInterventionContinuationState.mockResolvedValue(null);
+    mockFindOperationById.mockImplementation(async (operationId: string) =>
+      operationId === 'op-group-member'
+        ? {
+            appContext: {
+              groupId: 'group-1',
+              isSubAgent: true,
+              orchestrationRole: 'member',
+              scope: 'group',
+              subAgentProgress: {
+                parentOperationId: 'parent-op',
+                toolMessageId: 'member-anchor',
+              },
+            },
+            chatGroupId: 'group-1',
+            id: operationId,
+            metadata: {
+              _hooks: [groupBridge],
+              agentRuntimeUserInterventionConfig: { approvalMode: 'manual' },
+            },
+            parentOperationId: 'parent-op',
+            threadId: 'member-thread',
+            topicId: 'topic-1',
+          }
+        : undefined,
+    );
+
+    await service.execAgent({
+      ...baseParams,
+      approvalResolutionRequestId,
+      approvalSourceOperationId: 'op-group-member',
+      resumeApproval: {
+        decision: 'approved',
+        parentMessageId: 'tool-msg-1',
+        toolCallId: 'call_xyz',
+      },
+    });
+
+    expect(mockCreateOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        appContext: expect.objectContaining({
+          groupId: 'group-1',
+          isSubAgent: true,
+          orchestrationRole: 'member',
+          scope: 'group',
+          subAgentProgress: {
+            parentOperationId: 'parent-op',
+            toolMessageId: 'member-anchor',
+          },
+          threadId: 'thread-1',
+          topicId: 'topic-1',
+        }),
+        parentOperationId: 'parent-op',
+        serializedHooks: [groupBridge],
+        userInterventionConfig: { approvalMode: 'manual' },
       }),
     );
   });
@@ -1039,6 +1126,7 @@ describe('AiAgentService.stopPendingApproval', () => {
     });
     mockRecordCompletion.mockResolvedValue(undefined);
     mockInterruptOperation.mockResolvedValue(true);
+    mockEnsureInterruptedOperationFinalized.mockResolvedValue(false);
     service = new AiAgentService({} as unknown as LobeChatDatabase, 'user-1');
   });
 
@@ -1069,11 +1157,26 @@ describe('AiAgentService.stopPendingApproval', () => {
     // The exact parked operation and sealed batch identity are validated; a
     // newer operation in the same topic can never be guessed and interrupted.
     expect(mockInterruptOperation).toHaveBeenCalledWith('op-parked-1');
+    expect(mockEnsureInterruptedOperationFinalized).toHaveBeenCalledWith('op-parked-1');
     expect(mockRecordCompletion).toHaveBeenCalledWith(
       'op-parked-1',
       expect.objectContaining({ completionReason: 'interrupted', status: 'interrupted' }),
     );
     expect(result.settledToolMessageIds).toEqual(['tool-msg-1', 'tool-msg-2']);
+  });
+
+  it('uses the ordinary terminal lifecycle so persisted group hooks can settle cancellation', async () => {
+    mockEnsureInterruptedOperationFinalized.mockResolvedValue(true);
+
+    await service.stopPendingApproval({
+      batchId: 'batch-1',
+      operationId: 'op-parked-1',
+      toolMessageIds: ['tool-msg-1', 'tool-msg-2'],
+      topicId: 'topic-1',
+    });
+
+    expect(mockEnsureInterruptedOperationFinalized).toHaveBeenCalledWith('op-parked-1');
+    expect(mockRecordCompletion).not.toHaveBeenCalled();
   });
 
   it('stamps the generic resolution id on every stopped row', async () => {

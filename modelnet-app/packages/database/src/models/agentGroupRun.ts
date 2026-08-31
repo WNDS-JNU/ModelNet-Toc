@@ -8,7 +8,7 @@ import type {
   AgentGroupRunPolicySnapshot,
   AgentGroupRunRuntimeKind,
 } from '@lobechat/types';
-import { and, asc, desc, eq, inArray, not } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, not, sql } from 'drizzle-orm';
 
 import {
   agentGroupRunAttempts,
@@ -29,6 +29,7 @@ export const AGENT_GROUP_RUN_RETRY_NOT_ALLOWED = 'AGENT_GROUP_RUN_RETRY_NOT_ALLO
 export const AGENT_GROUP_RUN_PAUSE_NOT_ALLOWED = 'AGENT_GROUP_RUN_PAUSE_NOT_ALLOWED';
 export const AGENT_GROUP_RUN_RESUME_NOT_ALLOWED = 'AGENT_GROUP_RUN_RESUME_NOT_ALLOWED';
 export const AGENT_GROUP_RUN_MANUAL_PAUSE_REASON = 'manual_pause';
+export const AGENT_GROUP_RUN_INTERVENTION_REASON = 'waiting_for_human';
 
 export interface CreateAgentGroupRunParams {
   budgetSnapshot?: AgentGroupRunBudgetSnapshot;
@@ -57,6 +58,8 @@ export interface CompleteAgentGroupRunAttemptParams extends CreateAgentGroupRunA
   error?: AgentGroupRunError;
   status: Extract<AgentGroupRunAttemptStatus, 'cancelled' | 'completed' | 'failed' | 'timed_out'>;
 }
+
+export type ParkAgentGroupRunAttemptParams = CreateAgentGroupRunAttemptParams;
 
 export type StartAgentGroupRunNodeRetryParams = CreateAgentGroupRunAttemptParams;
 
@@ -702,6 +705,87 @@ export class AgentGroupRunModel {
     });
 
   /**
+   * Project a member's durable human-intervention park into the collaboration
+   * state machine. This is a gate, not a completion: the member anchor and the
+   * supervisor barrier must remain untouched until a continuation reaches a
+   * real terminal lifecycle.
+   */
+  parkAttemptForIntervention = async (params: ParkAgentGroupRunAttemptParams) =>
+    this.db.transaction(async (tx) => {
+      const { attempt, node } = await this.ensureAttempt(tx, params);
+      if (TERMINAL_ATTEMPT_STATUSES.includes(attempt.status) || attempt.status === 'waiting') {
+        return attempt;
+      }
+
+      const startedAt = attempt.startedAt ?? new Date();
+      const [updated] = await tx
+        .update(agentGroupRunAttempts)
+        .set({
+          completionReason: AGENT_GROUP_RUN_INTERVENTION_REASON,
+          startedAt,
+          status: 'waiting',
+        })
+        .where(eq(agentGroupRunAttempts.id, attempt.id))
+        .returning();
+      await tx
+        .update(agentGroupRunNodes)
+        .set({ completionReason: AGENT_GROUP_RUN_INTERVENTION_REASON, status: 'waiting' })
+        .where(
+          and(
+            eq(agentGroupRunNodes.id, node.id),
+            inArray(agentGroupRunNodes.status, ['pending', 'ready', 'running', 'waiting']),
+          ),
+        );
+      const [gatedRun] = await tx
+        .update(agentGroupRuns)
+        .set({
+          completionReason: AGENT_GROUP_RUN_INTERVENTION_REASON,
+          startedAt,
+          status: 'waiting',
+        })
+        .where(
+          and(
+            eq(agentGroupRuns.id, node.runId),
+            inArray(agentGroupRuns.status, ['pending', 'running']),
+          ),
+        )
+        .returning({ id: agentGroupRuns.id });
+
+      await this.recordEvent(tx, {
+        attemptId: updated.id,
+        data: { completionReason: AGENT_GROUP_RUN_INTERVENTION_REASON },
+        idempotencyKey: `attempt:${updated.id}:waiting_for_human`,
+        operationId: params.operationId,
+        runId: node.runId,
+        runNodeId: node.id,
+        status: 'waiting',
+        type: 'attempt.intervention_required',
+      });
+      await this.recordEvent(tx, {
+        attemptId: updated.id,
+        idempotencyKey: `node:${node.id}:attempt:${updated.id}:waiting_for_human`,
+        operationId: params.operationId,
+        runId: node.runId,
+        runNodeId: node.id,
+        status: 'waiting',
+        type: 'node.intervention_required',
+      });
+      if (gatedRun) {
+        await this.recordEvent(tx, {
+          attemptId: updated.id,
+          idempotencyKey: `run:intervention_required:${updated.id}`,
+          operationId: params.operationId,
+          runId: node.runId,
+          runNodeId: node.id,
+          status: 'waiting',
+          type: 'run.intervention_required',
+        });
+      }
+
+      return updated;
+    });
+
+  /**
    * Re-open one terminal node as a new immutable Attempt.
    *
    * The member operation row and Redis state already exist when this method is
@@ -833,10 +917,45 @@ export class AgentGroupRunModel {
           status: nodeStatus,
         })
         .where(eq(agentGroupRunNodes.id, node.id));
+      const [{ waitingCount = 0 } = {}] = await tx
+        .select({ waitingCount: sql<number>`count(*)::int` })
+        .from(agentGroupRunAttempts)
+        .innerJoin(agentGroupRunNodes, eq(agentGroupRunAttempts.runNodeId, agentGroupRunNodes.id))
+        .where(
+          and(
+            eq(agentGroupRunNodes.runId, node.runId),
+            eq(agentGroupRunAttempts.status, 'waiting'),
+          ),
+        );
+      const [releasedRun] =
+        waitingCount === 0
+          ? await tx
+              .update(agentGroupRuns)
+              .set({ completionReason: null, status: 'running' })
+              .where(
+                and(
+                  eq(agentGroupRuns.id, node.runId),
+                  eq(agentGroupRuns.status, 'waiting'),
+                  eq(agentGroupRuns.completionReason, AGENT_GROUP_RUN_INTERVENTION_REASON),
+                ),
+              )
+              .returning({ id: agentGroupRuns.id })
+          : [];
       await tx
         .update(agentGroupRuns)
         .set({ startedAt: attempt.startedAt ?? completedAt, status: 'running' })
         .where(and(eq(agentGroupRuns.id, node.runId), eq(agentGroupRuns.status, 'pending')));
+      if (releasedRun) {
+        await this.recordEvent(tx, {
+          attemptId: updated.id,
+          idempotencyKey: `run:intervention_cleared:${updated.id}`,
+          operationId: params.operationId,
+          runId: node.runId,
+          runNodeId: node.id,
+          status: 'running',
+          type: 'run.intervention_cleared',
+        });
+      }
       await this.recordEvent(tx, {
         attemptId: updated.id,
         data: params.error ? { error: params.error } : undefined,

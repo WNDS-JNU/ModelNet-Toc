@@ -10,6 +10,9 @@ export default {
   'run.empty': 'No durable collaboration runs yet',
   'run.events': 'Events',
   'run.eventsEmpty': 'No events recorded',
+  'run.intervention.description':
+    'A member is safely parked at a human approval gate. Return to the conversation to approve, reject, or stop it; this state is restored after refresh or reconnect.',
+  'run.intervention.title': 'Waiting for approval',
   'run.nodes': 'Nodes',
   'run.pause': 'Pause run',
   'run.pauseConfirm':
@@ -28,6 +31,7 @@ export default {
   'run.status.cancelling': 'Cancelling',
   'run.status.completed': 'Completed',
   'run.status.failed': 'Failed',
+  'run.status.intervention': 'Approval required',
   'run.status.pending': 'Pending',
   'run.status.paused': 'Paused',
   'run.status.running': 'Running',

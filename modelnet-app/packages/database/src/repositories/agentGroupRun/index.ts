@@ -5,6 +5,7 @@ import {
   type CreateAgentGroupRunAttemptParams,
   type CreateAgentGroupRunParams,
   type FailAgentGroupRunNodeStartParams,
+  type ParkAgentGroupRunAttemptParams,
   type StartAgentGroupRunNodeRetryParams,
 } from '../../models/agentGroupRun';
 import { ChatGroupModel } from '../../models/chatGroup';
@@ -36,6 +37,9 @@ export class AgentGroupRunRepository {
 
   completeAttempt = (params: CompleteAgentGroupRunAttemptParams) =>
     this.runModel.completeAttempt(params);
+
+  parkAttemptForIntervention = (params: ParkAgentGroupRunAttemptParams) =>
+    this.runModel.parkAttemptForIntervention(params);
 
   createRun = (params: CreateAgentGroupRunParams): Promise<AgentGroupRunSnapshot> =>
     this.runModel.create(params);

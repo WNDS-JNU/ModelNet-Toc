@@ -791,6 +791,7 @@ export class AgentRuntimeService {
       appContext,
       toolSet,
       hooks,
+      serializedHooks,
       userInterventionConfig,
       queueRetries,
       queueRetryDelay,
@@ -814,6 +815,19 @@ export class AgentRuntimeService {
       initialStepCount = 0,
       workspaceId,
     } = params;
+    const durableHooks = serializedHooks?.length
+      ? serializedHooks
+      : hooks
+          ?.filter((hook) => hook.webhook)
+          .map(({ id, type, webhook }) => ({ id, type, webhook: webhook! }));
+    const durableRuntimeMetadata = {
+      ...(durableHooks?.length ? { _hooks: durableHooks } : {}),
+      ...(userInterventionConfig
+        ? { agentRuntimeUserInterventionConfig: userInterventionConfig }
+        : {}),
+      ...(appContext?.agentSignal ? { agentSignal: appContext.agentSignal } : {}),
+      ...(interventionResolution ? { agentInterventionContinuation: interventionResolution } : {}),
+    };
 
     // Persist initial agent_operations row. CompletionLifecycle owns both
     // ends of the persistence lifecycle (start row here, terminal update
@@ -825,24 +839,20 @@ export class AgentRuntimeService {
         defaultTaskAssigneeAgentId: appContext?.defaultTaskAssigneeAgentId,
         documentId: appContext?.documentId,
         groupId: appContext?.groupId,
+        isSubAgent: appContext?.isSubAgent,
+        orchestrationRole: appContext?.orchestrationRole,
         scope: appContext?.scope,
         sessionId: appContext?.sessionId,
         sourceMessageId: appContext?.sourceMessageId,
+        subAgentProgress: appContext?.subAgentProgress,
       },
       chatGroupId: appContext?.groupId ?? null,
       maxSteps,
       // Persist the Agent Signal run marker on the operation row so server-side
       // self-iteration tools can read it back (metadata.agentSignal) at tool-call
       // time — the trimmed appContext above intentionally drops it.
-      ...(appContext?.agentSignal || interventionResolution
-        ? {
-            metadata: {
-              ...(appContext?.agentSignal ? { agentSignal: appContext.agentSignal } : {}),
-              ...(interventionResolution
-                ? { agentInterventionContinuation: interventionResolution }
-                : {}),
-            },
-          }
+      ...(Object.keys(durableRuntimeMetadata).length > 0
+        ? { metadata: durableRuntimeMetadata }
         : {}),
       model: modelRuntimeConfig?.model,
       modelRuntimeConfig,
@@ -939,6 +949,7 @@ export class AgentRuntimeService {
           queueRetryDelay,
           ...(searchDecision && { searchDecision }),
           stream,
+          ...(durableHooks?.length ? { _hooks: durableHooks } : {}),
           operationSkillSet,
           userId,
           userMemory,
@@ -3140,6 +3151,38 @@ export class AgentRuntimeService {
       params.finalState ?? (await this.coordinator.loadAgentState(operationId)) ?? undefined;
 
     if (collaboration) {
+      const collaborationService = new AgentGroupCollaborationService(
+        this.serverDB,
+        this.userId,
+        this.workspaceId,
+      );
+      const attemptOperationId = await this.resolveGroupAttemptOperationId(
+        collaborationService,
+        collaboration,
+        operationId,
+      );
+      if (!attemptOperationId) {
+        log(
+          '[%s] group-member bridge ignored operation outside latest Attempt lineage',
+          operationId,
+        );
+        return false;
+      }
+
+      if (reason === 'waiting_for_human') {
+        await collaborationService.parkAttemptForIntervention({
+          ...collaboration,
+          operationId: attemptOperationId,
+        });
+        log(
+          '[%s] group-member intervention gate holds parent %s (attempt operation %s)',
+          operationId,
+          parentOperationId,
+          attemptOperationId,
+        );
+        return false;
+      }
+
       const attemptStatus =
         reason === 'timeout'
           ? 'timed_out'
@@ -3148,11 +3191,6 @@ export class AgentRuntimeService {
             : reason === 'error'
               ? 'failed'
               : 'completed';
-      const collaborationService = new AgentGroupCollaborationService(
-        this.serverDB,
-        this.userId,
-        this.workspaceId,
-      );
       const persistedAttempt = await collaborationService.completeAttempt({
         ...collaboration,
         completionReason: reason,
@@ -3164,12 +3202,12 @@ export class AgentRuntimeService {
                   : String(finalState.error),
             }
           : undefined,
-        operationId,
+        operationId: attemptOperationId,
         status: attemptStatus,
       });
       const isLatestAttempt = await collaborationService.isLatestAttempt({
         attemptNo: collaboration.attemptNo,
-        operationId,
+        operationId: attemptOperationId,
         runNodeId: collaboration.runNodeId,
       });
       if (!isLatestAttempt || (persistedAttempt && persistedAttempt.status !== attemptStatus)) {
@@ -3182,6 +3220,14 @@ export class AgentRuntimeService {
         );
         return false;
       }
+    }
+
+    // Legacy/non-durable group runs still must not interpret a parked Review as
+    // a completed member. Their original serialized bridge is inherited by the
+    // continuation, which will call this method again at a real terminal state.
+    if (reason === 'waiting_for_human') {
+      log('[%s] group-member intervention gate holds parent %s', operationId, parentOperationId);
+      return false;
     }
 
     log(
@@ -3307,6 +3353,40 @@ export class AgentRuntimeService {
 
     // 3. Barrier + CAS + resume/finish the parked supervisor op.
     return this.tryResumeParentFromAsyncTool({ parentOperationId }, { scheduleVerifyOnHold: true });
+  }
+
+  /**
+   * A generic Intervention resumes into a fresh operation. Walk its trusted
+   * source provenance until it reaches the immutable operation recorded on the
+   * latest group Attempt; unrelated or cyclic callbacks fail closed.
+   */
+  private async resolveGroupAttemptOperationId(
+    collaborationService: AgentGroupCollaborationService,
+    collaboration: NonNullable<GroupActionMemberBridgeParams['collaboration']>,
+    operationId: string,
+  ): Promise<string | undefined> {
+    const seen = new Set<string>();
+    let candidate = operationId;
+
+    for (let depth = 0; depth < 8 && !seen.has(candidate); depth++) {
+      seen.add(candidate);
+      if (
+        await collaborationService.isLatestAttempt({
+          attemptNo: collaboration.attemptNo,
+          operationId: candidate,
+          runNodeId: collaboration.runNodeId,
+        })
+      ) {
+        return candidate;
+      }
+
+      const operation = await this.agentOperationModel.findById(candidate);
+      const continuation = operation?.metadata?.agentInterventionContinuation as
+        { sourceOperationId?: unknown } | undefined;
+      const sourceOperationId = continuation?.sourceOperationId;
+      if (typeof sourceOperationId !== 'string' || !sourceOperationId) return;
+      candidate = sourceOperationId;
+    }
   }
 
   /**

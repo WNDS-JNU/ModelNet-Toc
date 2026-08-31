@@ -345,6 +345,73 @@ describe('AgentGroupRunModel', () => {
     expect(snapshot?.run.status).toBe('completed');
   });
 
+  it('persists an intervention gate and clears it only after the Attempt terminalizes', async () => {
+    await seedPersonalGroup();
+    const model = new AgentGroupRunModel(serverDB, userId);
+    const created = await model.create(createParams());
+    const node = created.nodes[0];
+    await serverDB.insert(agentOperations).values({
+      agentId: memberAgentId,
+      chatGroupId: groupId,
+      id: 'intervention-member-operation',
+      status: 'waiting_for_human',
+      userId,
+    });
+    await model.createAttempt({
+      attemptNo: 1,
+      operationId: 'intervention-member-operation',
+      runNodeId: node.id,
+      runtimeKind: 'normal',
+    });
+
+    const parked = await model.parkAttemptForIntervention({
+      attemptNo: 1,
+      operationId: 'intervention-member-operation',
+      runNodeId: node.id,
+      runtimeKind: 'normal',
+    });
+    const repeated = await model.parkAttemptForIntervention({
+      attemptNo: 1,
+      operationId: 'intervention-member-operation',
+      runNodeId: node.id,
+      runtimeKind: 'normal',
+    });
+    const reconnectedModel = new AgentGroupRunModel(serverDB, userId);
+    let snapshot = await reconnectedModel.findById(created.run.id);
+
+    expect(repeated.id).toBe(parked.id);
+    expect(snapshot?.attempts[0]).toMatchObject({
+      completionReason: 'waiting_for_human',
+      status: 'waiting',
+    });
+    expect(snapshot?.nodes[0]).toMatchObject({
+      completionReason: 'waiting_for_human',
+      status: 'waiting',
+    });
+    expect(snapshot?.run).toMatchObject({
+      completionReason: 'waiting_for_human',
+      status: 'waiting',
+    });
+
+    await reconnectedModel.completeAttempt({
+      attemptNo: 1,
+      completionReason: 'done',
+      operationId: 'intervention-member-operation',
+      runNodeId: node.id,
+      runtimeKind: 'normal',
+      status: 'completed',
+    });
+    snapshot = await reconnectedModel.findById(created.run.id);
+    expect(snapshot?.attempts[0]).toMatchObject({ completionReason: 'done', status: 'completed' });
+    expect(snapshot?.run).toMatchObject({ completionReason: 'completed', status: 'completed' });
+
+    const events = await reconnectedModel.listEvents(created.run.id);
+    expect(events?.filter(({ type }) => type === 'attempt.intervention_required')).toHaveLength(1);
+    expect(events?.filter(({ type }) => type === 'run.intervention_required')).toHaveLength(1);
+    expect(events?.filter(({ type }) => type === 'run.intervention_cleared')).toHaveLength(1);
+    expect(events?.filter(({ type }) => type === 'run.terminal')).toHaveLength(1);
+  });
+
   it('reopens a terminal node with a new immutable attempt and settles again', async () => {
     await seedPersonalGroup();
     const model = new AgentGroupRunModel(serverDB, userId);
