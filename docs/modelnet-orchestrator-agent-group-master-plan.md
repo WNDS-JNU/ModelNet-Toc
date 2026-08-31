@@ -1,6 +1,6 @@
 # ModelNet Agent 级协作互联总体实施计划
 
-> 状态：实施中（M1 持久内部协作已通过 Dev 评审；M2 ExecutionPlan、工具权限收窄、设备离线/重连幂等与事件重放已通过 Dev 验收，Intervention 仍待继续）
+> 状态：实施中（M1 持久内部协作与 M2 异构 Agent 协作已通过 Dev 评审；下一步进入 M3 可恢复 pipeline / debate）
 > 版本：V2.0
 > 重构日期：2026-08-30
 > 代码基线：4A100，/home/duxianghe/ModelNet-toc，33190eda5f
@@ -438,6 +438,8 @@ A2A 是 Member Dispatcher 的外部执行 Adapter，不是 Router 协议，也�
 
 状态续（2026-08-31，M2 设备恢复第三片）：明确区分 Device Gateway 的写派发与 Agent Gateway 的事件流恢复。`agent_run_request` 不做自动重放；Device Gateway Client 以有界的进程内 ledger 记录 in-flight operation 和最近 256 个 ACK，同一进程断线重连后再次收到相同 `operationId` 时只重发原 ACK，不再触发 CLI/桌面 handler，也不会启动第二个本地进程；设备进程重启后仍要求服务端创建新 Attempt，保持“写任务不自动重放”。Gateway 的 503 JSON 现在归一化为 `DEVICE_OFFLINE`、`DEVICE_DISCONNECTED` 或 `DEVICE_REQUEST_TIMEOUT` 机器码，服务端将其持久为明确失败原因并映射到可读设备错误。事件流继续复用既有 Agent Gateway `resume_complete` 权威状态、按序 flush 和 event-id 去重，不从静默猜测完成。Device Gateway Client 87 项、真实 Gateway 协议 7 项、Agent Gateway Client 源码 34 项、异构服务端 54 项通过，TypeScript、定向 ESLint、Device Gateway build、Worker bundle 和 Next standalone build 通过。真实 Dev 3193 验收依次得到 `offline={error: DEVICE_OFFLINE, success: false}`、首次派发成功、断线离线、同连接重连和相同 `runtime-reconnect-operation-v16` 再派发成功，handler 启动次数始终为 1。v16 镜像 `624e5c88e09d...` 的 app / agent-worker healthy，`3181/signin`、`3192/healthz`、`3193/healthz` 均为 200；Router 与 Device Gateway 容器未重建，生产未推广。M2 现只剩 Intervention 运行级门禁与离线恢复验收。
 
+状态续（2026-08-31，M2 Intervention 第四片）：成员运行进入 `waiting_for_human` 时不再被误判为完成，不写群组工具完成屏障，也不提前恢复 supervisor；Run、Node、Attempt 统一持久为 `waiting + waiting_for_human`，只有审批 continuation 进入真实 terminal lifecycle 后才清除门禁并结算原 Attempt。成员 operation 会把序列化群组回调、人工干预配置、父 operation 和 orchestration appContext 同步写入数据库，恢复路径采用 Redis 优先、数据库回退；审批 continuation 沿 source operation 谱系恢复这些桥接字段，停止待审批 operation 也复用普通 terminal lifecycle，使持久回调可以正确结算取消。Run History 直接根据持久 Run 恢复“等待审批”状态，浏览器刷新或重新连接不再依赖旧页面内存。真实 Dev PostgreSQL 事务 smoke `agr_DaRaVihXwJ1c` 经 `create -> running -> waiting_for_human -> 新 Model 实例读取 -> completed` 后，Run / Node / Attempt 先全部保持 `waiting`，再全部收敛为 `completed`；`attempt.intervention_required`、`run.intervention_required`、`run.intervention_cleared`、`run.terminal` 各精确出现 1 次，外层事务回滚后残留为 0。runtime / 审批续跑定向 Vitest 154 项与 PGlite 15 项通过，SPA、Next standalone 和 agent-worker bundle 构建通过；v17 镜像 `31d67092ea0a...` 的 app / agent-worker healthy，`3181/signin`、`3192/healthz`、`3193/healthz` 均为 200。生产未推广。阶段 4 退出条件满足，M2 Dev 评审完成。
+
 ### 阶段 5：pipeline 与 debate
 
 - 实现无环计划验证、依赖就绪、屏障和结构化上下文交接。
@@ -622,7 +624,7 @@ A2A 是 Member Dispatcher 的外部执行 Adapter，不是 Router 协议，也�
 
 状态（2026-08-31）：Dev 代码、部署和 M1 主协议真实恢复验收完成。Redis Stream 模式的内部成员回调改由 worker bearer 鉴权直投，不再依赖 QStash；取消会在请求内幂等终态化 supervisor 与全部 active member operation。真实 Dev 证据：`agr_HUYxYOPMquEK` 在 317 ms 内把 Run、2 Node、2 Attempt 和 3 个 operation 全部收敛为取消/中断终态；`agr_xRRyZU6mUWNh` 在 Redis pending 消息和 supervisor `waiting_for_async_tool` 两个时点重建 app / worker 后恢复完成，Attempt 始终只有 2 个且均为 attemptNo=1；`agr_HO8Ch2cttQrZ` 的 1000 ms watchdog 将 2 Node 收敛为 `failed + timeout`、2 Attempt 收敛为 `timed_out + timeout`；`agr_8y48G98pFfCj` 以 1 Node / 1 Attempt 完成 `single`；`agr_CgGkeaIlitzF` 以 2 Node / 2 Attempt 完成 `broadcast`；`agr_l0IsBNLsiYDM` 在 Dev Redis 暂停 8 秒并恢复后自动完成，2 个成员仍各只有 attemptNo=1，同一成员完成回调再重复投递两次均返回 `resumed=false`，没有新增 Attempt 或 operation；`agr_bezBBtFdWwtb` 首轮以 2 Node / 2 Attempt 完成 `broadcast`，随后对节点 `71e9e8ed-4c7c-45f7-a04c-f9d78b2fcab8` 显式重试，Run 从 completed 重开并以 attemptNo=2 再次完成，`node.retry_started`、`run.reopened` 和第二组 node/run terminal 事件完整，再次重试被 `PRECONDITION_FAILED` 拒绝，Attempt 总数保持 3、operation 总数保持 4。v11 又在该 Run 已完成 attemptNo=2 后重放旧 attemptNo=1 的矛盾 `error` 回调，回调返回 `resumed=false`，Run 仍为 completed，Attempt / operation / event 分别保持 3 / 4 / 19，旧 anchor 仍为 completed 且无 plugin error。v12 的 `agr_vs6KJTbhYPJ8` 在 supervisor 到达 `waiting_for_async_tool` 屏障后原子暂停为 Run `waiting + manual_pause` 和 operation `waiting_for_group_resume`；两名成员及各自 attemptNo=1 均完成后，Run 仍保持人工暂停，恢复前事件为 `run.paused=1 / run.resumed=0 / run.terminal=0`；显式恢复返回 `resumed=true` 并一次收敛为 completed，最终 `run.paused / run.resumed / run.terminal` 各 1，重复恢复被 `PRECONDITION_FAILED` 拒绝，Attempt / operation 总数保持 2 / 3。Attempt 的明确原因由迁移 `0155_charming_miracleman.sql` 持久化。PGlite 46 项、服务端定向 Vitest 188 项、项目 TypeScript、Worker bundle、Next standalone build、Dev 迁移和 v12 容器 health 均通过；既有更宽的服务端定向 Vitest 216 项恢复验证仍有效。`AGENT_GROUP_DURABLE_RUNS=1` 仍只存在于忽略版本控制的 `.env.dev`，生产 compose 和生产开关未改。M1 Dev 评审通过；下一步进入 M2 异构 Agent / ExecutionPlan 契约收口，不自动推广生产。
 
-上述五个 PR 已完成 M1 Dev 评审；M2 已完成异构 Agent / ExecutionPlan 的 prepared-boundary 契约、工具权限收窄、设备离线/重连幂等和事件重放，并通过真实只读普通 Agent + 本机登录态 Codex 混合群组与真实 Dev Gateway 验收。下一步只做阶段 4 剩余的 Intervention 运行级门禁与离线恢复；A2A 仍保持后置，生产推广仍需独立审批。
+上述五个 PR 已完成 M1 Dev 评审；M2 已完成异构 Agent / ExecutionPlan 的 prepared-boundary 契约、工具权限收窄、设备离线/重连幂等、事件重放与 Intervention 运行级门禁，并通过真实只读普通 Agent + 本机登录态 Codex 混合群组、真实 Dev Gateway 和真实 Dev PostgreSQL Intervention 恢复验收。下一步进入阶段 5，以固定计划和固定预算实现可恢复 pipeline，再实现 debate；A2A 仍保持后置，生产推广仍需独立审批。
 
 ## 十九、最终验收清单
 
