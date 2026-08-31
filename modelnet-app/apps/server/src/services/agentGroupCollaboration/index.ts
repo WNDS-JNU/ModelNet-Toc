@@ -100,6 +100,10 @@ export class AgentGroupCollaborationService {
 
   listRuns = (chatGroupId: string, limit?: number) => this.repository.listRuns(chatGroupId, limit);
 
+  isLatestAttempt = (
+    params: Pick<CreateAgentGroupRunAttemptParams, 'attemptNo' | 'operationId' | 'runNodeId'>,
+  ) => this.repository.isLatestAttempt(params);
+
   startRetryAttempt = (params: StartAgentGroupRunNodeRetryParams) =>
     this.repository.startRetryAttempt(params);
 }

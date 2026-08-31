@@ -401,6 +401,20 @@ describe('AgentGroupRunModel', () => {
       { attemptNo: 1, status: 'failed' },
       { attemptNo: 2, status: 'running' },
     ]);
+    await expect(
+      model.isLatestAttempt({
+        attemptNo: 1,
+        operationId: 'retry-member-operation-1',
+        runNodeId: created.nodes[0].id,
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      model.isLatestAttempt({
+        attemptNo: 2,
+        operationId: 'retry-member-operation-2',
+        runNodeId: created.nodes[0].id,
+      }),
+    ).resolves.toBe(true);
 
     await model.completeAttempt({
       attemptNo: 2,

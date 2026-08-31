@@ -32,12 +32,14 @@ vi.mock('@lobechat/model-runtime', () => ({
 const { ssrfSafeFetch: mockSsrfSafeFetch } = vi.hoisted(() => ({ ssrfSafeFetch: vi.fn() }));
 vi.mock('@lobechat/ssrf-safe-fetch', () => ({ ssrfSafeFetch: mockSsrfSafeFetch }));
 
-const { completeCollaborationAttempt } = vi.hoisted(() => ({
+const { completeCollaborationAttempt, isLatestCollaborationAttempt } = vi.hoisted(() => ({
   completeCollaborationAttempt: vi.fn(),
+  isLatestCollaborationAttempt: vi.fn(),
 }));
 vi.mock('@/server/services/agentGroupCollaboration', () => ({
   AgentGroupCollaborationService: class {
     completeAttempt = completeCollaborationAttempt;
+    isLatestAttempt = isLatestCollaborationAttempt;
   },
 }));
 
@@ -2427,6 +2429,7 @@ describe('AgentRuntimeService', () => {
 
     beforeEach(() => {
       completeCollaborationAttempt.mockReset().mockResolvedValue(undefined);
+      isLatestCollaborationAttempt.mockReset().mockResolvedValue(true);
       updateToolMessage = vi.fn().mockResolvedValue({ success: true });
       (service as any).messageModel.updateToolMessage = updateToolMessage;
       resumeSpy = vi.spyOn(service, 'tryResumeParentFromAsyncTool').mockResolvedValue(true);
@@ -2491,6 +2494,59 @@ describe('AgentRuntimeService', () => {
       expect(completeCollaborationAttempt.mock.invocationCallOrder[0]).toBeLessThan(
         updateToolMessage.mock.invocationCallOrder[0],
       );
+    });
+
+    it('ignores a callback from an older Attempt after a node retry', async () => {
+      completeCollaborationAttempt.mockResolvedValue({ status: 'completed' });
+      isLatestCollaborationAttempt.mockResolvedValue(false);
+
+      const won = await service.completeGroupActionMember({
+        anchorMessageId: 'grp-tool-1',
+        collaboration: {
+          attemptNo: 1,
+          runId: 'run-1',
+          runNodeId: 'node-1',
+          runtimeKind: 'normal',
+        },
+        expectedMembers: 1,
+        finalState: memberState as any,
+        groupToolMessageId: 'grp-tool-1',
+        mode: 'in_group',
+        onComplete: 'resume',
+        operationId: 'child-1',
+        parentOperationId: 'parent-1',
+        reason: 'done',
+      });
+
+      expect(won).toBe(false);
+      expect(updateToolMessage).not.toHaveBeenCalled();
+      expect(resumeSpy).not.toHaveBeenCalled();
+    });
+
+    it('ignores a contradictory redelivery after the Attempt is terminal', async () => {
+      completeCollaborationAttempt.mockResolvedValue({ status: 'completed' });
+
+      const won = await service.completeGroupActionMember({
+        anchorMessageId: 'grp-tool-1',
+        collaboration: {
+          attemptNo: 1,
+          runId: 'run-1',
+          runNodeId: 'node-1',
+          runtimeKind: 'normal',
+        },
+        expectedMembers: 1,
+        finalState: memberState as any,
+        groupToolMessageId: 'grp-tool-1',
+        mode: 'in_group',
+        onComplete: 'resume',
+        operationId: 'child-1',
+        parentOperationId: 'parent-1',
+        reason: 'error',
+      });
+
+      expect(won).toBe(false);
+      expect(updateToolMessage).not.toHaveBeenCalled();
+      expect(resumeSpy).not.toHaveBeenCalled();
     });
 
     it('maps a member timeout to timed_out with a durable error snapshot', async () => {

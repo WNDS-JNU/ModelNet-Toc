@@ -3150,7 +3150,7 @@ export class AgentRuntimeService {
         this.userId,
         this.workspaceId,
       );
-      await collaborationService.completeAttempt({
+      const persistedAttempt = await collaborationService.completeAttempt({
         ...collaboration,
         completionReason: reason,
         error: finalState?.error
@@ -3164,6 +3164,21 @@ export class AgentRuntimeService {
         operationId,
         status: attemptStatus,
       });
+      const isLatestAttempt = await collaborationService.isLatestAttempt({
+        attemptNo: collaboration.attemptNo,
+        operationId,
+        runNodeId: collaboration.runNodeId,
+      });
+      if (!isLatestAttempt || (persistedAttempt && persistedAttempt.status !== attemptStatus)) {
+        log(
+          '[%s] group-member bridge ignored stale callback (attempt %d, persisted: %s, incoming: %s)',
+          operationId,
+          collaboration.attemptNo,
+          persistedAttempt?.status ?? 'missing',
+          attemptStatus,
+        );
+        return false;
+      }
     }
 
     log(

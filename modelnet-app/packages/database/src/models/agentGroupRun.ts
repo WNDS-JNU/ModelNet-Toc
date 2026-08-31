@@ -487,6 +487,29 @@ export class AgentGroupRunModel {
       .limit(Math.max(1, Math.min(limit, 1000)));
   };
 
+  /**
+   * Verify that a callback still belongs to the newest immutable Attempt for
+   * its node. Completion delivery is at-least-once, so an attemptNo=1 webhook
+   * can arrive after attemptNo=2 has already replaced its message projection.
+   */
+  isLatestAttempt = async (
+    params: Pick<CreateAgentGroupRunAttemptParams, 'attemptNo' | 'operationId' | 'runNodeId'>,
+  ): Promise<boolean> =>
+    this.db.transaction(async (tx) => {
+      const node = await this.loadAccessibleNode(tx, params.runNodeId);
+      const [latest] = await tx
+        .select({
+          attemptNo: agentGroupRunAttempts.attemptNo,
+          operationId: agentGroupRunAttempts.operationId,
+        })
+        .from(agentGroupRunAttempts)
+        .where(eq(agentGroupRunAttempts.runNodeId, node.id))
+        .orderBy(desc(agentGroupRunAttempts.attemptNo))
+        .limit(1);
+
+      return latest?.attemptNo === params.attemptNo && latest.operationId === params.operationId;
+    });
+
   createAttempt = async (params: CreateAgentGroupRunAttemptParams) =>
     this.db.transaction(async (tx) => {
       const { attempt, node } = await this.ensureAttempt(tx, params);
