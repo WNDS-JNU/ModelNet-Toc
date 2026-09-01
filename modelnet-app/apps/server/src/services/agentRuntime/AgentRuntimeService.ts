@@ -3318,6 +3318,7 @@ export class AgentRuntimeService {
 
     let collaborationService: AgentGroupCollaborationService | undefined;
     let attemptOperationId: string | undefined;
+    let pipelineRunStatus: 'cancelled' | 'completed' | 'failed' | undefined;
     if (collaboration) {
       collaborationService = new AgentGroupCollaborationService(
         this.serverDB,
@@ -3482,6 +3483,13 @@ export class AgentRuntimeService {
         );
         return false;
       }
+      const collaborationSnapshot = await collaborationService.getRun(collaboration.runId);
+      if (
+        collaborationSnapshot?.run.protocol === 'pipeline' &&
+        ['cancelled', 'completed', 'failed'].includes(collaborationSnapshot.run.status)
+      ) {
+        pipelineRunStatus = collaborationSnapshot.run.status as typeof pipelineRunStatus;
+      }
     }
     const agentLabel = (finalState?.metadata?.agentId as string | undefined) ?? 'member';
     const memberErrorReason = failed ? formatSubAgentErrorReason(finalState?.error) : undefined;
@@ -3515,6 +3523,31 @@ export class AgentRuntimeService {
     if (!anchorBackfill.success) {
       throw new Error(
         `Group-member bridge: failed to backfill anchor ${anchorMessageId} for parent ${parentOperationId}`,
+      );
+    }
+
+    // Pipeline nodes share one durable group-tool barrier but may finish with
+    // descendants blocked after a required dependency fails. In that shape K
+    // can never equal the total plan size, so the terminal Run projection is
+    // the authoritative barrier instead of counting only launched anchors.
+    if (collaboration && pipelineRunStatus) {
+      const pipelineSucceeded = pipelineRunStatus === 'completed';
+      const groupBackfill = await this.messageModel.updateToolMessage(groupToolMessageId, {
+        content: pipelineSucceeded
+          ? 'Agent pipeline completed.'
+          : `Agent pipeline ended with status ${pipelineRunStatus}.`,
+        pluginState: {
+          expectedMembers,
+          protocol: 'pipeline',
+          status: pipelineSucceeded ? 'completed' : 'error',
+        },
+      });
+      if (!groupBackfill.success) {
+        throw new Error(`Pipeline bridge: failed to backfill group tool ${groupToolMessageId}`);
+      }
+      return this.tryResumeParentFromAsyncTool(
+        { parentOperationId },
+        { scheduleVerifyOnHold: true },
       );
     }
 

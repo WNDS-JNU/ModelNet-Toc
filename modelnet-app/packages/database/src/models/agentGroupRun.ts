@@ -111,6 +111,11 @@ export interface FailAgentGroupRunNodeStartParams {
   runNodeId: string;
 }
 
+export interface FailClaimedAgentGroupRunNodeStartParams
+  extends FailAgentGroupRunNodeStartParams {
+  dispatchClaimId: string;
+}
+
 export interface AgentGroupRunSnapshot {
   attempts: (typeof agentGroupRunAttempts.$inferSelect)[];
   /** Present only on create(): false means the idempotency winner already existed. */
@@ -355,7 +360,11 @@ export class AgentGroupRunModel {
 
     return this.db.transaction(async (tx) => {
       const [row] = await tx
-        .select({ protocol: agentGroupRuns.protocol, status: agentGroupRuns.status })
+        .select({
+          budgetSnapshot: agentGroupRuns.budgetSnapshot,
+          protocol: agentGroupRuns.protocol,
+          status: agentGroupRuns.status,
+        })
         .from(agentGroupRuns)
         .innerJoin(chatGroups, eq(agentGroupRuns.chatGroupId, chatGroups.id))
         .where(and(eq(agentGroupRuns.id, params.runId), this.groupAccess()))
@@ -369,6 +378,24 @@ export class AgentGroupRunModel {
         .from(agentGroupRunNodes)
         .where(eq(agentGroupRunNodes.runId, params.runId))
         .orderBy(asc(agentGroupRunNodes.sortOrder), asc(agentGroupRunNodes.id));
+      const configuredMaxParallel = row.budgetSnapshot?.maxParallel;
+      const maxParallel =
+        Number.isSafeInteger(configuredMaxParallel) && Number(configuredMaxParallel) > 0
+          ? Number(configuredMaxParallel)
+          : undefined;
+      const occupiedSlots = nodes.filter(
+        (node) =>
+          node.status === 'running' ||
+          node.status === 'waiting' ||
+          (node.status === 'ready' &&
+            node.dispatchClaimExpiresAt !== null &&
+            node.dispatchClaimExpiresAt.getTime() > now.getTime()),
+      ).length;
+      const claimLimit =
+        maxParallel === undefined
+          ? limit
+          : Math.min(limit, Math.max(0, maxParallel - occupiedSlots));
+      if (claimLimit === 0) return [];
       const nodeByKey = new Map(nodes.map((node) => [node.nodeKey, node]));
       const attempts =
         nodes.length === 0
@@ -393,7 +420,7 @@ export class AgentGroupRunModel {
       const expiresAt = new Date(now.getTime() + params.leaseDurationMs);
       const claims: AgentGroupRunDispatchClaim[] = [];
       for (const node of nodes) {
-        if (claims.length >= limit) break;
+        if (claims.length >= claimLimit) break;
         if (node.status !== 'ready') continue;
         if (node.dispatchClaimExpiresAt && node.dispatchClaimExpiresAt.getTime() > now.getTime()) {
           continue;
@@ -1468,6 +1495,53 @@ export class AgentGroupRunModel {
       });
       await this.advancePipeline(tx, node.runId, `node:${node.id}:start_failed`);
       await this.settleRunIfTerminal(tx, node.runId, `node:${node.id}:start_failed`);
+    });
+
+  /** Fail only the ready node still owned by this exact dispatcher lease. */
+  failClaimedNodeStart = async (
+    params: FailClaimedAgentGroupRunNodeStartParams,
+  ): Promise<boolean> =>
+    this.db.transaction(async (tx) => {
+      const node = await this.loadAccessibleNode(tx, params.runNodeId);
+      const [failed] = await tx
+        .update(agentGroupRunNodes)
+        .set({
+          completionReason: 'start_failed',
+          dispatchClaimedAt: null,
+          dispatchClaimExpiresAt: null,
+          dispatchClaimId: null,
+          error: params.error,
+          status: 'failed',
+        })
+        .where(
+          and(
+            eq(agentGroupRunNodes.id, node.id),
+            eq(agentGroupRunNodes.status, 'ready'),
+            eq(agentGroupRunNodes.dispatchClaimId, params.dispatchClaimId),
+          ),
+        )
+        .returning({ id: agentGroupRunNodes.id });
+      if (!failed) return false;
+
+      await this.recordEvent(tx, {
+        data: { claimId: params.dispatchClaimId, error: params.error },
+        idempotencyKey: `node:${node.id}:dispatch:${params.dispatchClaimId}:terminal:failed`,
+        runId: node.runId,
+        runNodeId: node.id,
+        status: 'failed',
+        type: 'node.terminal',
+      });
+      await this.advancePipeline(
+        tx,
+        node.runId,
+        `node:${node.id}:dispatch:${params.dispatchClaimId}:start_failed`,
+      );
+      await this.settleRunIfTerminal(
+        tx,
+        node.runId,
+        `node:${node.id}:dispatch:${params.dispatchClaimId}:start_failed`,
+      );
+      return true;
     });
 
   beginCancellation = async (runId: string): Promise<BeginAgentGroupRunCancellationResult> => {

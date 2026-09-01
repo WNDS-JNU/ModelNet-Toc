@@ -7,6 +7,7 @@ import {
   type CreateAgentGroupRunParams,
   type CreateClaimedAgentGroupRunAttemptParams,
   type FailAgentGroupRunNodeStartParams,
+  type FailClaimedAgentGroupRunNodeStartParams,
   type ParkAgentGroupRunAttemptParams,
   type ReleaseAgentGroupRunDispatchClaimParams,
   type StartAgentGroupRunNodeRetryParams,
@@ -68,6 +69,9 @@ export class AgentGroupRunRepository {
   };
 
   failNodeStart = (params: FailAgentGroupRunNodeStartParams) => this.runModel.failNodeStart(params);
+
+  failClaimedNodeStart = (params: FailClaimedAgentGroupRunNodeStartParams) =>
+    this.runModel.failClaimedNodeStart(params);
 
   getRun = (runId: string) => this.runModel.findById(runId);
 

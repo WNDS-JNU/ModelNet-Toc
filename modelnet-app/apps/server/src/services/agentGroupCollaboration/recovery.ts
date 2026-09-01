@@ -10,6 +10,10 @@ import type { LobeChatDatabase } from '@/database/type';
 import type { GroupActionMemberBridgeParams } from '@/server/services/agentRuntime/types';
 
 import { AgentGroupCollaborationService } from '.';
+import {
+  AgentGroupPipelineDispatcher,
+  type AgentGroupPipelineDispatchResult,
+} from './pipelineDispatcher';
 
 const log = debug('lobe-server:agent-group-recovery');
 
@@ -47,6 +51,7 @@ export interface AgentGroupRunRecoveryOptions {
   createService?: (owner: RecoverableAgentGroupRunRef) => AgentGroupRunRecoveryService;
   limit?: number;
   now?: () => Date;
+  pipelineDispatcher?: Pick<AgentGroupPipelineDispatcher, 'dispatchRun'>;
 }
 
 export type AgentGroupRunRecoveryService = Pick<
@@ -56,6 +61,7 @@ export type AgentGroupRunRecoveryService = Pick<
 
 export interface AgentGroupRunRecoverySweepResult {
   cancelled: number;
+  dispatched: number;
   failedRunIds: string[];
   reconciled: number;
   redispatched: number;
@@ -113,6 +119,7 @@ export class AgentGroupRunRecoveryCoordinator {
   private readonly createService: NonNullable<AgentGroupRunRecoveryOptions['createService']>;
   private readonly limit: number;
   private readonly now: () => Date;
+  private readonly pipelineDispatcher: Pick<AgentGroupPipelineDispatcher, 'dispatchRun'>;
 
   constructor(
     private readonly db: LobeChatDatabase,
@@ -122,6 +129,8 @@ export class AgentGroupRunRecoveryCoordinator {
     this.now = options.now ?? (() => new Date());
     this.createRuntime = options.createRuntime ?? this.createDefaultRuntime;
     this.createService = options.createService ?? this.createDefaultService;
+    this.pipelineDispatcher =
+      options.pipelineDispatcher ?? new AgentGroupPipelineDispatcher(this.db);
   }
 
   cancelRun = async (owner: RecoverableAgentGroupRunRef) => {
@@ -190,16 +199,32 @@ export class AgentGroupRunRecoveryCoordinator {
     owner: RecoverableAgentGroupRunRef,
   ): Promise<{
     cancelled: boolean;
+    dispatched: number;
     reconciled: number;
     redispatched: number;
     timedOut: number;
   }> => {
+    const initialDispatch = await this.pipelineDispatcher.dispatchRun(owner);
     const service = this.createService(owner);
     const snapshot = await service.getRun(owner.id);
-    if (!snapshot) return { cancelled: false, reconciled: 0, redispatched: 0, timedOut: 0 };
+    if (!snapshot) {
+      return {
+        cancelled: false,
+        dispatched: initialDispatch.started,
+        reconciled: 0,
+        redispatched: 0,
+        timedOut: 0,
+      };
+    }
     if (snapshot.run.status === 'cancelling') {
       await this.cancelRun(owner);
-      return { cancelled: true, reconciled: 0, redispatched: 0, timedOut: 0 };
+      return {
+        cancelled: true,
+        dispatched: initialDispatch.started,
+        reconciled: 0,
+        redispatched: 0,
+        timedOut: 0,
+      };
     }
 
     const runtime = await this.createRuntime(owner);
@@ -237,13 +262,25 @@ export class AgentGroupRunRecoveryCoordinator {
       reconciled += 1;
     }
 
-    return { cancelled: false, reconciled, redispatched, timedOut };
+    let followupDispatch: AgentGroupPipelineDispatchResult | undefined;
+    if (reconciled > 0) {
+      followupDispatch = await this.pipelineDispatcher.dispatchRun(owner);
+    }
+
+    return {
+      cancelled: false,
+      dispatched: initialDispatch.started + (followupDispatch?.started ?? 0),
+      reconciled,
+      redispatched,
+      timedOut,
+    };
   };
 
   sweepOnce = async (): Promise<AgentGroupRunRecoverySweepResult> => {
     const owners = await listRecoverableAgentGroupRuns(this.db, this.limit);
     const result: AgentGroupRunRecoverySweepResult = {
       cancelled: 0,
+      dispatched: 0,
       failedRunIds: [],
       reconciled: 0,
       redispatched: 0,
@@ -255,6 +292,7 @@ export class AgentGroupRunRecoveryCoordinator {
       try {
         const outcome = await this.reconcileRun(owner);
         result.cancelled += outcome.cancelled ? 1 : 0;
+        result.dispatched += outcome.dispatched;
         result.reconciled += outcome.reconciled;
         result.redispatched += outcome.redispatched;
         result.timedOut += outcome.timedOut;

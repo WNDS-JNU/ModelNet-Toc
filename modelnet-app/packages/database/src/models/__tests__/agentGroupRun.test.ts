@@ -325,6 +325,46 @@ describe('AgentGroupRunModel', () => {
     expect(events?.filter(({ type }) => type === 'node.dispatch_claimed')).toHaveLength(1);
   });
 
+  it('counts live dispatch leases against the persisted maxParallel budget', async () => {
+    await seedPersonalGroup();
+    const model = new AgentGroupRunModel(serverDB, userId);
+    const created = await model.create(
+      createParams({
+        budgetSnapshot: { maxParallel: 1 },
+        idempotencyKey: 'pipeline-dispatch-parallel-budget',
+        planHash: '0'.repeat(64),
+        planSnapshot: makePipelinePlan([
+          { dependencies: [], key: 'left' },
+          { dependencies: [], key: 'right' },
+        ]),
+      }),
+    );
+    const now = new Date('2026-08-31T00:00:00.000Z');
+
+    const first = await model.claimReadyNodes(
+      { leaseDurationMs: 30_000, limit: 10, runId: created.run.id },
+      now,
+    );
+    const whileClaimed = await new AgentGroupRunModel(serverDB, userId).claimReadyNodes(
+      { leaseDurationMs: 30_000, limit: 10, runId: created.run.id },
+      now,
+    );
+
+    expect(first).toHaveLength(1);
+    expect(whileClaimed).toEqual([]);
+    await model.releaseDispatchClaim({
+      claimId: first[0].claimId,
+      reason: 'test_release',
+      runNodeId: first[0].node.id,
+    });
+    await expect(
+      model.claimReadyNodes(
+        { leaseDurationMs: 30_000, limit: 10, runId: created.run.id },
+        now,
+      ),
+    ).resolves.toHaveLength(1);
+  });
+
   it('reclaims an expired dispatch lease and carries structured upstream operation refs', async () => {
     await seedPersonalGroup();
     const model = new AgentGroupRunModel(serverDB, userId);
@@ -483,6 +523,46 @@ describe('AgentGroupRunModel', () => {
     const events = await model.listEvents(created.run.id);
     expect(events?.filter(({ type }) => type === 'node.dispatch_committed')).toHaveLength(1);
     expect(events?.filter(({ type }) => type === 'attempt.started')).toHaveLength(1);
+  });
+
+  it('fences a stale dispatcher before it can fail a reclaimed node', async () => {
+    await seedPersonalGroup();
+    const model = new AgentGroupRunModel(serverDB, userId);
+    const created = await model.create(
+      createParams({
+        idempotencyKey: 'pipeline-dispatch-failed-start-fencing',
+        planHash: '3'.repeat(64),
+        planSnapshot: makePipelinePlan([{ dependencies: [], key: 'root' }]),
+      }),
+    );
+    const [claim] = await model.claimReadyNodes({
+      leaseDurationMs: 30_000,
+      runId: created.run.id,
+    });
+    const error = { code: 'START_FAILED', message: 'member could not start' };
+
+    await expect(
+      model.failClaimedNodeStart({
+        dispatchClaimId: crypto.randomUUID(),
+        error,
+        runNodeId: claim.node.id,
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      model.failClaimedNodeStart({
+        dispatchClaimId: claim.claimId,
+        error,
+        runNodeId: claim.node.id,
+      }),
+    ).resolves.toBe(true);
+
+    const snapshot = await model.findById(created.run.id);
+    expect(snapshot?.nodes[0]).toMatchObject({
+      completionReason: 'start_failed',
+      dispatchClaimId: null,
+      status: 'failed',
+    });
+    expect(snapshot?.run.status).toBe('failed');
   });
 
   it('rejects invalid dispatch lease bounds before touching a Run', async () => {

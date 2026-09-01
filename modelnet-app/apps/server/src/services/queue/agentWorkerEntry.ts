@@ -83,10 +83,16 @@ if (process.argv.includes('--healthcheck')) {
       }
       const result = (await response.json()) as {
         cancelled?: number;
+        dispatched?: number;
         failedRunIds?: string[];
         reconciled?: number;
       };
-      if (result.reconciled || result.cancelled || result.failedRunIds?.length) {
+      if (
+        result.dispatched ||
+        result.reconciled ||
+        result.cancelled ||
+        result.failedRunIds?.length
+      ) {
         console.info('[agent-worker] collaboration recovery sweep', result);
       }
     } catch (error) {

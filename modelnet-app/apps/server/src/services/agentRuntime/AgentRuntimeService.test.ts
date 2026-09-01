@@ -32,9 +32,14 @@ vi.mock('@lobechat/model-runtime', () => ({
 const { ssrfSafeFetch: mockSsrfSafeFetch } = vi.hoisted(() => ({ ssrfSafeFetch: vi.fn() }));
 vi.mock('@lobechat/ssrf-safe-fetch', () => ({ ssrfSafeFetch: mockSsrfSafeFetch }));
 
-const { completeCollaborationAttempt, isLatestCollaborationAttempt, parkCollaborationAttempt } =
-  vi.hoisted(() => ({
+const {
+  completeCollaborationAttempt,
+  getCollaborationRun,
+  isLatestCollaborationAttempt,
+  parkCollaborationAttempt,
+} = vi.hoisted(() => ({
     completeCollaborationAttempt: vi.fn(),
+    getCollaborationRun: vi.fn(),
     isLatestCollaborationAttempt: vi.fn(),
     parkCollaborationAttempt: vi.fn(),
   }));
@@ -44,6 +49,7 @@ const { listWorkVersionsByRootOperations } = vi.hoisted(() => ({
 vi.mock('@/server/services/agentGroupCollaboration', () => ({
   AgentGroupCollaborationService: class {
     completeAttempt = completeCollaborationAttempt;
+    getRun = getCollaborationRun;
     isLatestAttempt = isLatestCollaborationAttempt;
     parkAttemptForIntervention = parkCollaborationAttempt;
   },
@@ -2446,6 +2452,7 @@ describe('AgentRuntimeService', () => {
 
     beforeEach(() => {
       completeCollaborationAttempt.mockReset().mockResolvedValue(undefined);
+      getCollaborationRun.mockReset().mockResolvedValue(undefined);
       isLatestCollaborationAttempt.mockReset().mockResolvedValue(true);
       parkCollaborationAttempt.mockReset().mockResolvedValue({ status: 'waiting' });
       listWorkVersionsByRootOperations.mockReset().mockResolvedValue({});
@@ -2514,6 +2521,50 @@ describe('AgentRuntimeService', () => {
       });
       expect(completeCollaborationAttempt.mock.invocationCallOrder[0]).toBeLessThan(
         updateToolMessage.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('uses the terminal pipeline projection instead of waiting for blocked anchors', async () => {
+      getCollaborationRun.mockResolvedValue({
+        run: { protocol: 'pipeline', status: 'failed' },
+      });
+
+      const won = await service.completeGroupActionMember({
+        anchorMessageId: 'pipeline-anchor-1',
+        collaboration: {
+          attemptNo: 1,
+          runId: 'pipeline-run-1',
+          runNodeId: 'pipeline-node-1',
+          runtimeKind: 'normal',
+        },
+        expectedMembers: 3,
+        finalState: memberState as any,
+        groupToolMessageId: 'pipeline-tool-1',
+        mode: 'isolated',
+        onComplete: 'resume',
+        operationId: 'pipeline-operation-1',
+        parentOperationId: 'pipeline-supervisor-1',
+        reason: 'done',
+      });
+
+      expect(won).toBe(true);
+      expect(updateToolMessage).toHaveBeenCalledWith(
+        'pipeline-anchor-1',
+        expect.objectContaining({ pluginState: expect.objectContaining({ status: 'completed' }) }),
+      );
+      expect(updateToolMessage).toHaveBeenCalledWith(
+        'pipeline-tool-1',
+        expect.objectContaining({
+          content: 'Agent pipeline ended with status failed.',
+          pluginState: expect.objectContaining({
+            protocol: 'pipeline',
+            status: 'error',
+          }),
+        }),
+      );
+      expect(resumeSpy).toHaveBeenCalledWith(
+        { parentOperationId: 'pipeline-supervisor-1' },
+        { scheduleVerifyOnHold: true },
       );
     });
 

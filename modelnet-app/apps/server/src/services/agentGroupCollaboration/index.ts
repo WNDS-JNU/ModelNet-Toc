@@ -12,6 +12,7 @@ import type {
   CreateAgentGroupRunAttemptParams,
   CreateClaimedAgentGroupRunAttemptParams,
   FailAgentGroupRunNodeStartParams,
+  FailClaimedAgentGroupRunNodeStartParams,
   ReleaseAgentGroupRunDispatchClaimParams,
   StartAgentGroupRunNodeRetryParams,
 } from '@/database/models/agentGroupRun';
@@ -103,6 +104,9 @@ export class AgentGroupCollaborationService {
 
   failNodeStart = (params: FailAgentGroupRunNodeStartParams) =>
     this.repository.failNodeStart(params);
+
+  failClaimedNodeStart = (params: FailClaimedAgentGroupRunNodeStartParams) =>
+    this.repository.failClaimedNodeStart(params);
 
   finalizeCancellation = (runId: string) => this.repository.finalizeCancellation(runId);
 
