@@ -16,6 +16,7 @@ import type {
   FailClaimedAgentGroupRunNodeStartParams,
   ReleaseAgentGroupRunDispatchClaimParams,
   StartAgentGroupRunNodeRetryParams,
+  UpdateAgentGroupRunExternalExecutionRefParams,
 } from '@/database/models/agentGroupRun';
 import { AgentGroupRunRepository } from '@/database/repositories/agentGroupRun';
 import type { LobeChatDatabase } from '@/database/type';
@@ -135,6 +136,9 @@ export class AgentGroupCollaborationService {
   isLatestAttempt = (
     params: Pick<CreateAgentGroupRunAttemptParams, 'attemptNo' | 'operationId' | 'runNodeId'>,
   ) => this.repository.isLatestAttempt(params);
+
+  updateExternalExecutionRef = (params: UpdateAgentGroupRunExternalExecutionRefParams) =>
+    this.repository.updateExternalExecutionRef(params);
 
   startRetryAttempt = (params: StartAgentGroupRunNodeRetryParams) =>
     this.repository.startRetryAttempt(params);

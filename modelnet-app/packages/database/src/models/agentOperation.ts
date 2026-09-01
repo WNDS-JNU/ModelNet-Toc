@@ -472,6 +472,41 @@ export class AgentOperationModel {
     return row ?? null;
   }
 
+  /** Merge a bounded runtime marker without replacing sibling lifecycle metadata. */
+  async mergeMetadata(operationId: string, patch: Record<string, unknown>): Promise<boolean> {
+    const [row] = await this.db
+      .update(agentOperations)
+      .set({
+        metadata: sql`coalesce(${agentOperations.metadata}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`,
+      })
+      .where(and(eq(agentOperations.id, operationId), this.ownership()))
+      .returning({ id: agentOperations.id });
+    return Boolean(row);
+  }
+
+  /** Atomically resume a parked operation and replace its durable continuation marker. */
+  async resumeWaitingForHuman(
+    operationId: string,
+    patch: Record<string, unknown>,
+  ): Promise<boolean> {
+    const [row] = await this.db
+      .update(agentOperations)
+      .set({
+        completionReason: null,
+        metadata: sql`coalesce(${agentOperations.metadata}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`,
+        status: 'running',
+      })
+      .where(
+        and(
+          eq(agentOperations.id, operationId),
+          eq(agentOperations.status, 'waiting_for_human'),
+          this.ownership(),
+        ),
+      )
+      .returning({ id: agentOperations.id });
+    return Boolean(row);
+  }
+
   /**
    * Operations recorded for one topic, newest first — the lookup that turns a
    * topic id (what a user actually has on hand) into the operation ids their

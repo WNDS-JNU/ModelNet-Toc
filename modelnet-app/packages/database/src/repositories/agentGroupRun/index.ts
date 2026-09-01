@@ -11,6 +11,7 @@ import {
   type ParkAgentGroupRunAttemptParams,
   type ReleaseAgentGroupRunDispatchClaimParams,
   type StartAgentGroupRunNodeRetryParams,
+  type UpdateAgentGroupRunExternalExecutionRefParams,
 } from '../../models/agentGroupRun';
 import { ChatGroupModel } from '../../models/chatGroup';
 import type { ChatGroupItem } from '../../schemas';
@@ -93,6 +94,9 @@ export class AgentGroupRunRepository {
   isLatestAttempt = (
     params: Pick<CreateAgentGroupRunAttemptParams, 'attemptNo' | 'operationId' | 'runNodeId'>,
   ) => this.runModel.isLatestAttempt(params);
+
+  updateExternalExecutionRef = (params: UpdateAgentGroupRunExternalExecutionRefParams) =>
+    this.runModel.updateExternalExecutionRef(params);
 
   startRetryAttempt = (params: StartAgentGroupRunNodeRetryParams) =>
     this.runModel.startRetryAttempt(params);

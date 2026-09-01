@@ -50,6 +50,17 @@ export interface AgentGroupPipelineDispatcherRuntime {
   ) => Promise<AgentGroupPipelineLaunchBridge>;
 }
 
+export interface AgentGroupPipelineExternalRuntime {
+  ensureScheduled: (operationId: string) => Promise<'already_started' | 'scheduled'>;
+  interruptOperation: (operationId: string) => Promise<boolean>;
+  prepare: (params: {
+    bridge: AgentGroupPipelineLaunchBridge;
+    claim: AgentGroupRunDispatchClaim;
+    instruction: string;
+    snapshot: AgentGroupRunSnapshot;
+  }) => Promise<{ executionTargetSnapshot: Record<string, unknown>; operationId: string }>;
+}
+
 export type AgentGroupPipelineDispatcherService = Pick<
   AgentGroupCollaborationService,
   | 'claimReadyNodes'
@@ -61,6 +72,9 @@ export type AgentGroupPipelineDispatcherService = Pick<
 >;
 
 export interface AgentGroupPipelineDispatcherOptions {
+  createExternalRuntime?: (
+    owner: RecoverableAgentGroupRunRef,
+  ) => Promise<AgentGroupPipelineExternalRuntime>;
   createRuntime?: (
     owner: RecoverableAgentGroupRunRef,
   ) => Promise<AgentGroupPipelineDispatcherRuntime>;
@@ -195,6 +209,38 @@ const buildExecutionTargetSnapshot = (
   ...(execution.workspace ? { workspaceIsolation: execution.workspace } : {}),
 });
 
+const buildExternalExecutionTargetSnapshot = (
+  bridge: AgentGroupPipelineLaunchBridge,
+  claim: AgentGroupRunDispatchClaim,
+  protocol: DependencyProtocol,
+  external: Record<string, unknown>,
+) => ({
+  anchorMessageId: bridge.anchorMessageId,
+  approvalLineage: {
+    kind: 'confirmed_group_tool',
+    toolMessageId: bridge.groupToolMessageId,
+  },
+  expectedMembers: bridge.expectedMembers,
+  externalAgent: external,
+  groupToolMessageId: bridge.groupToolMessageId,
+  mode: bridge.mode,
+  onComplete: bridge.onComplete,
+  parentOperationId: bridge.parentOperationId,
+  [protocol]: {
+    claimId: claim.claimId,
+    nodeKey: claim.node.nodeKey,
+    upstream: claim.upstream.map((upstream) => ({
+      attemptNo: upstream.attemptNo,
+      externalExecutionRef: upstream.externalExecutionRef,
+      nodeKey: upstream.nodeKey,
+      operationId: upstream.operationId,
+      runNodeId: upstream.runNodeId,
+      runtimeKind: upstream.runtimeKind,
+      workVersionRefs: upstream.outputSnapshot?.workVersionRefs ?? [],
+    })),
+  },
+});
+
 /**
  * Turns fenced ready-node claims into real AgentOperation-backed member runs.
  *
@@ -204,6 +250,9 @@ const buildExecutionTargetSnapshot = (
  * reclaimed the node.
  */
 export class AgentGroupPipelineDispatcher {
+  private readonly createExternalRuntime: NonNullable<
+    AgentGroupPipelineDispatcherOptions['createExternalRuntime']
+  >;
   private readonly createRuntime: NonNullable<AgentGroupPipelineDispatcherOptions['createRuntime']>;
   private readonly createService: NonNullable<AgentGroupPipelineDispatcherOptions['createService']>;
   private readonly leaseDurationMs: number;
@@ -213,6 +262,7 @@ export class AgentGroupPipelineDispatcher {
     private readonly db: LobeChatDatabase,
     options: AgentGroupPipelineDispatcherOptions = {},
   ) {
+    this.createExternalRuntime = options.createExternalRuntime ?? this.createDefaultExternalRuntime;
     this.createRuntime = options.createRuntime ?? this.createDefaultRuntime;
     this.createService = options.createService ?? this.createDefaultService;
     this.leaseDurationMs = options.leaseDurationMs ?? DEFAULT_DISPATCH_LEASE_MS;
@@ -263,7 +313,7 @@ export class AgentGroupPipelineDispatcher {
     }
 
     const outcomes = await Promise.all(
-      claims.map((claim) => this.dispatchClaim(service, runtime, snapshot, claim)),
+      claims.map((claim) => this.dispatchClaim(service, runtime, snapshot, claim, owner)),
     );
     return outcomes.reduce<AgentGroupPipelineDispatchResult>(
       (total, outcome) => ({
@@ -282,6 +332,7 @@ export class AgentGroupPipelineDispatcher {
     runtime: AgentGroupPipelineDispatcherRuntime,
     snapshot: AgentGroupRunSnapshot,
     claim: AgentGroupRunDispatchClaim,
+    owner: RecoverableAgentGroupRunRef,
   ): Promise<Omit<AgentGroupPipelineDispatchResult, 'claimed'>> => {
     const protocol = snapshot.run.protocol;
     if (!isDependencyProtocol(protocol)) {
@@ -316,6 +367,10 @@ export class AgentGroupPipelineDispatcher {
         runNodeId: claim.node.id,
       });
       return { failed: 0, fenced: released ? 0 : 1, released: released ? 1 : 0, started: 0 };
+    }
+
+    if (claim.node.executionPolicySnapshot?.runtimeKind === 'external') {
+      return this.dispatchExternalClaim(service, snapshot, claim, bridge, protocol, owner);
     }
 
     let attemptCommitted = false;
@@ -431,6 +486,82 @@ export class AgentGroupPipelineDispatcher {
       });
       return { failed: failed ? 1 : 0, fenced: failed ? 0 : 1, released: 0, started: 0 };
     }
+  };
+
+  private dispatchExternalClaim = async (
+    service: AgentGroupPipelineDispatcherService,
+    snapshot: AgentGroupRunSnapshot,
+    claim: AgentGroupRunDispatchClaim,
+    bridge: AgentGroupPipelineLaunchBridge,
+    protocol: DependencyProtocol,
+    owner: RecoverableAgentGroupRunRef,
+  ): Promise<Omit<AgentGroupPipelineDispatchResult, 'claimed'>> => {
+    let operationId: string | undefined;
+    let attemptCommitted = false;
+    let externalRuntime: AgentGroupPipelineExternalRuntime | undefined;
+    try {
+      externalRuntime = await this.createExternalRuntime(owner);
+      const prepared = await externalRuntime.prepare({
+        bridge,
+        claim,
+        instruction: buildDependencyMemberInstruction(protocol, claim),
+        snapshot,
+      });
+      operationId = prepared.operationId;
+      await service.createClaimedAttempt({
+        attemptNo: claim.attemptNo,
+        dispatchClaimId: claim.claimId,
+        executionTargetSnapshot: buildExternalExecutionTargetSnapshot(
+          bridge,
+          claim,
+          protocol,
+          prepared.executionTargetSnapshot,
+        ),
+        operationId,
+        runNodeId: claim.node.id,
+        runtimeKind: 'external',
+      });
+      attemptCommitted = true;
+      await externalRuntime.ensureScheduled(operationId);
+      return { failed: 0, fenced: 0, released: 0, started: 1 };
+    } catch (error) {
+      if (operationId && externalRuntime) {
+        try {
+          await externalRuntime.interruptOperation(operationId);
+        } catch (interruptError) {
+          log('failed to interrupt aborted external operation %s: %O', operationId, interruptError);
+        }
+      }
+      const failure = {
+        code: `AGENT_GROUP_${protocol.toUpperCase()}_EXTERNAL_START_FAILED`,
+        message: errorMessage(error),
+      };
+      if (attemptCommitted && operationId) {
+        await service.completeAttempt({
+          attemptNo: claim.attemptNo,
+          completionReason: 'start_failed',
+          error: failure,
+          operationId,
+          runNodeId: claim.node.id,
+          runtimeKind: 'external',
+          status: 'failed',
+        });
+        return { failed: 1, fenced: 0, released: 0, started: 0 };
+      }
+      const failed = await service.failClaimedNodeStart({
+        dispatchClaimId: claim.claimId,
+        error: failure,
+        runNodeId: claim.node.id,
+      });
+      return { failed: failed ? 1 : 0, fenced: failed ? 0 : 1, released: 0, started: 0 };
+    }
+  };
+
+  private createDefaultExternalRuntime = async (
+    owner: RecoverableAgentGroupRunRef,
+  ): Promise<AgentGroupPipelineExternalRuntime> => {
+    const { ExternalAgentExecutionService } = await import('@/server/services/externalAgent');
+    return new ExternalAgentExecutionService(this.db, owner);
   };
 
   private createDefaultRuntime = async (

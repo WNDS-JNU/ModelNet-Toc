@@ -828,6 +828,27 @@ export class AgentInterventionModel {
     return this.db.transaction((tx) => this.createBatchInTransaction(tx, params));
   };
 
+  /** Settle the pending Review projection after an external producer accepted its input. */
+  resolvePendingRuntimeOperation = async (operationId: string, resolvedAt = new Date()) => {
+    return this.db
+      .update(agentInterventions)
+      .set({
+        resolvedAt,
+        status: 'resolved',
+        updatedAt: resolvedAt,
+        version: sql`${agentInterventions.version} + 1`,
+      })
+      .where(
+        and(
+          eq(agentInterventions.operationId, operationId),
+          eq(agentInterventions.source, 'runtime'),
+          eq(agentInterventions.status, 'pending'),
+          this.ownership(),
+        ),
+      )
+      .returning();
+  };
+
   /**
    * Atomically replaces the still-pending remainder of a runtime batch after a
    * partial decision re-parks under a new operation. The new parked batch is

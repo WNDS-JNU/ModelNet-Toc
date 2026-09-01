@@ -13,11 +13,13 @@ import {
   AGENT_GROUP_RUN_PAUSE_NOT_ALLOWED,
   AGENT_GROUP_RUN_RESUME_NOT_ALLOWED,
 } from '@/database/models/agentGroupRun';
+import { AgentOperationModel } from '@/database/models/agentOperation';
 import {
   AGENT_TRANSFER_IN_PROGRESS,
   AgentTransferJobModel,
 } from '@/database/models/agentTransferJob';
 import { ChatGroupModel } from '@/database/models/chatGroup';
+import { ExternalAgentBindingModel } from '@/database/models/externalAgentBinding';
 import { ResourcePermissionModel } from '@/database/models/resourcePermission';
 import {
   ResourceTransferRequestModel,
@@ -45,6 +47,13 @@ import { AgentGroupCollaborationService } from '@/server/services/agentGroupColl
 import { AgentGroupRunRecoveryCoordinator } from '@/server/services/agentGroupCollaboration/recovery';
 import { AiAgentService } from '@/server/services/aiAgent';
 import { EditLockService } from '@/server/services/editLock';
+import {
+  ExternalAgentExecutionService,
+  normalizeExternalAgentEndpoint,
+  parseExternalAgentOperationMetadata,
+  resolveExternalAgentTrustPolicy,
+  validateExternalAgentCredentialRef,
+} from '@/server/services/externalAgent';
 import { QueueService } from '@/server/services/queue';
 import { publishResourceEvent } from '@/server/services/resourceEvents';
 import {
@@ -231,6 +240,140 @@ const applyGroupAccessLevel = async ({
 };
 
 export const agentGroupRouter = router({
+  deleteExternalAgentBinding: agentGroupProcedureWrite
+    .input(z.object({ agentId: z.string().min(1) }))
+    .mutation(async ({ input, ctx }) => {
+      if (!(await ctx.agentModel.getAgentConfigById(input.agentId))) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Agent not found.' });
+      }
+      if (ctx.workspaceId) {
+        await assertCanPerformResourceAction({
+          action: 'edit',
+          db: ctx.serverDB,
+          resourceId: input.agentId,
+          resourceType: 'agent',
+          userId: ctx.userId,
+          workspaceId: ctx.workspaceId,
+        });
+      }
+      return new ExternalAgentBindingModel(
+        ctx.serverDB,
+        ctx.userId,
+        ctx.workspaceId ?? undefined,
+      ).deleteByAgentId(input.agentId);
+    }),
+
+  getExternalAgentBinding: agentGroupProcedureWrite
+    .input(z.object({ agentId: z.string().min(1) }))
+    .query(async ({ input, ctx }) => {
+      if (!(await ctx.agentModel.getAgentConfigById(input.agentId))) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Agent not found.' });
+      }
+      if (ctx.workspaceId) {
+        await assertCanPerformResourceAction({
+          action: 'edit',
+          db: ctx.serverDB,
+          resourceId: input.agentId,
+          resourceType: 'agent',
+          userId: ctx.userId,
+          workspaceId: ctx.workspaceId,
+        });
+      }
+      return new ExternalAgentBindingModel(
+        ctx.serverDB,
+        ctx.userId,
+        ctx.workspaceId ?? undefined,
+      ).findByAgentId(input.agentId);
+    }),
+
+  resumeExternalAgentRun: agentGroupProcedureWrite
+    .input(z.object({ input: z.string().min(1).max(100_000), operationId: z.string().min(1) }))
+    .mutation(async ({ input, ctx }) => {
+      const operation = await new AgentOperationModel(
+        ctx.serverDB,
+        ctx.userId,
+        ctx.workspaceId ?? undefined,
+      ).findById(input.operationId);
+      const metadata = parseExternalAgentOperationMetadata(
+        operation?.metadata?.externalAgentExecution,
+      );
+      if (!operation || !metadata) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'External Agent run not found.' });
+      }
+      const owner = {
+        id: metadata.collaboration.runId,
+        userId: ctx.userId,
+        workspaceId: ctx.workspaceId ?? null,
+      };
+      const run = await new AgentGroupCollaborationService(
+        ctx.serverDB,
+        ctx.userId,
+        ctx.workspaceId ?? undefined,
+      ).getRun(owner.id);
+      if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'Agent Group run not found.' });
+      if (ctx.workspaceId) {
+        await assertCanPerformResourceAction({
+          action: 'use',
+          db: ctx.serverDB,
+          resourceId: run.run.chatGroupId,
+          resourceType: 'agentGroup',
+          userId: ctx.userId,
+          workspaceId: ctx.workspaceId,
+        });
+      }
+      await new ExternalAgentExecutionService(ctx.serverDB, owner).resumeWithInput(
+        input.operationId,
+        input.input,
+      );
+      return { operationId: input.operationId, resumed: true };
+    }),
+
+  upsertExternalAgentBinding: agentGroupProcedureWrite
+    .input(
+      z.object({
+        agentId: z.string().min(1),
+        authScheme: z.enum(['none', 'bearer']).default('none'),
+        credentialRef: z.string().max(128).nullish(),
+        enabled: z.boolean().default(true),
+        endpointUrl: z.string().url().max(2048),
+        interactionMode: z.enum(['stream', 'poll']).default('stream'),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (!(await ctx.agentModel.getAgentConfigById(input.agentId))) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Agent not found.' });
+      }
+      if (ctx.workspaceId) {
+        await assertCanPerformResourceAction({
+          action: 'edit',
+          db: ctx.serverDB,
+          resourceId: input.agentId,
+          resourceType: 'agent',
+          userId: ctx.userId,
+          workspaceId: ctx.workspaceId,
+        });
+      }
+      try {
+        const endpointUrl = normalizeExternalAgentEndpoint(input.endpointUrl);
+        const credentialRef = validateExternalAgentCredentialRef(
+          input.authScheme,
+          input.credentialRef,
+        );
+        const trustPolicy = resolveExternalAgentTrustPolicy(endpointUrl);
+        return await new ExternalAgentBindingModel(
+          ctx.serverDB,
+          ctx.userId,
+          ctx.workspaceId ?? undefined,
+        ).upsert({ ...input, credentialRef, endpointUrl, trustPolicy });
+      } catch (error) {
+        throw new TRPCError({
+          cause: error,
+          code: 'BAD_REQUEST',
+          message: error instanceof Error ? error.message : 'Invalid external Agent binding.',
+        });
+      }
+    }),
+
   addAgentsToGroup: agentGroupProcedureWrite
     .input(
       z.object({

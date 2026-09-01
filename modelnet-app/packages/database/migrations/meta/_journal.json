@@ -1113,6 +1113,13 @@
       "when": 1788230966940,
       "tag": "0158_agent_group_run_tool_bridge",
       "breakpoints": true
+    },
+    {
+      "idx": 159,
+      "version": "7",
+      "when": 1788252000000,
+      "tag": "0159_external_agent_bindings",
+      "breakpoints": true
     }
   ],
   "version": "6"

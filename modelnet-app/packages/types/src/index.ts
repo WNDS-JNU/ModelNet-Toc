@@ -22,6 +22,7 @@ export * from './entityId';
 export * from './eval';
 export * from './expertise';
 export * from './export';
+export * from './externalAgent';
 export * from './fetch';
 export * from './files';
 export * from './followUpAction';

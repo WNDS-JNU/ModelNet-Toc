@@ -39,10 +39,12 @@ interface RecoveryBridgeSnapshot {
 
 export interface AgentGroupRunRecoveryRuntime {
   completeMember: (params: GroupActionMemberBridgeParams) => Promise<boolean>;
+  ensureExternalQueueStarted?: (operationId: string) => Promise<'already_started' | 'scheduled'>;
   ensurePreparedQueueStarted: (
     operationId: string,
   ) => Promise<'already_started' | 'missing' | 'not_prepared' | 'scheduled'>;
   finalizeInterruptedOperation: (operationId: string) => Promise<boolean>;
+  interruptExternalOperation?: (operationId: string) => Promise<boolean>;
   interruptOperation: (operationId: string) => Promise<boolean>;
 }
 
@@ -142,8 +144,17 @@ export class AgentGroupRunRecoveryCoordinator {
     const operationIds = Array.from(
       new Set([transition.supervisorOperationId, ...transition.activeOperationIds]),
     );
+    const externalOperationIds = new Set(
+      transition.snapshot.attempts
+        .filter((attempt) => attempt.runtimeKind === 'external')
+        .map((attempt) => attempt.operationId),
+    );
     const interruptions = await Promise.allSettled(
-      operationIds.map((operationId) => runtime.interruptOperation(operationId)),
+      operationIds.map((operationId) =>
+        externalOperationIds.has(operationId) && runtime.interruptExternalOperation
+          ? runtime.interruptExternalOperation(operationId)
+          : runtime.interruptOperation(operationId),
+      ),
     );
     const rejected = interruptions.find(
       (result): result is PromiseRejectedResult => result.status === 'rejected',
@@ -240,6 +251,10 @@ export class AgentGroupRunRecoveryCoordinator {
         const dispatch = await runtime.ensurePreparedQueueStarted(attempt.operationId);
         if (dispatch === 'scheduled') redispatched += 1;
       }
+      if (attempt.runtimeKind === 'external' && runtime.ensureExternalQueueStarted) {
+        const dispatch = await runtime.ensureExternalQueueStarted(attempt.operationId);
+        if (dispatch === 'scheduled') redispatched += 1;
+      }
       const node = nodeMap.get(attempt.runNodeId);
       const operation = operationMap.get(attempt.operationId);
       const deadline =
@@ -255,7 +270,11 @@ export class AgentGroupRunRecoveryCoordinator {
       if (!reason) continue;
 
       if (isTimedOut) {
-        await runtime.interruptOperation(attempt.operationId);
+        if (attempt.runtimeKind === 'external' && runtime.interruptExternalOperation) {
+          await runtime.interruptExternalOperation(attempt.operationId);
+        } else {
+          await runtime.interruptOperation(attempt.operationId);
+        }
         timedOut += 1;
       }
       await this.completeAttempt(service, runtime, snapshot, attempt, reason);
@@ -354,13 +373,17 @@ export class AgentGroupRunRecoveryCoordinator {
     const service = new AiAgentService(this.db, owner.userId, {
       workspaceId: owner.workspaceId ?? undefined,
     });
+    const { ExternalAgentExecutionService } = await import('@/server/services/externalAgent');
+    const external = new ExternalAgentExecutionService(this.db, owner);
     return {
       completeMember: (params) => service.completeGroupActionMember(params),
+      ensureExternalQueueStarted: (operationId) => external.ensureScheduled(operationId),
       ensurePreparedQueueStarted: (operationId) => service.ensurePreparedQueueStarted(operationId),
       finalizeInterruptedOperation: (operationId) =>
         service.ensureInterruptedTaskFinalized(operationId),
       interruptOperation: async (operationId) =>
         (await service.interruptTask({ operationId })).success,
+      interruptExternalOperation: (operationId) => external.interruptOperation(operationId),
     };
   };
 

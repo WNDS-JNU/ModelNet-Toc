@@ -136,12 +136,13 @@ describe('AgentGroupPipelineDispatcher', () => {
     } as unknown as AgentGroupPipelineDispatcherService;
   });
 
-  const createDispatcher = () =>
+  const createDispatcher = (extra: Record<string, unknown> = {}) =>
     new AgentGroupPipelineDispatcher({} as any, {
       createRuntime: async () => runtime,
       createService: () => service,
       leaseDurationMs: 15_000,
       limit: 4,
+      ...extra,
     });
 
   it('reuses the approved group tool message identity across dispatcher recovery', () => {
@@ -257,6 +258,68 @@ describe('AgentGroupPipelineDispatcher', () => {
     });
     expect(JSON.stringify(persisted)).not.toContain('three relevant facts');
     expect(failClaimedNodeStart).not.toHaveBeenCalled();
+  });
+
+  it('dispatches an external node through the durable A2A boundary', async () => {
+    const externalClaim = {
+      ...claim,
+      node: {
+        ...claim.node,
+        executionPolicySnapshot: { runtimeKind: 'external' },
+      },
+    } as AgentGroupRunDispatchClaim;
+    const externalSnapshot = {
+      ...snapshot,
+      nodes: [externalClaim.node],
+    } as AgentGroupRunSnapshot;
+    getRun.mockResolvedValueOnce(externalSnapshot);
+    claimReadyNodes.mockResolvedValueOnce([externalClaim]);
+    const prepare = vi.fn().mockResolvedValue({
+      executionTargetSnapshot: {
+        bindingId: 'binding-1',
+        endpointOrigin: 'https://trusted.example',
+        protocolVersion: '1.0',
+      },
+      operationId: 'operation-external',
+    });
+    const ensureScheduled = vi.fn().mockResolvedValue('scheduled');
+
+    const result = await createDispatcher({
+      createExternalRuntime: async () => ({
+        ensureScheduled,
+        interruptOperation: vi.fn().mockResolvedValue(true),
+        prepare,
+      }),
+    }).dispatchRun(owner);
+
+    expect(result).toEqual({ claimed: 1, failed: 0, fenced: 0, released: 0, started: 1 });
+    expect(execGroupMember).not.toHaveBeenCalled();
+    expect(prepare).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bridge,
+        claim: externalClaim,
+        instruction: expect.stringContaining('The source found three relevant facts.'),
+        snapshot: externalSnapshot,
+      }),
+    );
+    expect(createClaimedAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: 'operation-external',
+        runtimeKind: 'external',
+      }),
+    );
+    expect(createClaimedAttempt.mock.calls[0][0].executionTargetSnapshot).toMatchObject({
+      externalAgent: {
+        bindingId: 'binding-1',
+        endpointOrigin: 'https://trusted.example',
+        protocolVersion: '1.0',
+      },
+      pipeline: { claimId: externalClaim.claimId, nodeKey: externalClaim.node.nodeKey },
+    });
+    expect(
+      JSON.stringify(createClaimedAttempt.mock.calls[0][0].executionTargetSnapshot),
+    ).not.toContain('The source found three relevant facts.');
+    expect(ensureScheduled).toHaveBeenCalledWith('operation-external');
   });
 
   it('releases the lease when launch-message preparation is temporarily unavailable', async () => {

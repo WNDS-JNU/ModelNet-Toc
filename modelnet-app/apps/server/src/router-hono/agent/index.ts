@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 
 import { botCallback } from './handlers/botCallback';
 import { execAgent } from './handlers/execAgent';
+import { externalA2ARun } from './handlers/externalA2ARun';
 import { finalizeAbandoned } from './handlers/finalizeAbandoned';
 import { gatewayCallback } from './handlers/gatewayCallback';
 import { gatewayCron } from './handlers/gatewayCron';
@@ -38,6 +39,9 @@ app.post('/', qstashOrApiKeyAuth(), execAgent);
 // POST /api/agent/run — execute a single step (QStash or internal Redis Stream worker)
 app.post('/run', queueWorkerOrQstashAuth(), runStep);
 app.get('/run', runStepHealth);
+
+// POST /api/agent/external-a2a-run — durable outbound A2A Attempt execution
+app.post('/external-a2a-run', queueWorkerOrQstashAuth(), externalA2ARun);
 
 // POST /api/agent/recover-group-runs — authenticated internal recovery sweep
 app.post(

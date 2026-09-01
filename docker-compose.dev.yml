@@ -22,6 +22,8 @@ services:
         condition: service_healthy
       device-gateway:
         condition: service_healthy
+      a2a-dev-agent:
+        condition: service_healthy
     env_file:
       - .env
       - .env.modelnet
@@ -40,6 +42,10 @@ services:
       AGENT_RUNTIME_QUEUE_PROVIDER: ${DEV_AGENT_RUNTIME_QUEUE_PROVIDER:-redis-stream}
       AGENT_RUNTIME_BASE_URL: http://modelnet-app:3210
       AGENT_WORKER_TOKEN: ${KEY_VAULTS_SECRET}
+      A2A_ALLOW_INSECURE_HTTP: "1"
+      A2A_DEPLOYMENT_ENV: development
+      A2A_TRUSTED_ORIGINS: http://a2a-dev-agent:3400
+      A2A_TRUSTED_PRIVATE_ORIGINS: http://a2a-dev-agent:3400
       MODELNET_LEADERBOARD_DATA_DIR: /app/leaderboard/data
       MODELNET_PROXY_URL: http://modelnet-router:8000/v1
       MODELNET_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
@@ -70,6 +76,31 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+
+  a2a-dev-agent:
+    image: ${DEV_MODELNET_APP_IMAGE:-${DEV_LOBE_IMAGE:-modelnet-toc-dev-app}}
+    container_name: modelnet-toc-dev-a2a-agent
+    restart: unless-stopped
+    entrypoint: ["/bin/node"]
+    command: ["/app/a2a-dev-agent.mjs"]
+    environment:
+      PORT: "3400"
+    expose:
+      - "3400"
+    volumes:
+      - ./modelnet-app/scripts/a2a-dev-agent.mjs:/app/a2a-dev-agent.mjs:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://127.0.0.1:3400/healthz'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    networks:
+      - modelnet-dev-network
 
   agent-worker:
     image: ${DEV_MODELNET_APP_IMAGE:-${DEV_LOBE_IMAGE:-modelnet-toc-dev-app}}

@@ -105,6 +105,13 @@ export interface CompleteAgentGroupRunAttemptParams extends CreateAgentGroupRunA
   status: Extract<AgentGroupRunAttemptStatus, 'cancelled' | 'completed' | 'failed' | 'timed_out'>;
 }
 
+export interface UpdateAgentGroupRunExternalExecutionRefParams {
+  attemptNo: number;
+  externalExecutionRef: AgentGroupRunExternalExecutionRef;
+  operationId: string;
+  runNodeId: string;
+}
+
 export type ParkAgentGroupRunAttemptParams = CreateAgentGroupRunAttemptParams;
 
 export type StartAgentGroupRunNodeRetryParams = CreateAgentGroupRunAttemptParams;
@@ -937,6 +944,39 @@ export class AgentGroupRunModel {
         .limit(1);
 
       return latest?.attemptNo === params.attemptNo && latest.operationId === params.operationId;
+    });
+
+  /** Persist the remote A2A identity only on the active external Attempt. */
+  updateExternalExecutionRef = async (
+    params: UpdateAgentGroupRunExternalExecutionRefParams,
+  ): Promise<boolean> =>
+    this.db.transaction(async (tx) => {
+      const node = await this.loadAccessibleNode(tx, params.runNodeId);
+      const [attempt] = await tx
+        .update(agentGroupRunAttempts)
+        .set({ externalExecutionRef: params.externalExecutionRef })
+        .where(
+          and(
+            eq(agentGroupRunAttempts.runNodeId, node.id),
+            eq(agentGroupRunAttempts.attemptNo, params.attemptNo),
+            eq(agentGroupRunAttempts.operationId, params.operationId),
+            eq(agentGroupRunAttempts.runtimeKind, 'external'),
+            inArray(agentGroupRunAttempts.status, ['pending', 'running', 'waiting']),
+          ),
+        )
+        .returning({ id: agentGroupRunAttempts.id });
+      if (!attempt) return false;
+      await this.recordEvent(tx, {
+        attemptId: attempt.id,
+        data: { externalExecutionRef: params.externalExecutionRef },
+        idempotencyKey: `attempt:${attempt.id}:external-ref:${params.externalExecutionRef.taskId ?? 'message'}`,
+        operationId: params.operationId,
+        runId: node.runId,
+        runNodeId: node.id,
+        status: 'running',
+        type: 'attempt.external_execution_bound',
+      });
+      return true;
     });
 
   /**
