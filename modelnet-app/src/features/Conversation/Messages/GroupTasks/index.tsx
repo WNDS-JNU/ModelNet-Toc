@@ -3,13 +3,15 @@
 import { type UIChatMessage } from '@lobechat/types';
 import { Block, Flexbox, GroupAvatar, Icon } from '@lobehub/ui';
 import { Tag } from '@lobehub/ui/base-ui';
+import { Pagination } from 'antd';
 import { cssVar } from 'antd-style';
 import isEqual from 'fast-deep-equal';
 import { ListTodo } from 'lucide-react';
-import { memo, useMemo } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { DEFAULT_AVATAR } from '@/const/meta';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { useAgentGroupStore } from '@/store/agentGroup';
 import { agentGroupSelectors } from '@/store/agentGroup/selectors';
 
@@ -64,9 +66,23 @@ GroupTasksAvatar.displayName = 'GroupTasksAvatar';
 
 const GroupTasksMessage = memo<GroupTasksMessageProps>(({ id }) => {
   const { t } = useTranslation('chat');
+  const isMobile = useIsMobile();
+  const [currentPage, setCurrentPage] = useState(1);
   const item = useConversationStore(dataSelectors.getDisplayMessageById(id), isEqual)!;
   const actionsConfig = useConversationStore((s) => s.actionsBar?.assistant);
   const tasks = (item as UIChatMessage)?.tasks?.filter(Boolean) as UIChatMessage[] | undefined;
+  const pageSize = isMobile ? 1 : 2;
+  const totalPages = Math.max(1, Math.ceil((tasks?.length ?? 0) / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+  const pageStart = (safePage - 1) * pageSize;
+  const visibleTasks = useMemo(
+    () => tasks?.slice(pageStart, pageStart + pageSize) ?? [],
+    [pageSize, pageStart, tasks],
+  );
+
+  useEffect(() => {
+    if (safePage !== currentPage) setCurrentPage(safePage);
+  }, [currentPage, safePage]);
 
   // Get unique agent IDs from tasks
   const taskAgentIds = useMemo(() => {
@@ -135,10 +151,33 @@ const GroupTasksMessage = memo<GroupTasksMessageProps>(({ id }) => {
       time={createdAt}
       titleAddon={<Tag>{t('task.groupTasks', { count: tasks.length })}</Tag>}
     >
-      <Flexbox gap={8} width={'100%'}>
-        {tasks.map((task) => (
-          <TaskItem item={task} key={task.id} />
-        ))}
+      <Flexbox gap={12} width={'100%'}>
+        <div
+          style={{
+            display: 'grid',
+            gap: 16,
+            gridTemplateColumns: `repeat(${visibleTasks.length}, minmax(0, 1fr))`,
+            width: '100%',
+          }}
+        >
+          {visibleTasks.map((task) => (
+            <div key={task.id} style={{ minWidth: 0 }}>
+              <TaskItem item={task} />
+            </div>
+          ))}
+        </div>
+        {tasks.length > pageSize && (
+          <Flexbox horizontal align={'center'} justify={'center'} width={'100%'}>
+            <Pagination
+              current={safePage}
+              pageSize={pageSize}
+              showSizeChanger={false}
+              size={'small'}
+              total={tasks.length}
+              onChange={setCurrentPage}
+            />
+          </Flexbox>
+        )}
       </Flexbox>
     </ChatItem>
   );

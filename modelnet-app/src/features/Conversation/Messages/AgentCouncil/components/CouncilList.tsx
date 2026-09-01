@@ -2,17 +2,14 @@
 
 import { type UIChatMessage } from '@lobechat/types';
 import { Flexbox } from '@lobehub/ui';
-import { Divider } from 'antd';
+import { Pagination } from 'antd';
 import isEqual from 'fast-deep-equal';
-import { Fragment, memo } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 
-import { CONVERSATION_MIN_WIDTH } from '@/const/layoutTokens';
 import WideScreenContainer from '@/features/WideScreenContainer';
-import { useGlobalStore } from '@/store/global';
-import { systemStatusSelectors } from '@/store/global/selectors';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 import CouncilMember from './CouncilMember';
-import ScrollShadowWithButton from './ScrollShadowWithButton';
 
 export type DisplayMode = 'horizontal' | 'tab';
 
@@ -23,7 +20,21 @@ interface CouncilListProps {
 }
 
 const CouncilList = memo<CouncilListProps>(({ members, displayMode, activeTab }) => {
-  const wideScreen = useGlobalStore(systemStatusSelectors.wideScreen);
+  const isMobile = useIsMobile();
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = isMobile ? 1 : 2;
+  const totalPages = Math.max(1, Math.ceil((members?.length ?? 0) / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+  const pageStart = (safePage - 1) * pageSize;
+  const visibleMembers = useMemo(
+    () => members?.slice(pageStart, pageStart + pageSize) ?? [],
+    [members, pageSize, pageStart],
+  );
+
+  useEffect(() => {
+    if (safePage !== currentPage) setCurrentPage(safePage);
+  }, [currentPage, safePage]);
+
   if (!members || members.length === 0) {
     return null;
   }
@@ -41,54 +52,37 @@ const CouncilList = memo<CouncilListProps>(({ members, displayMode, activeTab })
     }
 
     default: {
-      if (members.length < 2) {
-        return (
-          <WideScreenContainer gap={16}>
-            {members.map((member, idx) => {
-              if (!member) return null;
-              return <CouncilMember index={idx} item={member} key={member.id} />;
-            })}
-          </WideScreenContainer>
-        );
-      }
-      const MIN_WIDTH = CONVERSATION_MIN_WIDTH / 2;
       return (
-        <ScrollShadowWithButton justify={wideScreen ? 'flex-start' : 'center'}>
-          <Flexbox
-            horizontal
-            justify={wideScreen ? 'flex-start' : 'center'}
-            paddingInline={16}
+        <WideScreenContainer gap={12}>
+          <div
             style={{
-              minWidth: MIN_WIDTH * members.length + 32 + 32 * (members.length - 1),
+              display: 'grid',
+              gap: 16,
+              gridTemplateColumns: `repeat(${visibleMembers.length}, minmax(0, 1fr))`,
+              width: '100%',
             }}
           >
-            {members?.map((member, idx) => {
-              if (!member) return null;
+            {visibleMembers.map((member, idx) => {
               return (
-                <Fragment key={member.id}>
-                  <Flexbox
-                    gap={12}
-                    key={member.id}
-                    width={`min(${MIN_WIDTH}px, 100%)`}
-                    style={{
-                      minWidth: MIN_WIDTH,
-                      position: 'relative',
-                    }}
-                  >
-                    <CouncilMember index={idx} item={member} />
-                  </Flexbox>
-                  {idx < members?.length - 1 && (
-                    <Divider
-                      dashed
-                      orientation={'vertical'}
-                      style={{ height: 'unset', marginInline: 16 }}
-                    />
-                  )}
-                </Fragment>
+                <div key={member.id} style={{ minWidth: 0 }}>
+                  <CouncilMember index={pageStart + idx} item={member} />
+                </div>
               );
             })}
-          </Flexbox>
-        </ScrollShadowWithButton>
+          </div>
+          {members.length > pageSize && (
+            <Flexbox horizontal align={'center'} justify={'center'} width={'100%'}>
+              <Pagination
+                current={safePage}
+                pageSize={pageSize}
+                showSizeChanger={false}
+                size={'small'}
+                total={members.length}
+                onChange={setCurrentPage}
+              />
+            </Flexbox>
+          )}
+        </WideScreenContainer>
       );
     }
   }
