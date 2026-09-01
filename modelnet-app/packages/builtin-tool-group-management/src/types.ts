@@ -155,7 +155,18 @@ export interface WorkflowStep {
   agentId: string;
   barrierKey?: string;
   dependencies?: string[];
-  executionPolicy?: Record<string, unknown>;
+  executionPolicy?: {
+    baseRef?: string;
+    codeMode?: 'integrator' | 'isolated_write' | 'read_only';
+    deviceId?: string;
+    executionTarget?: 'device' | 'sandbox';
+    runtimeKind?: 'heterogeneous';
+    verification?: {
+      requirement: string;
+      verifierType?: 'llm';
+    };
+    workingDirectory?: string;
+  };
   instruction: string;
   key: string;
   maxAttempts?: number;

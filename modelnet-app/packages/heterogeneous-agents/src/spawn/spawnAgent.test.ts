@@ -388,7 +388,18 @@ describe('spawnAgent', () => {
     const { spawnAgent } = await import('./spawnAgent');
     await spawnAgent({
       agentType: 'claude-code',
-      extraArgs: ['--permission-mode', 'bypassPermissions', '--allowed-tools', 'Bash,Write,Edit'],
+      extraArgs: [
+        '--permission-mode',
+        'bypassPermissions',
+        '--allowed-tools',
+        'Bash,Write,Edit',
+        '--mcp-config',
+        '/tmp/untrusted-mcp.json',
+        '--system-prompt',
+        'replace host policy',
+        '--model',
+        'claude-sonnet-4',
+      ],
       operationId: 'op-read-only',
       permissionProfile: 'read-only',
       prompt: 'review only',
@@ -400,6 +411,31 @@ describe('spawnAgent', () => {
     expect(args).not.toContain('bypassPermissions');
     expect(args).not.toContain('--allowed-tools');
     expect(args).not.toContain('Bash,Write,Edit');
+    expect(args).toContain('claude-sonnet-4');
+    expect(args).not.toContain('--mcp-config');
+    expect(args).not.toContain('/tmp/untrusted-mcp.json');
+    expect(args).not.toContain('--system-prompt');
+    expect(args).not.toContain('replace host policy');
+  });
+
+  it('forces Claude Code workspace writes to file-edit tools only', async () => {
+    nextFakeProc = createFakeProc().proc;
+    const { spawnAgent } = await import('./spawnAgent');
+    await spawnAgent({
+      agentType: 'claude-code',
+      extraArgs: ['--permission-mode', 'bypassPermissions', '--allowed-tools', 'Bash,mcp__*'],
+      operationId: 'op-workspace-write',
+      permissionProfile: 'workspace-write',
+      prompt: 'edit files only',
+    });
+
+    const { args } = spawnCalls[0];
+    const permissionIndex = args.lastIndexOf('--permission-mode');
+    const allowedToolsIndex = args.lastIndexOf('--allowed-tools');
+    expect(args[permissionIndex + 1]).toBe('acceptEdits');
+    expect(args[allowedToolsIndex + 1]).toBe('Read,Write,Edit,MultiEdit');
+    expect(args).not.toContain('bypassPermissions');
+    expect(args).not.toContain('Bash,mcp__*');
   });
 
   it('runs Grok Build through ACP and exposes its native session to CLI callers', async () => {
@@ -974,6 +1010,16 @@ describe('spawnAgent', () => {
         'sandbox_permissions=["disk-full-read-access"]',
         '-c',
         'model="gpt-5.5"',
+        '--enable',
+        'web_search_request',
+        '--image',
+        '/etc/shadow',
+        'resume',
+        '--oss',
+        '--output-last-message',
+        '/tmp/untrusted-output',
+        '--model',
+        'gpt-5.5-codex',
       ],
       operationId: 'op-read-only',
       permissionProfile: 'read-only',
@@ -990,6 +1036,46 @@ describe('spawnAgent', () => {
     expect(args).not.toContain('--add-dir');
     expect(args).not.toContain('/tmp/writable');
     expect(args).not.toContain('sandbox_permissions=["disk-full-read-access"]');
+    expect(args).toContain('gpt-5.5-codex');
+    expect(args).not.toContain('--enable');
+    expect(args).not.toContain('web_search_request');
+    expect(args).not.toContain('--image');
+    expect(args).not.toContain('/etc/shadow');
+    expect(args).not.toContain('resume');
+    expect(args).not.toContain('--oss');
+    expect(args).not.toContain('--output-last-message');
+    expect(args).not.toContain('/tmp/untrusted-output');
+  });
+
+  it('forces Codex workspace writes into the network-disabled workspace sandbox', async () => {
+    nextFakeProc = createFakeProc().proc;
+    const { spawnAgent } = await import('./spawnAgent');
+    await spawnAgent({
+      agentType: 'codex',
+      extraArgs: [
+        '--dangerously-bypass-approvals-and-sandbox',
+        '--sandbox',
+        'danger-full-access',
+        '--add-dir',
+        '/tmp/writable',
+        '-c',
+        'model="gpt-5.5"',
+      ],
+      operationId: 'op-workspace-write',
+      permissionProfile: 'workspace-write',
+      prompt: 'edit files only',
+    });
+
+    const { args } = spawnCalls[0];
+    const sandboxIndex = args.indexOf('--sandbox');
+    expect(args[sandboxIndex + 1]).toBe('workspace-write');
+    expect(args).toContain('--ignore-user-config');
+    expect(args).toContain('sandbox_workspace_write.network_access=false');
+    expect(args).toContain('model="gpt-5.5"');
+    expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
+    expect(args).not.toContain('danger-full-access');
+    expect(args).not.toContain('--add-dir');
+    expect(args).not.toContain('/tmp/writable');
   });
 
   it('rejects read-only orchestration for runtimes without an enforceable profile', async () => {
@@ -1002,7 +1088,7 @@ describe('spawnAgent', () => {
         permissionProfile: 'read-only',
         prompt: 'review only',
       }),
-    ).rejects.toThrow('read-only permission profile is not enforceable');
+    ).rejects.toThrow('permission profile is not enforceable');
     expect(spawnCalls).toHaveLength(0);
   });
 

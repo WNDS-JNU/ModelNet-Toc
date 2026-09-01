@@ -34,6 +34,7 @@ import {
 } from '@lobechat/observability-otel/modules/agent-runtime';
 import { ssrfSafeFetch } from '@lobechat/ssrf-safe-fetch';
 import {
+  type AgentGroupRunAttemptOutputSnapshot,
   type ChatToolPayload,
   type EvalToolForwardingConfig,
   type ExecSubAgentParams,
@@ -61,6 +62,7 @@ import {
   type AgentQueuePreparationMarker,
 } from '@/database/models/agentOperation';
 import { MessageModel } from '@/database/models/message';
+import { VerifyRunModel } from '@/database/models/verifyRun';
 import { WorkModel } from '@/database/models/work';
 import { type LobeChatDatabase } from '@/database/type';
 import { appEnv } from '@/envs/app';
@@ -75,6 +77,10 @@ import {
 import { type IStreamEventManager } from '@/server/modules/AgentRuntime/types';
 import { AgentGroupCollaborationService } from '@/server/services/agentGroupCollaboration';
 import { emitAgentSignalSourceEvent } from '@/server/services/agentSignal';
+import {
+  type AgentGroupWorkspaceIsolationSnapshot,
+  WorkspaceIsolationService,
+} from '@/server/services/agentGroupCollaboration/workspaceIsolation';
 import { toAgentSignalTraceEvents } from '@/server/services/agentSignal/observability/traceEvents';
 import { FileService } from '@/server/services/file';
 import { mcpService } from '@/server/services/mcp';
@@ -1215,10 +1221,33 @@ export class AgentRuntimeService {
       // RetryGroupNode uses this exact boundary to create/re-open its durable
       // Attempt. The operation row, Redis state and serialized completion hook
       // already exist, while no worker can execute the first step yet.
-      await onOperationPrepared?.(operationId, {
+      const preparedResult = await onOperationPrepared?.(operationId, {
         executionPlan,
         runtimeKind: 'normal',
+        workingDirectory:
+          deviceSystemInfo?.workingDirectory ??
+          agentConfig?.chatConfig?.runtimeEnv?.workingDirectory,
       });
+      if (preparedResult?.workingDirectoryOverride) {
+        const preparedState = await this.coordinator.loadAgentState(operationId);
+        if (!preparedState) {
+          throw new Error(`Agent state disappeared before cwd isolation: ${operationId}`);
+        }
+        const existingDeviceSystemInfo = preparedState.metadata?.deviceSystemInfo;
+        await this.coordinator.saveAgentState(operationId, {
+          ...preparedState,
+          metadata: {
+            ...preparedState.metadata,
+            deviceSystemInfo: existingDeviceSystemInfo
+              ? {
+                  ...existingDeviceSystemInfo,
+                  workingDirectory: preparedResult.workingDirectoryOverride,
+                }
+              : existingDeviceSystemInfo,
+            workingDirectory: preparedResult.workingDirectoryOverride,
+          },
+        });
+      }
 
       throwIfAborted(signal, 'Agent execution aborted before first step scheduling');
 
@@ -3414,7 +3443,86 @@ export class AgentRuntimeService {
       }
     }
 
+    let collaborationFailure: Error | undefined;
+    let collaborationCompletionReason = reason;
     if (collaboration && collaborationService && attemptOperationId) {
+      const initialSnapshot = await collaborationService.getRun(collaboration.runId);
+      const runNode = initialSnapshot?.nodes?.find((node) => node.id === collaboration.runNodeId);
+      const runAttempt = initialSnapshot?.attempts?.find(
+        (attempt) =>
+          attempt.runNodeId === collaboration.runNodeId &&
+          attempt.attemptNo === collaboration.attemptNo &&
+          attempt.operationId === attemptOperationId,
+      );
+      const executionSnapshot =
+        runAttempt?.executionTargetSnapshot &&
+        typeof runAttempt.executionTargetSnapshot === 'object'
+          ? runAttempt.executionTargetSnapshot
+          : undefined;
+      const verifyRunId =
+        typeof executionSnapshot?.verifyRunId === 'string'
+          ? executionSnapshot.verifyRunId
+          : undefined;
+
+      let workspaceOutput: AgentGroupRunAttemptOutputSnapshot['workspace'];
+      const workspace =
+        executionSnapshot?.workspaceIsolation &&
+        typeof executionSnapshot.workspaceIsolation === 'object'
+          ? (executionSnapshot.workspaceIsolation as AgentGroupWorkspaceIsolationSnapshot)
+          : undefined;
+      if (!failed && workspace) {
+        try {
+          workspaceOutput = await new WorkspaceIsolationService(
+            this.serverDB,
+            this.userId,
+            this.workspaceId,
+          ).captureAttempt({
+            agentId: runNode?.agentId,
+            attemptNo: collaboration.attemptNo,
+            operationId: attemptOperationId,
+            runId: collaboration.runId,
+            runNodeId: collaboration.runNodeId,
+            topicId: initialSnapshot?.run?.topicId,
+            workspace,
+          });
+        } catch (error) {
+          collaborationFailure = error instanceof Error ? error : new Error(String(error));
+          collaborationCompletionReason = 'workspace_capture_failed';
+        }
+      }
+
+      if (
+        !failed &&
+        !collaborationFailure &&
+        reason === 'done' &&
+        runNode?.executionPolicySnapshot?.verification
+      ) {
+        const verifyRun = await new VerifyRunModel(
+          this.serverDB,
+          this.userId,
+          this.workspaceId,
+        ).findByOperation(attemptOperationId);
+        if (!verifyRun || !['passed', 'failed', 'errored'].includes(verifyRun.status ?? '')) {
+          await collaborationService.parkAttemptForVerification({
+            ...collaboration,
+            operationId: attemptOperationId,
+          });
+          log(
+            '[%s] group-member Verify gate holds parent %s (verify status: %s)',
+            operationId,
+            parentOperationId,
+            verifyRun?.status ?? 'missing',
+          );
+          return false;
+        }
+        if (verifyRun.status !== 'passed') {
+          collaborationFailure = new Error(
+            `Node verification ended with status ${verifyRun.status}; create a new Attempt to repair.`,
+          );
+          collaborationCompletionReason = `verify_${verifyRun.status}`;
+        }
+      }
+
       const rootOperationIds = Array.from(new Set([attemptOperationId, operationId])).sort();
       const workEvents = await new WorkModel(
         this.serverDB,
@@ -3444,29 +3552,37 @@ export class AgentRuntimeService {
           a.workId.localeCompare(b.workId) ||
           a.workVersionId.localeCompare(b.workVersionId),
       );
+      const effectiveFailed = failed || Boolean(collaborationFailure);
       const normalizedSummary = lastAssistantContent?.trim();
-      const summary = failed ? undefined : normalizedSummary?.slice(0, 4000) || undefined;
+      const summary = effectiveFailed ? undefined : normalizedSummary?.slice(0, 4000) || undefined;
       const attemptStatus =
         reason === 'timeout'
           ? 'timed_out'
           : reason === 'interrupted'
             ? 'cancelled'
-            : reason === 'error'
+            : effectiveFailed
               ? 'failed'
               : 'completed';
       const persistedAttempt = await collaborationService.completeAttempt({
         ...collaboration,
-        completionReason: reason,
-        error: finalState?.error
-          ? {
-              message:
-                typeof finalState.error === 'object' && 'message' in finalState.error
-                  ? String(finalState.error.message)
-                  : String(finalState.error),
-            }
-          : undefined,
+        completionReason: collaborationCompletionReason,
+        error: collaborationFailure
+          ? { message: collaborationFailure.message }
+          : finalState?.error
+            ? {
+                message:
+                  typeof finalState.error === 'object' && 'message' in finalState.error
+                    ? String(finalState.error.message)
+                    : String(finalState.error),
+              }
+            : undefined,
         operationId: attemptOperationId,
-        outputSnapshot: { summary, workVersionRefs },
+        outputSnapshot: {
+          summary,
+          ...(verifyRunId ? { verifyRunId } : {}),
+          workVersionRefs,
+          ...(workspaceOutput ? { workspace: workspaceOutput } : {}),
+        },
         status: attemptStatus,
       });
       const isLatestAttempt = await collaborationService.isLatestAttempt({
@@ -3484,34 +3600,38 @@ export class AgentRuntimeService {
         );
         return false;
       }
-      const collaborationSnapshot = await collaborationService.getRun(collaboration.runId);
+      const finalSnapshot = await collaborationService.getRun(collaboration.runId);
       if (
-        (collaborationSnapshot?.run.protocol === 'pipeline' ||
-          collaborationSnapshot?.run.protocol === 'debate') &&
-        ['cancelled', 'completed', 'failed'].includes(collaborationSnapshot.run.status)
+        (finalSnapshot?.run.protocol === 'pipeline' || finalSnapshot?.run.protocol === 'debate') &&
+        ['cancelled', 'completed', 'failed'].includes(finalSnapshot.run.status)
       ) {
         dependencyRunTerminal = {
-          protocol: collaborationSnapshot.run.protocol,
-          status: collaborationSnapshot.run.status as 'cancelled' | 'completed' | 'failed',
+          protocol: finalSnapshot.run.protocol,
+          status: finalSnapshot.run.status as 'cancelled' | 'completed' | 'failed',
         };
       }
     }
     const agentLabel = (finalState?.metadata?.agentId as string | undefined) ?? 'member';
-    const memberErrorReason = failed ? formatSubAgentErrorReason(finalState?.error) : undefined;
-    const anchorContent = failed
-      ? memberErrorReason
-        ? `Agent member did not complete (${reason}): ${memberErrorReason}`
-        : `Agent member did not complete (${reason}).`
+    const effectiveMemberFailed = failed || Boolean(collaborationFailure);
+    const memberFailure = collaborationFailure ?? finalState?.error;
+    const memberFailureReason = effectiveMemberFailed
+      ? collaborationFailure?.message || formatSubAgentErrorReason(finalState?.error)
+      : undefined;
+    const memberCompletionReason = collaborationFailure ? collaborationCompletionReason : reason;
+    const anchorContent = effectiveMemberFailed
+      ? memberFailureReason
+        ? `Agent member did not complete (${memberCompletionReason}): ${memberFailureReason}`
+        : `Agent member did not complete (${memberCompletionReason}).`
       : mode === 'in_group'
         ? `Agent ${agentLabel} responded in the group.`
         : lastAssistantContent || 'Agent member completed without a textual answer.';
 
     const anchorBackfill = await this.messageModel.updateToolMessage(anchorMessageId, {
       content: anchorContent,
-      pluginError: failed ? formatErrorForMetadata(finalState?.error) : undefined,
+      pluginError: effectiveMemberFailed ? formatErrorForMetadata(memberFailure) : undefined,
       pluginState: {
         model: finalState?.modelRuntimeConfig?.model,
-        status: failed ? 'error' : 'completed',
+        status: effectiveMemberFailed ? 'error' : 'completed',
         threadId,
         // The child's spend rides on this anchor row so the parent's usage tray can
         // account for it. The tray sums per-MESSAGE usage, and the child's own

@@ -51,6 +51,9 @@ export class AgentGroupRunRepository {
   parkAttemptForIntervention = (params: ParkAgentGroupRunAttemptParams) =>
     this.runModel.parkAttemptForIntervention(params);
 
+  parkAttemptForVerification = (params: ParkAgentGroupRunAttemptParams) =>
+    this.runModel.parkAttemptForVerification(params);
+
   createRun = (params: CreateAgentGroupRunParams): Promise<AgentGroupRunSnapshot> =>
     this.runModel.create(params);
 

@@ -226,6 +226,94 @@ describe('compileAgentGroupRunPlan', () => {
     );
   });
 
+  it('normalizes an approved isolated-write execution policy', () => {
+    const result = compile({
+      nodes: [
+        {
+          agentId: memberAgentId,
+          executionPolicy: {
+            baseRef: ' main ',
+            codeMode: 'isolated_write',
+            deviceId: ' device-1 ',
+            executionTarget: 'device',
+            runtimeKind: 'heterogeneous',
+            verification: { requirement: ' tests pass ' },
+            workingDirectory: ' /repo ',
+          },
+          instruction: 'Implement the change',
+          key: 'write',
+        },
+      ],
+      policySnapshot: { requireHumanApprovalForWrites: true },
+      protocol: 'pipeline',
+    });
+
+    expect(result.planSnapshot.nodes[0].executionPolicy).toEqual({
+      baseRef: 'main',
+      codeMode: 'isolated_write',
+      deviceId: 'device-1',
+      executionTarget: 'device',
+      runtimeKind: 'heterogeneous',
+      verification: { requirement: 'tests pass', verifierType: 'llm' },
+      workingDirectory: '/repo',
+    });
+  });
+
+  it('rejects unsafe code-write policies and dependency-free integrators', () => {
+    const isolatedWriteNode: CompileAgentGroupRunPlanInput['nodes'][number] = {
+      agentId: memberAgentId,
+      executionPolicy: {
+        codeMode: 'isolated_write',
+        deviceId: 'device-1',
+        executionTarget: 'device',
+        runtimeKind: 'heterogeneous',
+        verification: { requirement: 'tests pass' },
+        workingDirectory: '/repo',
+      },
+      instruction: 'Implement the change',
+      key: 'write',
+    };
+
+    expectCode(
+      () => compile({ nodes: [isolatedWriteNode], protocol: 'pipeline' }),
+      'AGENT_GROUP_PLAN_INVALID_NODE',
+    );
+    expectCode(
+      () =>
+        compile({
+          nodes: [
+            {
+              ...isolatedWriteNode,
+              executionPolicy: {
+                ...isolatedWriteNode.executionPolicy,
+                verification: { requirement: '   ' },
+              },
+            },
+          ],
+          policySnapshot: { requireHumanApprovalForWrites: true },
+          protocol: 'pipeline',
+        }),
+      'AGENT_GROUP_PLAN_INVALID_NODE',
+    );
+    expectCode(
+      () =>
+        compile({
+          nodes: [
+            {
+              ...isolatedWriteNode,
+              executionPolicy: {
+                ...isolatedWriteNode.executionPolicy,
+                codeMode: 'integrator',
+              },
+            },
+          ],
+          policySnapshot: { requireHumanApprovalForWrites: true },
+          protocol: 'pipeline',
+        }),
+      'AGENT_GROUP_PLAN_INVALID_NODE',
+    );
+  });
+
   it('requires a fixed-round Debate DAG with one distinct final Judge', () => {
     expectCode(
       () =>

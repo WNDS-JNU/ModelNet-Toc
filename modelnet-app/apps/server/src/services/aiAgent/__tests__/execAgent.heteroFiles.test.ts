@@ -550,6 +550,25 @@ describe('AiAgentService.execAgent - hetero early-exit file attachments', () => 
     );
   });
 
+  it('rejects an explicit code permission profile for unsupported heterogeneous runtimes', async () => {
+    heteroAgentConfig.model = 'qoder';
+    heteroAgentConfig.provider = 'qoder';
+    heteroAgentConfig.agencyConfig = {
+      executionTarget: 'sandbox',
+      heterogeneousProvider: { type: 'qoder' },
+    } as any;
+
+    await expect(
+      service.execAgent({
+        agentId: 'agent-1',
+        permissionProfile: 'read-only',
+        prompt: 'Do not bypass the host permission ceiling',
+      }),
+    ).rejects.toThrow('not enforceable');
+    expect(mockSpawnHeteroSandbox).not.toHaveBeenCalled();
+    expect(mockDispatchAgentRun).not.toHaveBeenCalled();
+  });
+
   it('reserves cloud conversation history for a retry without native resume', async () => {
     mockGetHeterogeneousResumeSessionId.mockResolvedValue('cloud-session-existing');
     mockMessageQuery.mockResolvedValue([

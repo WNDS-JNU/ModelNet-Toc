@@ -4,7 +4,8 @@ export type WorkType = 'document' | 'external' | 'file' | 'task';
 export type LinearWorkResourceType = 'linear_document' | 'linear_issue';
 export type GithubWorkResourceType = 'github_issue' | 'github_pull_request';
 /** Every resource type backed by the unified `external` Work type. */
-export type ExternalWorkResourceType = GithubWorkResourceType | LinearWorkResourceType;
+export type ExternalWorkResourceType =
+  'code_patch' | GithubWorkResourceType | LinearWorkResourceType;
 export type WorkResourceType = 'document' | ExternalWorkResourceType | 'file' | 'task';
 export type WorkVisibility = 'private' | 'public';
 /**

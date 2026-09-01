@@ -17,7 +17,7 @@ import { buildAgentInput } from './input';
 import { buildTraeAcpPrompt, TraeAcpSession } from './traeAcpSession';
 import { assertSpawnableWorkingDirectory } from './workingDirectory';
 
-export type HeterogeneousPermissionProfile = 'read-only';
+export type HeterogeneousPermissionProfile = 'read-only' | 'workspace-write';
 
 export interface SpawnAgentOptions {
   /** Registered local heterogeneous-agent type key. */
@@ -241,33 +241,27 @@ interface BuildSpawnArgsParams {
   resumeSessionId: string | undefined;
 }
 
-const stripCliOptions = (
-  args: string[],
-  valueFlags: readonly string[],
-  booleanFlags: readonly string[],
-): string[] => {
+const isSafeCliValue = (value: string | undefined): value is string =>
+  Boolean(value && !value.startsWith('-'));
+
+const sanitizeClaudeRestrictedArgs = (args: string[]): string[] => {
   const result: string[] = [];
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!;
-    if (booleanFlags.some((flag) => arg === flag || arg.startsWith(`${flag}=`))) continue;
-    if (valueFlags.includes(arg)) {
+    if (arg === '--model') {
+      const value = args[index + 1];
       index += 1;
+      if (isSafeCliValue(value)) result.push(arg, value);
       continue;
     }
-    if (valueFlags.some((flag) => arg.startsWith(`${flag}=`))) continue;
-    result.push(arg);
+    if (arg.startsWith('--model=') && isSafeCliValue(arg.slice('--model='.length))) {
+      result.push(arg);
+    }
   }
 
   return result;
 };
-
-const sanitizeClaudeReadOnlyArgs = (args: string[]): string[] =>
-  stripCliOptions(
-    args,
-    ['--add-dir', '--allowed-tools', '--allowedTools', '--permission-mode', '--tools'],
-    ['--dangerously-skip-permissions'],
-  );
 
 const SAFE_CODEX_READ_ONLY_CONFIG_KEYS = new Set([
   'model',
@@ -281,23 +275,26 @@ const isSafeCodexReadOnlyConfig = (assignment: string): boolean => {
   return SAFE_CODEX_READ_ONLY_CONFIG_KEYS.has(assignment.slice(0, separator).trim());
 };
 
-const sanitizeCodexReadOnlyArgs = (args: string[]): string[] => {
-  const stripped = stripCliOptions(
-    args,
-    ['--add-dir', '--cd', '--profile', '--sandbox', '-C', '-p', '-s'],
-    [
-      '--approve-for-me',
-      '--dangerously-bypass-approvals-and-sandbox',
-      '--dangerously-bypass-hook-trust',
-      '--full-auto',
-    ],
-  );
+const sanitizeCodexRestrictedArgs = (args: string[]): string[] => {
   const result: string[] = [];
 
-  for (let index = 0; index < stripped.length; index += 1) {
-    const arg = stripped[index]!;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === '-m' || arg === '--model') {
+      const value = args[index + 1];
+      index += 1;
+      if (isSafeCliValue(value)) result.push(arg, value);
+      continue;
+    }
+    if (
+      (arg.startsWith('-m=') && isSafeCliValue(arg.slice('-m='.length))) ||
+      (arg.startsWith('--model=') && isSafeCliValue(arg.slice('--model='.length)))
+    ) {
+      result.push(arg);
+      continue;
+    }
     if (arg === '-c' || arg === '--config') {
-      const assignment = stripped[index + 1];
+      const assignment = args[index + 1];
       index += 1;
       if (assignment && isSafeCodexReadOnlyConfig(assignment)) {
         result.push(arg, assignment);
@@ -314,7 +311,6 @@ const sanitizeCodexReadOnlyArgs = (args: string[]): string[] => {
       if (isSafeCodexReadOnlyConfig(assignment)) result.push(arg);
       continue;
     }
-    result.push(arg);
   }
 
   return result;
@@ -327,17 +323,22 @@ const buildClaudeCodeArgs = ({
   permissionProfile,
   resumeSessionId,
 }: BuildSpawnArgsParams) => {
-  const readOnly = permissionProfile === 'read-only';
-  const safeExtraArgs = readOnly ? sanitizeClaudeReadOnlyArgs(extraArgs) : extraArgs;
+  const restricted = permissionProfile !== undefined;
+  const safeExtraArgs = restricted ? sanitizeClaudeRestrictedArgs(extraArgs) : extraArgs;
+  const permissionArgs =
+    permissionProfile === 'read-only'
+      ? ['--permission-mode', 'plan']
+      : permissionProfile === 'workspace-write'
+        ? ['--permission-mode', 'acceptEdits', '--allowed-tools', 'Read,Write,Edit,MultiEdit']
+        : CLAUDE_CODE_PERMISSION_ARGS();
 
   return [
     ...CLAUDE_CODE_BASE_ARGS,
     ...(includePartialMessages ? ['--include-partial-messages'] : []),
-    ...(!readOnly ? CLAUDE_CODE_PERMISSION_ARGS() : []),
     ...(resumeSessionId ? ['--resume', resumeSessionId] : []),
     ...inputArgs,
     ...safeExtraArgs,
-    ...(readOnly ? ['--permission-mode', 'plan'] : []),
+    ...permissionArgs,
   ];
 };
 
@@ -362,13 +363,22 @@ const buildCodexArgs = ({
   permissionProfile,
   resumeSessionId,
 }: BuildSpawnArgsParams) => {
-  const readOnly = permissionProfile === 'read-only';
-  const safeExtraArgs = readOnly ? sanitizeCodexReadOnlyArgs(extraArgs) : extraArgs;
-  const executionModeArgs = readOnly
-    ? ['--ignore-user-config', '--sandbox', 'read-only']
-    : hasAnyFlag(safeExtraArgs, CODEX_EXECUTION_MODE_FLAGS)
-      ? []
-      : [...CODEX_DEFAULT_EXECUTION_ARGS];
+  const restricted = permissionProfile !== undefined;
+  const safeExtraArgs = restricted ? sanitizeCodexRestrictedArgs(extraArgs) : extraArgs;
+  const executionModeArgs =
+    permissionProfile === 'read-only'
+      ? ['--ignore-user-config', '--sandbox', 'read-only']
+      : permissionProfile === 'workspace-write'
+        ? [
+            '--ignore-user-config',
+            '--sandbox',
+            'workspace-write',
+            '-c',
+            'sandbox_workspace_write.network_access=false',
+          ]
+        : hasAnyFlag(safeExtraArgs, CODEX_EXECUTION_MODE_FLAGS)
+          ? []
+          : [...CODEX_DEFAULT_EXECUTION_ARGS];
   const optionArgs = [...CODEX_REQUIRED_ARGS, ...executionModeArgs, ...inputArgs, ...safeExtraArgs];
 
   return resumeSessionId
@@ -679,12 +689,12 @@ const spawnCursorAcpAgent = async (
  */
 export const spawnAgent = async (options: SpawnAgentOptions): Promise<SpawnAgentHandle> => {
   if (
-    options.permissionProfile === 'read-only' &&
+    options.permissionProfile &&
     options.agentType !== 'claude-code' &&
     options.agentType !== 'codex'
   ) {
     throw new Error(
-      `spawnAgent: read-only permission profile is not enforceable for agent type "${options.agentType}"`,
+      `spawnAgent: permission profile is not enforceable for agent type "${options.agentType}"`,
     );
   }
   if (options.agentType === 'trae') return spawnTraeAcpAgent(options);

@@ -178,6 +178,7 @@ import { hookDispatcher } from '@/server/services/agentRuntime/hooks';
 import type { AgentHook, SerializedHook } from '@/server/services/agentRuntime/hooks/types';
 import type {
   AgentOperationPreparedContext,
+  AgentOperationPreparedResult,
   ExecGroupMemberParams,
   ExecGroupMemberResult,
   GroupActionMemberBridgeParams,
@@ -505,7 +506,9 @@ interface InternalExecAgentParams extends ExecAgentParams {
   onOperationPrepared?: (
     operationId: string,
     context: AgentOperationPreparedContext,
-  ) => Promise<void>;
+  ) => Promise<AgentOperationPreparedResult | void>;
+  /** Host-enforced local CLI permission ceiling for an orchestrated run. */
+  permissionProfile?: 'read-only' | 'workspace-write';
   /** Parent message ID to continue from. Only takes effect when resume is true */
   parentMessageId?: string;
   /** Durable first-delivery identity for a normal-runtime group Attempt. */
@@ -3007,6 +3010,11 @@ export class AiAgentService {
         runAttachments.imageList && runAttachments.imageList.length > 0
           ? runAttachments.imageList.map((image) => ({ id: image.id, url: image.url }))
           : undefined;
+      if (params.permissionProfile && heteroType !== 'claude-code' && heteroType !== 'codex') {
+        throw new Error(
+          `Permission profile is not enforceable for heterogeneous agent type "${heteroType}".`,
+        );
+      }
       const configuredHeteroExecArgs = isLocalHeterogeneousType(heteroType)
         ? buildHeteroExecArgs(
             heterogeneousProvider?.type === heteroType
@@ -3017,9 +3025,11 @@ export class AiAgentService {
               : { type: heteroType },
           )
         : undefined;
+      const permissionProfile =
+        params.permissionProfile ?? (params.disableTools ? 'read-only' : undefined);
       const heteroExecArgs =
-        params.disableTools && isLocalHeterogeneousType(heteroType)
-          ? [...(configuredHeteroExecArgs ?? []), '--permission-profile', 'read-only']
+        permissionProfile && isLocalHeterogeneousType(heteroType)
+          ? [...(configuredHeteroExecArgs ?? []), '--permission-profile', permissionProfile]
           : configuredHeteroExecArgs;
 
       const heteroParams = {
@@ -3482,15 +3492,17 @@ export class AiAgentService {
               })
             : undefined;
 
-          await onOperationPrepared?.(operationId, {
+          const preparedResult = await onOperationPrepared?.(operationId, {
             executionPlan: heteroPlan,
             runtimeKind: 'heterogeneous',
+            workingDirectory: deviceCwd,
           });
+          const dispatchCwd = preparedResult?.workingDirectoryOverride ?? deviceCwd;
 
           const result = await deviceGateway.dispatchAgentRun({
             ...heteroParams,
             args: heteroExecArgs,
-            cwd: deviceCwd,
+            cwd: dispatchCwd,
             deviceId: dispatchDeviceId,
             resumeFallbackSystemContext: deviceResumeFallbackSystemContext,
             systemContext: deviceSystemContext,
@@ -5766,7 +5778,7 @@ export class AiAgentService {
     const onOperationPrepared = params.onOperationPrepared
       ? async (prepared: GroupMemberPreparedOperation) => {
           preparedOperation = prepared;
-          await params.onOperationPrepared!(prepared);
+          return params.onOperationPrepared!(prepared);
         }
       : undefined;
 
@@ -5803,6 +5815,7 @@ export class AiAgentService {
           // resume through the group bridge (its own timeout), not the sub-agent one.
           orchestrationRole: 'member',
           onOperationPrepared,
+          permissionProfile: params.permissionProfile,
           queuePreparation,
           resumeParentOnComplete: true,
           runtimeKind,
@@ -6033,6 +6046,8 @@ export class AiAgentService {
        */
       orchestrationRole?: 'member';
       onOperationPrepared?: ExecGroupMemberParams['onOperationPrepared'];
+      /** Host-enforced local CLI permission ceiling for group code collaboration. */
+      permissionProfile?: ExecGroupMemberParams['permissionProfile'];
       queuePreparation?: AgentGroupQueuePreparation;
       resumeParentOnComplete?: boolean;
       runtimeKind?: 'normal' | 'heterogeneous';
@@ -6153,6 +6168,7 @@ export class AiAgentService {
       chatConfigOverride: options.chatConfig,
       disableTools: options.disableTools,
       hooks,
+      permissionProfile: options.permissionProfile,
       // Explicit sub-agent model override resolved at the spawn site.
       model: options.model,
       onOperationPrepared:
@@ -6163,7 +6179,7 @@ export class AiAgentService {
                   `Group member runtime changed before dispatch: expected ${options.runtimeKind}, got ${context.runtimeKind}`,
                 );
               }
-              await options.onOperationPrepared!({ ...context, operationId, threadId: thread.id });
+              return options.onOperationPrepared!({ ...context, operationId, threadId: thread.id });
             }
           : undefined,
       parentOperationId,

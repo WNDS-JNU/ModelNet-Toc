@@ -172,7 +172,20 @@ export interface AgentGroupRunWorkVersionRef {
 /** Bounded handoff material persisted on a terminal node Attempt. */
 export interface AgentGroupRunAttemptOutputSnapshot {
   summary?: string;
+  /** Reference only; VerifyRun remains the verification fact source. */
+  verifyRunId?: string;
   workVersionRefs: AgentGroupRunWorkVersionRef[];
+  workspace?: {
+    additions: number;
+    baseRef?: string;
+    branch?: string;
+    changedFiles: number;
+    cleanupState: 'not_applicable' | 'retained_for_review';
+    deletions: number;
+    isolationId: string;
+    mode: 'integrator' | 'isolated_write' | 'read_only';
+    worktreePath?: string;
+  };
 }
 
 /** Stable lineage carried from member launch through local/QStash callbacks. */
@@ -196,8 +209,21 @@ export interface AgentGroupRunPolicySnapshot {
 
 export interface AgentGroupRunExecutionPolicySnapshot {
   [key: string]: unknown;
+  /** Git base used when an isolated code Attempt captures its patch. */
+  baseRef?: string;
+  /** Host-enforced collaboration mode for source-code work. */
+  codeMode?: 'integrator' | 'isolated_write' | 'read_only';
+  /** Device selected for an isolated device worktree. */
+  deviceId?: string;
   executionTarget?: string;
   runtimeKind?: AgentGroupRunRuntimeKind;
+  /** Trusted source repository path used to derive a sibling worktree. */
+  workingDirectory?: string;
+  /** User-approved, immutable delivery requirement for this node. */
+  verification?: {
+    requirement: string;
+    verifierType?: 'llm';
+  };
 }
 
 export interface AgentGroupRunToolPolicySnapshot {

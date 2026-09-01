@@ -385,7 +385,10 @@ const exec = async (options: ExecOptions): Promise<void> => {
     );
     process.exit(2);
   }
-  if (options.permissionProfile && options.permissionProfile !== 'read-only') {
+  if (
+    options.permissionProfile &&
+    !['read-only', 'workspace-write'].includes(options.permissionProfile)
+  ) {
     log.error(`Unsupported --permission-profile "${options.permissionProfile}".`);
     process.exit(2);
   }

@@ -250,6 +250,13 @@ export type GroupActionOnComplete = 'resume' | 'finish';
 export interface AgentOperationPreparedContext {
   executionPlan?: ExecutionPlan;
   runtimeKind: Exclude<AgentGroupRunRuntimeKind, 'external'>;
+  /** Effective source working directory before any collaboration isolation override. */
+  workingDirectory?: string;
+}
+
+export interface AgentOperationPreparedResult {
+  /** Single-run cwd override, persisted before queue/device dispatch. */
+  workingDirectoryOverride?: string;
 }
 
 /** Durable group-member Attempt materialized at the prepared boundary. */
@@ -341,7 +348,11 @@ export interface ExecGroupMemberParams {
    * Durable retry hook invoked after the child operation and completion hook
    * are persisted but before its first queue message is scheduled.
    */
-  onOperationPrepared?: (prepared: GroupMemberPreparedOperation) => Promise<void>;
+  onOperationPrepared?: (
+    prepared: GroupMemberPreparedOperation,
+  ) => Promise<AgentOperationPreparedResult | void>;
+  /** Host-enforced ceiling for local Codex / Claude Code execution. */
+  permissionProfile?: 'read-only' | 'workspace-write';
   /** Parent (supervisor) operation id. */
   parentOperationId: string;
   /**
@@ -509,7 +520,7 @@ export interface OperationCreationParams {
   onOperationPrepared?: (
     operationId: string,
     context: AgentOperationPreparedContext,
-  ) => Promise<void>;
+  ) => Promise<AgentOperationPreparedResult | void>;
   operationId: string;
   /** Operation-level skill set for SkillResolver */
   operationSkillSet?: OperationSkillSet;

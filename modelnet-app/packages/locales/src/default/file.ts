@@ -316,6 +316,7 @@ export default {
   'work.loadErrorTitle': 'Couldn’t load works',
   'work.loadMoreError': 'Failed to load more works.',
   'work.retry': 'Retry',
+  'work.type.codePatch': 'Code Patch',
   'work.type.document': 'Document',
   'work.type.file': 'File',
   'work.type.githubIssue': 'GitHub Issue',

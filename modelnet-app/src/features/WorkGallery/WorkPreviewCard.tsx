@@ -138,6 +138,9 @@ interface WorkPreviewCardProps {
 
 const workTypeKey = (item: WorkSummaryItem) => {
   switch (item.resourceType) {
+    case 'code_patch': {
+      return 'work.type.codePatch';
+    }
     case 'document': {
       return 'work.type.document';
     }

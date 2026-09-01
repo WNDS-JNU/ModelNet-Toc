@@ -37,6 +37,7 @@ export const AGENT_GROUP_RUN_PAUSE_NOT_ALLOWED = 'AGENT_GROUP_RUN_PAUSE_NOT_ALLO
 export const AGENT_GROUP_RUN_RESUME_NOT_ALLOWED = 'AGENT_GROUP_RUN_RESUME_NOT_ALLOWED';
 export const AGENT_GROUP_RUN_MANUAL_PAUSE_REASON = 'manual_pause';
 export const AGENT_GROUP_RUN_INTERVENTION_REASON = 'waiting_for_human';
+export const AGENT_GROUP_RUN_VERIFICATION_REASON = 'waiting_for_verify';
 
 export interface CreateAgentGroupRunParams {
   budgetSnapshot?: AgentGroupRunBudgetSnapshot;
@@ -1200,12 +1201,14 @@ export class AgentGroupRunModel {
     });
 
   /**
-   * Project a member's durable human-intervention park into the collaboration
-   * state machine. This is a gate, not a completion: the member anchor and the
-   * supervisor barrier must remain untouched until a continuation reaches a
-   * real terminal lifecycle.
+   * Project a durable gate into the collaboration state machine. This is not a
+   * completion: member anchors and the supervisor barrier remain untouched.
    */
-  parkAttemptForIntervention = async (params: ParkAgentGroupRunAttemptParams) =>
+  private parkAttempt = async (
+    params: ParkAgentGroupRunAttemptParams,
+    completionReason: string,
+    eventName: 'intervention_required' | 'verification_required',
+  ) =>
     this.db.transaction(async (tx) => {
       const { attempt, node } = await this.ensureAttempt(tx, params);
       if (TERMINAL_ATTEMPT_STATUSES.includes(attempt.status) || attempt.status === 'waiting') {
@@ -1215,16 +1218,12 @@ export class AgentGroupRunModel {
       const startedAt = attempt.startedAt ?? new Date();
       const [updated] = await tx
         .update(agentGroupRunAttempts)
-        .set({
-          completionReason: AGENT_GROUP_RUN_INTERVENTION_REASON,
-          startedAt,
-          status: 'waiting',
-        })
+        .set({ completionReason, startedAt, status: 'waiting' })
         .where(eq(agentGroupRunAttempts.id, attempt.id))
         .returning();
       await tx
         .update(agentGroupRunNodes)
-        .set({ completionReason: AGENT_GROUP_RUN_INTERVENTION_REASON, status: 'waiting' })
+        .set({ completionReason, status: 'waiting' })
         .where(
           and(
             eq(agentGroupRunNodes.id, node.id),
@@ -1233,11 +1232,7 @@ export class AgentGroupRunModel {
         );
       const [gatedRun] = await tx
         .update(agentGroupRuns)
-        .set({
-          completionReason: AGENT_GROUP_RUN_INTERVENTION_REASON,
-          startedAt,
-          status: 'waiting',
-        })
+        .set({ completionReason, startedAt, status: 'waiting' })
         .where(
           and(
             eq(agentGroupRuns.id, node.runId),
@@ -1248,37 +1243,43 @@ export class AgentGroupRunModel {
 
       await this.recordEvent(tx, {
         attemptId: updated.id,
-        data: { completionReason: AGENT_GROUP_RUN_INTERVENTION_REASON },
-        idempotencyKey: `attempt:${updated.id}:waiting_for_human`,
+        data: { completionReason },
+        idempotencyKey: `attempt:${updated.id}:${eventName}`,
         operationId: params.operationId,
         runId: node.runId,
         runNodeId: node.id,
         status: 'waiting',
-        type: 'attempt.intervention_required',
+        type: `attempt.${eventName}`,
       });
       await this.recordEvent(tx, {
         attemptId: updated.id,
-        idempotencyKey: `node:${node.id}:attempt:${updated.id}:waiting_for_human`,
+        idempotencyKey: `node:${node.id}:attempt:${updated.id}:${eventName}`,
         operationId: params.operationId,
         runId: node.runId,
         runNodeId: node.id,
         status: 'waiting',
-        type: 'node.intervention_required',
+        type: `node.${eventName}`,
       });
       if (gatedRun) {
         await this.recordEvent(tx, {
           attemptId: updated.id,
-          idempotencyKey: `run:intervention_required:${updated.id}`,
+          idempotencyKey: `run:${eventName}:${updated.id}`,
           operationId: params.operationId,
           runId: node.runId,
           runNodeId: node.id,
           status: 'waiting',
-          type: 'run.intervention_required',
+          type: `run.${eventName}`,
         });
       }
 
       return updated;
     });
+
+  parkAttemptForIntervention = (params: ParkAgentGroupRunAttemptParams) =>
+    this.parkAttempt(params, AGENT_GROUP_RUN_INTERVENTION_REASON, 'intervention_required');
+
+  parkAttemptForVerification = (params: ParkAgentGroupRunAttemptParams) =>
+    this.parkAttempt(params, AGENT_GROUP_RUN_VERIFICATION_REASON, 'verification_required');
 
   /**
    * Re-open one terminal node as a new immutable Attempt.
@@ -1426,8 +1427,16 @@ export class AgentGroupRunModel {
             eq(agentGroupRunAttempts.status, 'waiting'),
           ),
         );
+      const gateKind =
+        attempt.completionReason === AGENT_GROUP_RUN_VERIFICATION_REASON
+          ? 'verification'
+          : attempt.completionReason === AGENT_GROUP_RUN_INTERVENTION_REASON
+            ? 'intervention'
+            : undefined;
+      const gateCompletionReason = gateKind ? attempt.completionReason : undefined;
+
       const [releasedRun] =
-        waitingCount === 0
+        waitingCount === 0 && gateCompletionReason
           ? await tx
               .update(agentGroupRuns)
               .set({ completionReason: null, status: 'running' })
@@ -1435,7 +1444,10 @@ export class AgentGroupRunModel {
                 and(
                   eq(agentGroupRuns.id, node.runId),
                   eq(agentGroupRuns.status, 'waiting'),
-                  eq(agentGroupRuns.completionReason, AGENT_GROUP_RUN_INTERVENTION_REASON),
+                  inArray(agentGroupRuns.completionReason, [
+                    AGENT_GROUP_RUN_INTERVENTION_REASON,
+                    AGENT_GROUP_RUN_VERIFICATION_REASON,
+                  ]),
                 ),
               )
               .returning({ id: agentGroupRuns.id })
@@ -1444,15 +1456,15 @@ export class AgentGroupRunModel {
         .update(agentGroupRuns)
         .set({ startedAt: attempt.startedAt ?? completedAt, status: 'running' })
         .where(and(eq(agentGroupRuns.id, node.runId), eq(agentGroupRuns.status, 'pending')));
-      if (releasedRun) {
+      if (releasedRun && gateKind) {
         await this.recordEvent(tx, {
           attemptId: updated.id,
-          idempotencyKey: `run:intervention_cleared:${updated.id}`,
+          idempotencyKey: `run:${gateKind}_cleared:${updated.id}`,
           operationId: params.operationId,
           runId: node.runId,
           runNodeId: node.id,
           status: 'running',
-          type: 'run.intervention_cleared',
+          type: `run.${gateKind}_cleared`,
         });
       }
       await this.recordEvent(tx, {

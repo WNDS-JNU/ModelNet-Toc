@@ -18,6 +18,14 @@ export default {
   'agentGroupManagement.createDebate.intervention.roundTimeoutPlaceholder': 'Turn timeout',
   'agentGroupManagement.createDebate.intervention.roundsPlaceholder': 'Rounds',
   'agentGroupManagement.createDebate.intervention.timeoutUnit': 'minutes',
+  'agentGroupManagement.createWorkflow.intervention.baseRefPlaceholder': 'Git base ref (optional)',
+  'agentGroupManagement.createWorkflow.intervention.codeModeIntegrator':
+    'Integrator (isolated write)',
+  'agentGroupManagement.createWorkflow.intervention.codeModeIsolatedWrite': 'Isolated write',
+  'agentGroupManagement.createWorkflow.intervention.codeModePlaceholder':
+    'Code collaboration mode (optional)',
+  'agentGroupManagement.createWorkflow.intervention.codeModeReadOnly': 'Read-only code review',
+  'agentGroupManagement.createWorkflow.intervention.deviceIdPlaceholder': 'Execution device ID',
   'agentGroupManagement.createDebate.intervention.unknownAgent': 'Unknown Agent',
   'agentGroupManagement.createDebate.intervention.validationError':
     'A Debate needs a name, motion, 2-8 unique participants, 1-5 rounds, and one distinct Judge.',
@@ -28,6 +36,12 @@ export default {
   'agentGroupManagement.createWorkflow.intervention.keyPlaceholder': 'Stable node key',
   'agentGroupManagement.createWorkflow.intervention.maxAttempts': 'Maximum attempts',
   'agentGroupManagement.createWorkflow.intervention.maxParallelPlaceholder': 'Max parallel',
+  'agentGroupManagement.createWorkflow.intervention.verificationPlaceholder':
+    'Verification requirement for this node (required for writes)...',
+  'agentGroupManagement.createWorkflow.intervention.workingDirectoryPlaceholder':
+    'Source repository path',
+  'agentGroupManagement.createWorkflow.intervention.writeApproval':
+    'I approve isolated workspace writes. Commit, push, PR, merge, and deploy remain prohibited.',
   'agentGroupManagement.createWorkflow.intervention.namePlaceholder': 'Workflow name',
   'agentGroupManagement.createWorkflow.intervention.reviewHint':
     'Review this immutable Pipeline draft. No Run is created until you approve it.',

@@ -764,6 +764,13 @@ export class CompletionLifecycle {
         if (recovered) event.lastAssistantContent = recovered;
       }
 
+      // Persist WorkVersions before completion hooks. Group-member hooks build
+      // their bounded output snapshot from Work IDs, so registering afterwards
+      // loses in-process file edits from the immutable Attempt handoff.
+      if (isSuccessLikeCompletionReason(reason)) {
+        await this.registerFileWorks(operationId, state);
+      }
+
       await hookDispatcher.dispatch(operationId, 'onComplete', event, metadata._hooks);
 
       // Recall the user when a run finishes with a deliverable while they may be
@@ -839,23 +846,6 @@ export class CompletionLifecycle {
             this.workspaceId,
           ),
         );
-      }
-
-      // Register entity files edited this round as `file` Works. On the
-      // gateway/queue path this already ran BEFORE the terminal snapshot (see
-      // `registerFileWorks`) and no-ops via the state marker; here it is the
-      // backstop for every other terminal path (in-process runtime, hetero
-      // completions, already-terminal early exits). Guarded on success-LIKE
-      // reasons, not `done` alone: a run stopped by a step/cost cap still
-      // produced its edits and persists as status='done'.
-      //
-      // `waiting_for_human` deliberately does NOT register: the park is not a
-      // successful deliverable boundary. The fresh approval continuation is
-      // built from the complete authoritative history and performs the real
-      // terminal scan. Registering here would freeze pre-approval file content
-      // as a completed Work before the user decision has run.
-      if (isSuccessLikeCompletionReason(reason)) {
-        await this.registerFileWorks(operationId, state);
       }
 
       if (reason === 'error') {

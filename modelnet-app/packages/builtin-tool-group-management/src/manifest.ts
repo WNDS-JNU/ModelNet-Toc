@@ -411,6 +411,53 @@ export const GroupManagementManifest: BuiltinToolManifest = {
                   items: { type: 'string' },
                   type: 'array',
                 },
+                executionPolicy: {
+                  description:
+                    'Optional immutable execution, code-isolation, and verification policy.',
+                  properties: {
+                    baseRef: {
+                      description: 'Optional Git base ref recorded with the isolated patch.',
+                      type: 'string',
+                    },
+                    codeMode: {
+                      description:
+                        'Read-only inspection, isolated source write, or dependency-integrating write.',
+                      enum: ['read_only', 'isolated_write', 'integrator'],
+                      type: 'string',
+                    },
+                    deviceId: {
+                      description: 'Pinned execution device for isolated write nodes.',
+                      type: 'string',
+                    },
+                    executionTarget: {
+                      enum: ['device', 'sandbox'],
+                      type: 'string',
+                    },
+                    runtimeKind: {
+                      enum: ['heterogeneous'],
+                      type: 'string',
+                    },
+                    verification: {
+                      description:
+                        'User-approved delivery requirement frozen into the node VerifyRun.',
+                      properties: {
+                        requirement: { type: 'string' },
+                        verifierType: {
+                          enum: ['llm'],
+                          type: 'string',
+                        },
+                      },
+                      required: ['requirement'],
+                      type: 'object',
+                    },
+                    workingDirectory: {
+                      description:
+                        'Trusted source repository path used to derive a sibling worktree.',
+                      type: 'string',
+                    },
+                  },
+                  type: 'object',
+                },
                 instruction: {
                   description: 'Clear task and expected deliverable for this node.',
                   type: 'string',

@@ -4,7 +4,7 @@ import { DEFAULT_AVATAR } from '@lobechat/const';
 import type { BuiltinInterventionProps } from '@lobechat/types';
 import { Accordion, AccordionItem, Flexbox, Icon, stopPropagation, Tooltip } from '@lobehub/ui';
 import { Avatar } from '@lobehub/ui/base-ui';
-import { Input, InputNumber } from 'antd';
+import { Checkbox, Input, InputNumber, Select } from 'antd';
 import { createStaticStyles, useTheme } from 'antd-style';
 import isEqual from 'fast-deep-equal';
 import { Clock, Trash2 } from 'lucide-react';
@@ -70,6 +70,15 @@ const WorkflowStepEditor = memo<WorkflowStepEditorProps>(({ index, onChange, onD
     (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
       onChange(index, { [field]: event.target.value });
 
+  const codeMode = step.executionPolicy?.codeMode;
+  const isWriteMode = codeMode === 'isolated_write' || codeMode === 'integrator';
+  const updateExecutionPolicy = (updates: Partial<NonNullable<WorkflowStep['executionPolicy']>>) =>
+    onChange(index, {
+      executionPolicy: {
+        ...step.executionPolicy,
+        ...updates,
+      },
+    });
   return (
     <AccordionItem
       defaultExpand
@@ -169,6 +178,78 @@ const WorkflowStepEditor = memo<WorkflowStepEditorProps>(({ index, onChange, onD
           variant={'filled'}
           onChange={updateText('instruction')}
         />
+        <Select
+          allowClear
+          options={[
+            {
+              label: t('agentGroupManagement.createWorkflow.intervention.codeModeReadOnly'),
+              value: 'read_only',
+            },
+            {
+              label: t('agentGroupManagement.createWorkflow.intervention.codeModeIsolatedWrite'),
+              value: 'isolated_write',
+            },
+            {
+              label: t('agentGroupManagement.createWorkflow.intervention.codeModeIntegrator'),
+              value: 'integrator',
+            },
+          ]}
+          placeholder={t('agentGroupManagement.createWorkflow.intervention.codeModePlaceholder')}
+          size={'small'}
+          value={codeMode}
+          onChange={(value) =>
+            updateExecutionPolicy({
+              codeMode: value,
+              executionTarget:
+                value === 'isolated_write' || value === 'integrator' ? 'device' : undefined,
+              runtimeKind: value ? 'heterogeneous' : undefined,
+            })
+          }
+        />
+        {isWriteMode && (
+          <Flexbox horizontal gap={8}>
+            <Input
+              placeholder={t(
+                'agentGroupManagement.createWorkflow.intervention.deviceIdPlaceholder',
+              )}
+              size={'small'}
+              value={step.executionPolicy?.deviceId}
+              variant={'filled'}
+              onChange={(event) => updateExecutionPolicy({ deviceId: event.target.value })}
+            />
+            <Input
+              placeholder={t(
+                'agentGroupManagement.createWorkflow.intervention.workingDirectoryPlaceholder',
+              )}
+              size={'small'}
+              value={step.executionPolicy?.workingDirectory}
+              variant={'filled'}
+              onChange={(event) => updateExecutionPolicy({ workingDirectory: event.target.value })}
+            />
+            <Input
+              placeholder={t('agentGroupManagement.createWorkflow.intervention.baseRefPlaceholder')}
+              size={'small'}
+              value={step.executionPolicy?.baseRef}
+              variant={'filled'}
+              onChange={(event) => updateExecutionPolicy({ baseRef: event.target.value })}
+            />
+          </Flexbox>
+        )}
+        <Input.TextArea
+          autoSize={{ maxRows: 4, minRows: 2 }}
+          placeholder={t(
+            'agentGroupManagement.createWorkflow.intervention.verificationPlaceholder',
+          )}
+          value={step.executionPolicy?.verification?.requirement}
+          variant={'filled'}
+          onChange={(event) =>
+            updateExecutionPolicy({
+              verification: event.target.value
+                ? { requirement: event.target.value, verifierType: 'llm' }
+                : undefined,
+            })
+          }
+        />
       </Flexbox>
     </AccordionItem>
   );
@@ -224,7 +305,17 @@ const CreateWorkflowIntervention = memo<BuiltinInterventionProps<CreateWorkflowP
           draft.steps.length === 0 ||
           draft.steps.some(
             (step) => !step.agentId || !step.key?.trim() || !step.instruction?.trim(),
-          );
+          ) ||
+          draft.steps.some((step) => {
+            const mode = step.executionPolicy?.codeMode;
+            if (mode !== 'isolated_write' && mode !== 'integrator') return false;
+            return (
+              draft.policy?.requireHumanApprovalForWrites !== true ||
+              !step.executionPolicy?.deviceId?.trim() ||
+              !step.executionPolicy?.workingDirectory?.trim() ||
+              !step.executionPolicy?.verification?.requirement?.trim()
+            );
+          });
         if (invalid) {
           throw new Error(t('agentGroupManagement.createWorkflow.intervention.validationError'));
         }
@@ -267,6 +358,21 @@ const CreateWorkflowIntervention = memo<BuiltinInterventionProps<CreateWorkflowP
             }}
           />
         </Flexbox>
+        <Checkbox
+          checked={draft.policy?.requireHumanApprovalForWrites ?? false}
+          onChange={(event) => {
+            setDraft((current) => ({
+              ...current,
+              policy: {
+                ...current.policy,
+                requireHumanApprovalForWrites: event.target.checked,
+              },
+            }));
+            setHasChanges(true);
+          }}
+        >
+          {t('agentGroupManagement.createWorkflow.intervention.writeApproval')}
+        </Checkbox>
         <Accordion gap={0} variant={'borderless'}>
           {draft.steps.map((step, index) => (
             <WorkflowStepEditor

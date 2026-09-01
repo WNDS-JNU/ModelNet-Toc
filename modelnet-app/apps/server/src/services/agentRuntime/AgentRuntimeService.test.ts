@@ -34,14 +34,18 @@ vi.mock('@lobechat/ssrf-safe-fetch', () => ({ ssrfSafeFetch: mockSsrfSafeFetch }
 
 const {
   completeCollaborationAttempt,
+  findVerifyRunByOperation,
   getCollaborationRun,
   isLatestCollaborationAttempt,
   parkCollaborationAttempt,
+  parkCollaborationVerificationAttempt,
 } = vi.hoisted(() => ({
   completeCollaborationAttempt: vi.fn(),
+  findVerifyRunByOperation: vi.fn(),
   getCollaborationRun: vi.fn(),
   isLatestCollaborationAttempt: vi.fn(),
   parkCollaborationAttempt: vi.fn(),
+  parkCollaborationVerificationAttempt: vi.fn(),
 }));
 const { listWorkVersionsByRootOperations } = vi.hoisted(() => ({
   listWorkVersionsByRootOperations: vi.fn(),
@@ -52,10 +56,18 @@ vi.mock('@/server/services/agentGroupCollaboration', () => ({
     getRun = getCollaborationRun;
     isLatestAttempt = isLatestCollaborationAttempt;
     parkAttemptForIntervention = parkCollaborationAttempt;
+    parkAttemptForVerification = parkCollaborationVerificationAttempt;
+  },
+}));
+const { captureWorkspaceAttempt } = vi.hoisted(() => ({ captureWorkspaceAttempt: vi.fn() }));
+vi.mock('@/server/services/agentGroupCollaboration/workspaceIsolation', () => ({
+  WorkspaceIsolationService: class {
+    captureAttempt = captureWorkspaceAttempt;
   },
 }));
 
 // Mock trusted client to avoid server-side env access
+
 vi.mock('@/libs/trusted-client', () => ({
   generateTrustedClientToken: vi.fn().mockReturnValue(undefined),
   getTrustedClientTokenForSession: vi.fn().mockResolvedValue(undefined),
@@ -72,6 +84,12 @@ vi.mock('@/database/models/message', () => ({
 vi.mock('@/database/models/work', () => ({
   WorkModel: class {
     listByRootOperations = listWorkVersionsByRootOperations;
+  },
+}));
+
+vi.mock('@/database/models/verifyRun', () => ({
+  VerifyRunModel: class {
+    findByOperation = findVerifyRunByOperation;
   },
 }));
 
@@ -2452,10 +2470,13 @@ describe('AgentRuntimeService', () => {
 
     beforeEach(() => {
       completeCollaborationAttempt.mockReset().mockResolvedValue(undefined);
+      findVerifyRunByOperation.mockReset().mockResolvedValue(undefined);
       getCollaborationRun.mockReset().mockResolvedValue(undefined);
       isLatestCollaborationAttempt.mockReset().mockResolvedValue(true);
       parkCollaborationAttempt.mockReset().mockResolvedValue({ status: 'waiting' });
+      parkCollaborationVerificationAttempt.mockReset().mockResolvedValue({ status: 'waiting' });
       listWorkVersionsByRootOperations.mockReset().mockResolvedValue({});
+      captureWorkspaceAttempt.mockReset().mockResolvedValue(undefined);
       (service as any).agentOperationModel.findById = vi.fn().mockResolvedValue(undefined);
       updateToolMessage = vi.fn().mockResolvedValue({ success: true });
       (service as any).messageModel.updateToolMessage = updateToolMessage;
@@ -2521,6 +2542,128 @@ describe('AgentRuntimeService', () => {
       });
       expect(completeCollaborationAttempt.mock.invocationCallOrder[0]).toBeLessThan(
         updateToolMessage.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('parks a finished member until its VerifyRun reaches a terminal status', async () => {
+      getCollaborationRun.mockResolvedValue({
+        attempts: [
+          {
+            attemptNo: 1,
+            executionTargetSnapshot: {
+              verifyRunId: 'verify-1',
+              workspaceIsolation: {
+                baseCommit: 'base-head',
+                cleanupState: 'retained_for_review',
+                deviceId: 'device-1',
+                isolationId: 'isolation-1',
+                mode: 'isolated_write',
+                publicationPolicy: 'explicit_user_authorization_required',
+                sourcePath: '/repo',
+                worktreePath: '/worktree',
+              },
+            },
+            operationId: 'child-verify',
+            runNodeId: 'node-verify',
+          },
+        ],
+        nodes: [
+          {
+            agentId: 'agent-a',
+            executionPolicySnapshot: { verification: { requirement: 'tests pass' } },
+            id: 'node-verify',
+          },
+        ],
+        run: { protocol: 'pipeline', status: 'running', topicId: 'topic-1' },
+      });
+      findVerifyRunByOperation.mockResolvedValue({ id: 'verify-1', status: 'verifying' });
+      captureWorkspaceAttempt.mockResolvedValue({ changedFiles: 1 });
+
+      const won = await service.completeGroupActionMember({
+        anchorMessageId: 'verify-anchor',
+        collaboration: {
+          attemptNo: 1,
+          runId: 'run-verify',
+          runNodeId: 'node-verify',
+          runtimeKind: 'heterogeneous',
+        },
+        expectedMembers: 1,
+        finalState: memberState as any,
+        groupToolMessageId: 'verify-tool',
+        mode: 'in_group',
+        onComplete: 'resume',
+        operationId: 'child-verify',
+        parentOperationId: 'parent-verify',
+        reason: 'done',
+      });
+
+      expect(won).toBe(false);
+      expect(parkCollaborationVerificationAttempt).toHaveBeenCalledWith({
+        attemptNo: 1,
+        operationId: 'child-verify',
+        runId: 'run-verify',
+        runNodeId: 'node-verify',
+        runtimeKind: 'heterogeneous',
+      });
+      expect(captureWorkspaceAttempt).toHaveBeenCalledWith(
+        expect.objectContaining({ operationId: 'child-verify', runNodeId: 'node-verify' }),
+      );
+      expect(captureWorkspaceAttempt.mock.invocationCallOrder[0]).toBeLessThan(
+        parkCollaborationVerificationAttempt.mock.invocationCallOrder[0],
+      );
+      expect(completeCollaborationAttempt).not.toHaveBeenCalled();
+      expect(updateToolMessage).not.toHaveBeenCalled();
+    });
+
+    it('persists the VerifyRun reference after verification passes', async () => {
+      getCollaborationRun.mockResolvedValue({
+        attempts: [
+          {
+            attemptNo: 1,
+            executionTargetSnapshot: { verifyRunId: 'verify-1' },
+            operationId: 'child-verify',
+            runNodeId: 'node-verify',
+          },
+        ],
+        nodes: [
+          {
+            agentId: 'agent-a',
+            executionPolicySnapshot: { verification: { requirement: 'tests pass' } },
+            id: 'node-verify',
+          },
+        ],
+        run: { protocol: 'pipeline', status: 'running', topicId: 'topic-1' },
+      });
+      findVerifyRunByOperation.mockResolvedValue({ id: 'verify-1', status: 'passed' });
+
+      const won = await service.completeGroupActionMember({
+        anchorMessageId: 'verify-anchor',
+        collaboration: {
+          attemptNo: 1,
+          runId: 'run-verify',
+          runNodeId: 'node-verify',
+          runtimeKind: 'heterogeneous',
+        },
+        expectedMembers: 1,
+        finalState: memberState as any,
+        groupToolMessageId: 'verify-tool',
+        mode: 'in_group',
+        onComplete: 'resume',
+        operationId: 'child-verify',
+        parentOperationId: 'parent-verify',
+        reason: 'done',
+      });
+
+      expect(won).toBe(true);
+      expect(completeCollaborationAttempt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outputSnapshot: {
+            summary: 'final answer',
+            verifyRunId: 'verify-1',
+            workVersionRefs: [],
+          },
+          status: 'completed',
+        }),
       );
     });
 

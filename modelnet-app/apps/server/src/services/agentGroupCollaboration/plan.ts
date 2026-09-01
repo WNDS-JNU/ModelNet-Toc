@@ -5,6 +5,7 @@ import type {
   AgentGroupRunPlanNodeInput,
   AgentGroupRunPlanNodeSnapshot,
   AgentGroupRunPlanSnapshot,
+  AgentGroupRunPolicySnapshot,
   AgentGroupRunProtocol,
 } from '@lobechat/types';
 
@@ -34,6 +35,7 @@ export interface CompileAgentGroupRunPlanInput {
   allowedAgentIds: Iterable<string>;
   debate?: AgentGroupRunDebateSnapshot;
   nodes: AgentGroupRunPlanNodeInput[];
+  policySnapshot?: AgentGroupRunPolicySnapshot;
   protocol: AgentGroupRunProtocol;
   supervisorAgentId: string;
 }
@@ -137,6 +139,7 @@ export const compileAgentGroupRunPlan = ({
   allowedAgentIds,
   debate,
   nodes,
+  policySnapshot,
   protocol,
   supervisorAgentId,
 }: CompileAgentGroupRunPlanInput): {
@@ -183,6 +186,56 @@ export const compileAgentGroupRunPlan = ({
         `Node "${key}" contains a duplicate dependency.`,
       );
     }
+    const executionPolicy = node.executionPolicy
+      ? {
+          ...node.executionPolicy,
+          ...(node.executionPolicy.baseRef?.trim()
+            ? { baseRef: node.executionPolicy.baseRef.trim() }
+            : {}),
+          ...(node.executionPolicy.deviceId?.trim()
+            ? { deviceId: node.executionPolicy.deviceId.trim() }
+            : {}),
+          ...(node.executionPolicy.workingDirectory?.trim()
+            ? { workingDirectory: node.executionPolicy.workingDirectory.trim() }
+            : {}),
+          verification: node.executionPolicy.verification?.requirement?.trim()
+            ? {
+                requirement: node.executionPolicy.verification.requirement.trim(),
+                verifierType: 'llm' as const,
+              }
+            : undefined,
+        }
+      : undefined;
+    const codeMode = executionPolicy?.codeMode;
+    if (
+      codeMode !== undefined &&
+      !['integrator', 'isolated_write', 'read_only'].includes(codeMode)
+    ) {
+      fail('AGENT_GROUP_PLAN_INVALID_NODE', `Node "${key}" has an invalid codeMode.`);
+    }
+    if (codeMode && (protocol !== 'pipeline' || executionPolicy?.runtimeKind !== 'heterogeneous')) {
+      fail(
+        'AGENT_GROUP_PLAN_INVALID_NODE',
+        `Node "${key}" code collaboration requires a heterogeneous Pipeline member.`,
+      );
+    }
+    if (codeMode === 'isolated_write' || codeMode === 'integrator') {
+      if (
+        policySnapshot?.requireHumanApprovalForWrites !== true ||
+        executionPolicy?.executionTarget !== 'device' ||
+        !executionPolicy.deviceId ||
+        !executionPolicy.workingDirectory ||
+        !executionPolicy.verification?.requirement
+      ) {
+        fail(
+          'AGENT_GROUP_PLAN_INVALID_NODE',
+          `Node "${key}" writes require approval, a pinned device repository, and Verify.`,
+        );
+      }
+    }
+    if (codeMode === 'integrator' && dependencies.length === 0) {
+      fail('AGENT_GROUP_PLAN_INVALID_NODE', `Integrator node "${key}" requires dependencies.`);
+    }
 
     const maxAttempts = node.maxAttempts ?? 1;
     if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10) {
@@ -199,7 +252,7 @@ export const compileAgentGroupRunPlan = ({
       agentId: node.agentId,
       ...(node.barrierKey?.trim() ? { barrierKey: node.barrierKey.trim() } : {}),
       dependencies: [...dependencies],
-      ...(node.executionPolicy ? { executionPolicy: node.executionPolicy } : {}),
+      ...(executionPolicy ? { executionPolicy } : {}),
       instruction,
       key,
       maxAttempts,

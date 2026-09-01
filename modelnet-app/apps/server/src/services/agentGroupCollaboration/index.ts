@@ -71,6 +71,7 @@ export class AgentGroupCollaborationService {
       allowedAgentIds: roster.map((member) => member.agentId),
       debate: input.debate,
       nodes: input.nodes,
+      policySnapshot: input.policySnapshot,
       protocol: input.protocol,
       supervisorAgentId: input.supervisorAgentId,
     });
@@ -98,6 +99,9 @@ export class AgentGroupCollaborationService {
 
   parkAttemptForIntervention = (params: CreateAgentGroupRunAttemptParams) =>
     this.repository.parkAttemptForIntervention(params);
+
+  parkAttemptForVerification = (params: CreateAgentGroupRunAttemptParams) =>
+    this.repository.parkAttemptForVerification(params);
 
   beginCancellation = (runId: string) => this.repository.beginCancellation(runId);
 

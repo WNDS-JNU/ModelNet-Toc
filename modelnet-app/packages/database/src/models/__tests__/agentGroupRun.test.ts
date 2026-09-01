@@ -241,7 +241,7 @@ describe('AgentGroupRunModel', () => {
         attemptNo: 1,
         completionReason: 'done',
         operationId: `debate-${nodeKey}-operation`,
-        outputSnapshot: { summary },
+        outputSnapshot: { summary, workVersionRefs: [] },
         runNodeId: nodes.get(nodeKey)!.id,
         runtimeKind: 'normal',
         status: 'completed',
@@ -1102,6 +1102,161 @@ describe('AgentGroupRunModel', () => {
     expect(events?.filter(({ type }) => type === 'run.intervention_required')).toHaveLength(1);
     expect(events?.filter(({ type }) => type === 'run.intervention_cleared')).toHaveLength(1);
     expect(events?.filter(({ type }) => type === 'run.terminal')).toHaveLength(1);
+  });
+
+  it('persists an idempotent Verify gate without terminalizing the Attempt', async () => {
+    await seedPersonalGroup();
+    const model = new AgentGroupRunModel(serverDB, userId);
+    const created = await model.create(createParams());
+    const node = created.nodes[0];
+    await serverDB.insert(agentOperations).values({
+      agentId: memberAgentId,
+      chatGroupId: groupId,
+      id: 'verify-member-operation',
+      status: 'running',
+      userId,
+    });
+    await model.createAttempt({
+      attemptNo: 1,
+      operationId: 'verify-member-operation',
+      runNodeId: node.id,
+      runtimeKind: 'normal',
+    });
+
+    const parked = await model.parkAttemptForVerification({
+      attemptNo: 1,
+      operationId: 'verify-member-operation',
+      runNodeId: node.id,
+      runtimeKind: 'normal',
+    });
+    const repeated = await model.parkAttemptForVerification({
+      attemptNo: 1,
+      operationId: 'verify-member-operation',
+      runNodeId: node.id,
+      runtimeKind: 'normal',
+    });
+    let snapshot = await model.findById(created.run.id);
+
+    expect(repeated.id).toBe(parked.id);
+    expect(snapshot?.attempts[0]).toMatchObject({
+      completionReason: 'waiting_for_verify',
+      status: 'waiting',
+    });
+    expect(snapshot?.nodes[0]).toMatchObject({
+      completionReason: 'waiting_for_verify',
+      status: 'waiting',
+    });
+    expect(snapshot?.run).toMatchObject({
+      completionReason: 'waiting_for_verify',
+      status: 'waiting',
+    });
+
+    let events = await model.listEvents(created.run.id);
+    expect(events?.filter(({ type }) => type === 'attempt.verification_required')).toHaveLength(1);
+    expect(events?.filter(({ type }) => type === 'run.verification_required')).toHaveLength(1);
+    expect(events?.filter(({ type }) => type === 'run.terminal')).toHaveLength(0);
+    await model.completeAttempt({
+      attemptNo: 1,
+      completionReason: 'done',
+      operationId: 'verify-member-operation',
+      outputSnapshot: { verifyRunId: 'verify-1', workVersionRefs: [] },
+      runNodeId: node.id,
+      runtimeKind: 'normal',
+      status: 'completed',
+    });
+    snapshot = await model.findById(created.run.id);
+    expect(snapshot?.attempts[0]).toMatchObject({
+      completionReason: 'done',
+      outputSnapshot: { verifyRunId: 'verify-1', workVersionRefs: [] },
+      status: 'completed',
+    });
+    expect(snapshot?.run).toMatchObject({ completionReason: 'completed', status: 'completed' });
+
+    events = await model.listEvents(created.run.id);
+    expect(events?.filter(({ type }) => type === 'run.verification_cleared')).toHaveLength(1);
+    expect(events?.filter(({ type }) => type === 'run.terminal')).toHaveLength(1);
+  });
+
+  it('releases mixed intervention and Verify gates when the last waiter completes', async () => {
+    await seedPersonalGroup();
+    const model = new AgentGroupRunModel(serverDB, userId);
+    const created = await model.create(
+      createParams({
+        idempotencyKey: 'mixed-gates',
+        planHash: 'b'.repeat(64),
+        planSnapshot: makePipelinePlan([
+          { dependencies: [], key: 'verify' },
+          { dependencies: [], key: 'human' },
+        ]),
+      }),
+    );
+    const [verifyNode, humanNode] = created.nodes;
+    await serverDB.insert(agentOperations).values([
+      {
+        agentId: memberAgentId,
+        chatGroupId: groupId,
+        id: 'mixed-verify-operation',
+        status: 'running',
+        userId,
+      },
+      {
+        agentId: memberAgentId,
+        chatGroupId: groupId,
+        id: 'mixed-human-operation',
+        status: 'waiting_for_human',
+        userId,
+      },
+    ]);
+
+    await model.createAttempt({
+      attemptNo: 1,
+      operationId: 'mixed-verify-operation',
+      runNodeId: verifyNode.id,
+      runtimeKind: 'normal',
+    });
+    await model.createAttempt({
+      attemptNo: 1,
+      operationId: 'mixed-human-operation',
+      runNodeId: humanNode.id,
+      runtimeKind: 'normal',
+    });
+
+    await model.parkAttemptForVerification({
+      attemptNo: 1,
+      operationId: 'mixed-verify-operation',
+      runNodeId: verifyNode.id,
+      runtimeKind: 'normal',
+    });
+    await model.parkAttemptForIntervention({
+      attemptNo: 1,
+      operationId: 'mixed-human-operation',
+      runNodeId: humanNode.id,
+      runtimeKind: 'normal',
+    });
+
+    await model.completeAttempt({
+      attemptNo: 1,
+      completionReason: 'done',
+      operationId: 'mixed-human-operation',
+      runNodeId: humanNode.id,
+      runtimeKind: 'normal',
+      status: 'completed',
+    });
+    await model.completeAttempt({
+      attemptNo: 1,
+      completionReason: 'done',
+      operationId: 'mixed-verify-operation',
+      outputSnapshot: { verifyRunId: 'verify-mixed', workVersionRefs: [] },
+      runNodeId: verifyNode.id,
+      runtimeKind: 'normal',
+      status: 'completed',
+    });
+
+    const snapshot = await model.findById(created.run.id);
+    expect(snapshot?.run).toMatchObject({ completionReason: 'completed', status: 'completed' });
+    const events = await model.listEvents(created.run.id);
+    expect(events?.filter(({ type }) => type === 'run.verification_cleared')).toHaveLength(1);
+    expect(events?.filter(({ type }) => type === 'run.intervention_cleared')).toHaveLength(0);
   });
 
   it('reopens a terminal node with a new immutable attempt and settles again', async () => {

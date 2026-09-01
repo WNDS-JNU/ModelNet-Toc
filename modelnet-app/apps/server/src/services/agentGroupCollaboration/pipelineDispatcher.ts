@@ -17,6 +17,8 @@ import type {
 } from '@/server/services/agentRuntime/types';
 
 import { AgentGroupCollaborationService } from '.';
+import type { PreparedAgentGroupExecution } from './workspaceIsolation';
+import { WorkspaceIsolationService } from './workspaceIsolation';
 
 const log = debug('lobe-server:agent-group-pipeline-dispatcher');
 
@@ -162,8 +164,13 @@ const buildExecutionTargetSnapshot = (
   claim: AgentGroupRunDispatchClaim,
   prepared: GroupMemberPreparedOperation,
   protocol: DependencyProtocol,
+  execution: PreparedAgentGroupExecution,
 ) => ({
   anchorMessageId: bridge.anchorMessageId,
+  approvalLineage: {
+    kind: 'confirmed_group_tool',
+    toolMessageId: bridge.groupToolMessageId,
+  },
   expectedMembers: bridge.expectedMembers,
   groupToolMessageId: bridge.groupToolMessageId,
   mode: bridge.mode,
@@ -184,6 +191,8 @@ const buildExecutionTargetSnapshot = (
   },
   ...(prepared.executionPlan ? { executionPlan: prepared.executionPlan } : {}),
   ...(prepared.threadId ? { threadId: prepared.threadId } : {}),
+  ...(execution.verifyRunId ? { verifyRunId: execution.verifyRunId } : {}),
+  ...(execution.workspace ? { workspaceIsolation: execution.workspace } : {}),
 });
 
 /**
@@ -312,6 +321,18 @@ export class AgentGroupPipelineDispatcher {
     let attemptCommitted = false;
     let launchedOperationId: string | undefined;
     let preparedOperation: GroupMemberPreparedOperation | undefined;
+    const workspaceService = new WorkspaceIsolationService(
+      this.db,
+      snapshot.run.userId,
+      snapshot.run.workspaceId ?? undefined,
+    );
+    const codeMode = claim.node.executionPolicySnapshot?.codeMode;
+    const permissionProfile =
+      codeMode === 'read_only'
+        ? ('read-only' as const)
+        : codeMode === 'isolated_write' || codeMode === 'integrator'
+          ? ('workspace-write' as const)
+          : undefined;
     try {
       const result = await runtime.execGroupMember({
         agentId: claim.node.agentId,
@@ -331,6 +352,13 @@ export class AgentGroupPipelineDispatcher {
         onComplete: bridge.onComplete,
         onOperationPrepared: async (prepared) => {
           preparedOperation = prepared;
+          const execution = await workspaceService.prepareAttempt({
+            attemptNo: claim.attemptNo,
+            executionPolicy: claim.node.executionPolicySnapshot,
+            prepared,
+            runId: snapshot.run.id,
+            runNodeId: claim.node.id,
+          });
           await service.createClaimedAttempt({
             attemptNo: claim.attemptNo,
             dispatchClaimId: claim.claimId,
@@ -339,6 +367,7 @@ export class AgentGroupPipelineDispatcher {
               claim,
               prepared,
               protocol,
+              execution,
             ),
             ...(prepared.threadId ? { externalExecutionRef: { taskId: prepared.threadId } } : {}),
             operationId: prepared.operationId,
@@ -346,8 +375,12 @@ export class AgentGroupPipelineDispatcher {
             runtimeKind: prepared.runtimeKind,
           });
           attemptCommitted = true;
+          return execution.workingDirectoryOverride
+            ? { workingDirectoryOverride: execution.workingDirectoryOverride }
+            : undefined;
         },
         parentOperationId: bridge.parentOperationId,
+        permissionProfile,
         supervisorMessageId: bridge.supervisorMessageId,
         timeout: claim.node.timeoutMs ?? undefined,
         topicId: snapshot.run.topicId,
