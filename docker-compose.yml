@@ -32,6 +32,15 @@ services:
       DEVICE_GATEWAY_URL: http://device-gateway:3000
       DEVICE_GATEWAY_SERVICE_TOKEN: ${DEVICE_GATEWAY_SERVICE_TOKEN}
       INTERNAL_APP_URL: http://localhost:3210
+      AGENT_GROUP_DURABLE_RUNS: ${AGENT_GROUP_DURABLE_RUNS:-0}
+      AGENT_RUNTIME_MODE: ${AGENT_RUNTIME_MODE:-}
+      AGENT_RUNTIME_QUEUE_PROVIDER: ${AGENT_RUNTIME_QUEUE_PROVIDER:-redis-stream}
+      AGENT_RUNTIME_BASE_URL: http://modelnet-app:3210
+      AGENT_WORKER_TOKEN: ${KEY_VAULTS_SECRET}
+      A2A_ALLOW_INSECURE_HTTP: ${A2A_ALLOW_INSECURE_HTTP:-0}
+      A2A_DEPLOYMENT_ENV: ${A2A_DEPLOYMENT_ENV:-production}
+      A2A_TRUSTED_ORIGINS: ${A2A_TRUSTED_ORIGINS:-}
+      A2A_TRUSTED_PRIVATE_ORIGINS: ${A2A_TRUSTED_PRIVATE_ORIGINS:-}
       MODELNET_LEADERBOARD_DATA_DIR: /app/leaderboard/data
       MODELNET_PROXY_URL: http://modelnet-router:8000/v1
       MODELNET_API_KEY: ${MODELNET_BACKEND_API_KEY:-none}
@@ -61,6 +70,37 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+
+  agent-worker:
+    image: ${MODELNET_APP_IMAGE:-${LOBE_IMAGE:-modelnet/modelnet-toc:2.2.0-modelnet}}
+    container_name: modelnet-toc-agent-worker
+    restart: always
+    depends_on:
+      modelnet-app:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+      - .env.modelnet
+    entrypoint: ["/bin/node"]
+    command: ["/app/agent-worker.mjs"]
+    environment:
+      AGENT_GROUP_DURABLE_RUNS: ${AGENT_GROUP_DURABLE_RUNS:-0}
+      AGENT_GROUP_RECOVERY_SWEEP_BATCH_SIZE: ${AGENT_GROUP_RECOVERY_SWEEP_BATCH_SIZE:-100}
+      AGENT_GROUP_RECOVERY_SWEEP_INTERVAL_MS: ${AGENT_GROUP_RECOVERY_SWEEP_INTERVAL_MS:-30000}
+      AGENT_WORKER_APP_URL: http://modelnet-app:3210
+      AGENT_WORKER_TOKEN: ${KEY_VAULTS_SECRET}
+      REDIS_PREFIX: modelnet-toc
+      REDIS_URL: redis://redis:6379
+    healthcheck:
+      test: ["CMD", "/bin/node", "/app/agent-worker.mjs", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks:
+      - modelnet-network
 
   device-gateway:
     image: ${MODELNET_DEVICE_GATEWAY_IMAGE:-modelnet-device-gateway:local}
