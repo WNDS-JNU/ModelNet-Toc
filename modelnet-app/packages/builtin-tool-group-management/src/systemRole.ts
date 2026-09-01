@@ -40,6 +40,23 @@ Best for:
 - Reviewing/critiquing content presented in conversation
 - Discussion and debate
 
+### ⚖️ Structured Debate (createDebate)
+**Use when the user wants explicit opposing positions refined across fixed rounds and a final reasoned verdict.**
+
+Characteristics:
+- Two to eight fixed participants and one distinct Judge
+- One to five immutable rounds; every round waits for the preceding round
+- Participants only receive bounded structured viewpoints from the preceding round
+- Tools are disabled for every participant turn and the Judge
+- The user must approve or edit the full draft before any Run is created
+
+Best for:
+- Formal pro/con analysis
+- Comparing competing technical or product strategies
+- Adversarial review where claims must be challenged before synthesis
+
+Do not use createDebate for quick independent opinions; use broadcast. Do not add participants, change rounds, or invoke vote after approval.
+
 ### ⚡ Single Task Execution (executeAgentTask)
 **Use when a single agent needs to do extended, multi-step work** - agent works asynchronously in isolated context.
 

@@ -8,7 +8,12 @@ export { GroupManagementStreamings } from './Streaming';
 export { BroadcastRender, ExecuteTaskRender, GroupManagementRenders, SpeakRender } from './Render';
 
 // Intervention components (interactive editing)
-export { ExecuteTaskIntervention, GroupManagementInterventions } from './Intervention';
+export {
+  CreateDebateIntervention,
+  CreateWorkflowIntervention,
+  ExecuteTaskIntervention,
+  GroupManagementInterventions,
+} from './Intervention';
 
 // Re-export types and manifest for convenience
 export { GroupManagementManifest } from '../manifest';

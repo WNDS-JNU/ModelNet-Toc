@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 
+import { buildFixedRoundDebatePlan } from '../debate';
 import type { AgentGroupPlanValidationError, CompileAgentGroupRunPlanInput } from '../plan';
 import { compileAgentGroupRunPlan } from '../plan';
 
@@ -225,7 +226,7 @@ describe('compileAgentGroupRunPlan', () => {
     );
   });
 
-  it('requires a three-node debate with exactly one judge', () => {
+  it('requires a fixed-round Debate DAG with one distinct final Judge', () => {
     expectCode(
       () =>
         compile({
@@ -238,15 +239,42 @@ describe('compileAgentGroupRunPlan', () => {
       'AGENT_GROUP_PLAN_INVALID_DEBATE',
     );
 
-    const result = compile({
-      nodes: [
-        { agentId: memberAgentId, instruction: 'Argue A', key: 'a', role: 'participant' },
-        { agentId: supervisorAgentId, instruction: 'Argue B', key: 'b', role: 'participant' },
-        { agentId: judgeAgentId, instruction: 'Judge', key: 'judge', role: 'judge' },
+    const debatePlan = buildFixedRoundDebatePlan({
+      judgeAgentId,
+      motion: 'Should the system prefer deterministic orchestration?',
+      participants: [
+        { agentId: memberAgentId, perspective: 'Support determinism' },
+        { agentId: supervisorAgentId, perspective: 'Challenge determinism' },
       ],
+      rounds: 2,
+    });
+    const result = compile({
+      ...debatePlan,
       protocol: 'debate',
     });
 
-    expect(result.planSnapshot.nodes).toHaveLength(3);
+    expect(result.planSnapshot.debate).toEqual({
+      judgeAgentId,
+      participantAgentIds: [memberAgentId, supervisorAgentId],
+      rounds: 2,
+      termination: 'fixed_rounds',
+    });
+    expect(result.planSnapshot.nodes).toHaveLength(5);
+    expect(result.planSnapshot.nodes.at(-1)).toMatchObject({
+      dependencies: ['debate-r2-p1', 'debate-r2-p2'],
+      key: 'debate-judge',
+      role: 'judge',
+      toolPolicy: { disableTools: true },
+    });
+
+    expectCode(
+      () =>
+        compile({
+          ...debatePlan,
+          debate: { ...debatePlan.debate, rounds: 3 },
+          protocol: 'debate',
+        }),
+      'AGENT_GROUP_PLAN_INVALID_DEBATE',
+    );
   });
 });

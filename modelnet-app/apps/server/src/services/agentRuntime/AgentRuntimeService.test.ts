@@ -38,11 +38,11 @@ const {
   isLatestCollaborationAttempt,
   parkCollaborationAttempt,
 } = vi.hoisted(() => ({
-    completeCollaborationAttempt: vi.fn(),
-    getCollaborationRun: vi.fn(),
-    isLatestCollaborationAttempt: vi.fn(),
-    parkCollaborationAttempt: vi.fn(),
-  }));
+  completeCollaborationAttempt: vi.fn(),
+  getCollaborationRun: vi.fn(),
+  isLatestCollaborationAttempt: vi.fn(),
+  parkCollaborationAttempt: vi.fn(),
+}));
 const { listWorkVersionsByRootOperations } = vi.hoisted(() => ({
   listWorkVersionsByRootOperations: vi.fn(),
 }));
@@ -2564,6 +2564,46 @@ describe('AgentRuntimeService', () => {
       );
       expect(resumeSpy).toHaveBeenCalledWith(
         { parentOperationId: 'pipeline-supervisor-1' },
+        { scheduleVerifyOnHold: true },
+      );
+    });
+
+    it('uses the terminal Debate projection to complete the shared tool barrier', async () => {
+      getCollaborationRun.mockResolvedValue({
+        run: { protocol: 'debate', status: 'completed' },
+      });
+
+      const won = await service.completeGroupActionMember({
+        anchorMessageId: 'debate-anchor-judge',
+        collaboration: {
+          attemptNo: 1,
+          runId: 'debate-run-1',
+          runNodeId: 'debate-judge',
+          runtimeKind: 'normal',
+        },
+        expectedMembers: 5,
+        finalState: memberState as any,
+        groupToolMessageId: 'debate-tool-1',
+        mode: 'isolated',
+        onComplete: 'resume',
+        operationId: 'debate-judge-operation',
+        parentOperationId: 'debate-supervisor-1',
+        reason: 'done',
+      });
+
+      expect(won).toBe(true);
+      expect(updateToolMessage).toHaveBeenCalledWith(
+        'debate-tool-1',
+        expect.objectContaining({
+          content: 'Agent debate completed.',
+          pluginState: expect.objectContaining({
+            protocol: 'debate',
+            status: 'completed',
+          }),
+        }),
+      );
+      expect(resumeSpy).toHaveBeenCalledWith(
+        { parentOperationId: 'debate-supervisor-1' },
         { scheduleVerifyOnHold: true },
       );
     });

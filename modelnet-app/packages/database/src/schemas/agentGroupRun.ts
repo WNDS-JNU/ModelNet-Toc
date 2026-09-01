@@ -64,6 +64,12 @@ export const agentGroupRuns = pgTable(
     }),
     /** Stable execution identity; deliberately retained even if an operation row is archived. */
     supervisorOperationId: text('supervisor_operation_id').notNull(),
+    /**
+     * The approved createWorkflow tool message that owns the Pipeline barrier.
+     * Nullable only for historical/programmatic runs created before the
+     * user-confirmation entrypoint existed.
+     */
+    groupToolMessageId: text('group_tool_message_id'),
 
     protocol: text('protocol', { enum: agentGroupRunProtocols }).notNull(),
     planVersion: integer('plan_version').notNull(),

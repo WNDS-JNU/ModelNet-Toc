@@ -1106,6 +1106,13 @@
       "when": 1788220215027,
       "tag": "0157_agent_group_run_outputs",
       "breakpoints": true
+    },
+    {
+      "idx": 158,
+      "version": "7",
+      "when": 1788230966940,
+      "tag": "0158_agent_group_run_tool_bridge",
+      "breakpoints": true
     }
   ],
   "version": "6"

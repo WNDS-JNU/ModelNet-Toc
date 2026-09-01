@@ -1,0 +1,1 @@
+ALTER TABLE "agent_group_runs" ADD COLUMN "group_tool_message_id" text;

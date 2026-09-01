@@ -262,6 +262,213 @@ export const GroupManagementManifest: BuiltinToolManifest = {
     // },
     {
       description:
+        'Propose a durable fixed-round multi-agent Debate as an editable draft. The user must explicitly approve the participants, perspectives, rounds, budgets, and final Judge before the server creates or dispatches any Run.',
+      humanIntervention: 'required',
+      name: GroupManagementApiName.createDebate,
+      parameters: {
+        properties: {
+          budget: {
+            description: 'Optional immutable total Debate budget captured with the approved Run.',
+            properties: {
+              maxDurationMs: { minimum: 1, type: 'number' },
+              maxParallel: { minimum: 1, type: 'number' },
+              maxTotalCost: { minimum: 0, type: 'number' },
+            },
+            type: 'object',
+          },
+          judgeAgentId: {
+            description: 'ID of the enabled group member that issues the final verdict.',
+            type: 'string',
+          },
+          judgeInstruction: {
+            description: 'Optional explicit judging criteria for the final verdict.',
+            type: 'string',
+          },
+          judgeTimeoutMs: {
+            description: 'Optional timeout for the final Judge node in milliseconds.',
+            minimum: 1,
+            type: 'number',
+          },
+          motion: {
+            description: 'The exact proposition or question debated in every round.',
+            type: 'string',
+          },
+          name: {
+            description: 'A short user-visible name for the Debate draft.',
+            type: 'string',
+          },
+          participants: {
+            description: 'Two to eight fixed Debate participants. The Judge must be distinct.',
+            items: {
+              properties: {
+                agentId: {
+                  description: 'ID of an enabled group member.',
+                  type: 'string',
+                },
+                perspective: {
+                  description: 'Optional assigned position or perspective for this participant.',
+                  type: 'string',
+                },
+              },
+              required: ['agentId'],
+              type: 'object',
+            },
+            maxItems: 8,
+            minItems: 2,
+            type: 'array',
+          },
+          policy: {
+            description: 'Optional immutable failure policy.',
+            properties: {
+              failureStrategy: {
+                enum: ['fail_fast', 'wait_all'],
+                type: 'string',
+              },
+            },
+            type: 'object',
+          },
+          roundBudget: {
+            description: 'Budget applied to every participant turn.',
+            properties: {
+              maxAttempts: { maximum: 3, minimum: 1, type: 'number' },
+              timeoutMs: { minimum: 1, type: 'number' },
+            },
+            type: 'object',
+          },
+          rounds: {
+            description: 'Fixed number of Debate rounds before the Judge runs (1-5).',
+            maximum: 5,
+            minimum: 1,
+            type: 'number',
+          },
+        },
+        required: ['name', 'motion', 'participants', 'rounds', 'judgeAgentId'],
+        type: 'object',
+      },
+    },
+    {
+      description:
+        'Propose a durable multi-agent Pipeline as an editable draft. The user must explicitly approve the draft before the server creates or dispatches any Run. Use dependencies to express a DAG; steps without dependencies start in parallel.',
+      humanIntervention: 'required',
+      name: GroupManagementApiName.createWorkflow,
+      parameters: {
+        properties: {
+          budget: {
+            description: 'Optional immutable execution budget captured with the approved Run.',
+            properties: {
+              maxDurationMs: {
+                description: 'Optional maximum wall-clock duration in milliseconds.',
+                minimum: 1,
+                type: 'number',
+              },
+              maxParallel: {
+                description: 'Maximum number of Pipeline nodes allowed to run concurrently.',
+                minimum: 1,
+                type: 'number',
+              },
+              maxTotalCost: {
+                description: 'Optional maximum total execution cost.',
+                minimum: 0,
+                type: 'number',
+              },
+            },
+            type: 'object',
+          },
+          name: {
+            description: 'A short user-visible name for the workflow draft.',
+            type: 'string',
+          },
+          policy: {
+            description: 'Optional immutable failure and approval policy.',
+            properties: {
+              failureStrategy: {
+                description: 'Whether one failed node fails fast or waits for active nodes.',
+                enum: ['fail_fast', 'wait_all'],
+                type: 'string',
+              },
+              requireHumanApprovalForWrites: {
+                description: 'Require human approval before member tools perform writes.',
+                type: 'boolean',
+              },
+            },
+            type: 'object',
+          },
+          steps: {
+            description:
+              'Pipeline nodes. dependencies contains keys of prerequisite nodes; an empty list makes a root node.',
+            items: {
+              properties: {
+                agentId: {
+                  description: 'ID of an enabled member of the current Agent Group.',
+                  type: 'string',
+                },
+                barrierKey: {
+                  description: 'Optional logical barrier label for UI and audit grouping.',
+                  type: 'string',
+                },
+                dependencies: {
+                  description: 'Keys of prerequisite steps that must complete first.',
+                  items: { type: 'string' },
+                  type: 'array',
+                },
+                instruction: {
+                  description: 'Clear task and expected deliverable for this node.',
+                  type: 'string',
+                },
+                key: {
+                  description:
+                    'Stable unique node key (letters, numbers, underscore, dot, or hyphen; maximum 64 characters).',
+                  type: 'string',
+                },
+                maxAttempts: {
+                  default: 1,
+                  description: 'Maximum attempts for this node (1-10).',
+                  maximum: 10,
+                  minimum: 1,
+                  type: 'number',
+                },
+                role: {
+                  description:
+                    'Optional collaboration role such as researcher, writer, or reviewer.',
+                  type: 'string',
+                },
+                timeoutMs: {
+                  description: 'Optional node timeout in milliseconds.',
+                  minimum: 1,
+                  type: 'number',
+                },
+                toolPolicy: {
+                  description: 'Optional immutable tool restriction for this node.',
+                  properties: {
+                    allowedToolIds: {
+                      items: { type: 'string' },
+                      type: 'array',
+                    },
+                    deniedToolIds: {
+                      items: { type: 'string' },
+                      type: 'array',
+                    },
+                    disableTools: {
+                      type: 'boolean',
+                    },
+                  },
+                  type: 'object',
+                },
+              },
+              required: ['key', 'agentId', 'instruction'],
+              type: 'object',
+            },
+            minItems: 1,
+            maxItems: 64,
+            type: 'array',
+          },
+        },
+        required: ['name', 'steps'],
+        type: 'object',
+      },
+    },
+    {
+      description:
         'Initiate a vote among agents on a specific question or decision. Each agent provides their choice and reasoning.',
       name: GroupManagementApiName.vote,
       parameters: {

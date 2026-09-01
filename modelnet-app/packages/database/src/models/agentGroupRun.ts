@@ -9,6 +9,7 @@ import type {
   AgentGroupRunNodeStatus,
   AgentGroupRunPlanSnapshot,
   AgentGroupRunPolicySnapshot,
+  AgentGroupRunProtocol,
   AgentGroupRunRuntimeKind,
 } from '@lobechat/types';
 import { and, asc, desc, eq, inArray, not, sql } from 'drizzle-orm';
@@ -40,6 +41,7 @@ export const AGENT_GROUP_RUN_INTERVENTION_REASON = 'waiting_for_human';
 export interface CreateAgentGroupRunParams {
   budgetSnapshot?: AgentGroupRunBudgetSnapshot;
   chatGroupId: string;
+  groupToolMessageId?: string;
   idempotencyKey: string;
   planHash: string;
   planSnapshot: AgentGroupRunPlanSnapshot;
@@ -111,8 +113,7 @@ export interface FailAgentGroupRunNodeStartParams {
   runNodeId: string;
 }
 
-export interface FailClaimedAgentGroupRunNodeStartParams
-  extends FailAgentGroupRunNodeStartParams {
+export interface FailClaimedAgentGroupRunNodeStartParams extends FailAgentGroupRunNodeStartParams {
   dispatchClaimId: string;
 }
 
@@ -160,6 +161,10 @@ const RETRYABLE_NODE_STATUSES: AgentGroupRunNodeStatus[] = [
 const BLOCKING_DEPENDENCY_STATUSES: AgentGroupRunNodeStatus[] = ['blocked', 'cancelled', 'failed'];
 const TERMINAL_RUN_STATUSES = ['cancelled', 'completed', 'failed'] as const;
 const ACTIVE_ATTEMPT_STATUSES: AgentGroupRunAttemptStatus[] = ['pending', 'running', 'waiting'];
+const DEPENDENCY_DRIVEN_PROTOCOLS: AgentGroupRunProtocol[] = ['pipeline', 'debate'];
+const isDependencyDrivenProtocol = (protocol: AgentGroupRunProtocol): boolean =>
+  DEPENDENCY_DRIVEN_PROTOCOLS.includes(protocol);
+
 export const AGENT_GROUP_RUN_DISPATCH_LEASE_MIN_MS = 1_000;
 export const AGENT_GROUP_RUN_DISPATCH_LEASE_MAX_MS = 15 * 60_000;
 
@@ -298,7 +303,7 @@ export class AgentGroupRunModel {
 
     if (
       !options.allowTerminalNode &&
-      node.protocol === 'pipeline' &&
+      isDependencyDrivenProtocol(node.protocol) &&
       !(['ready', 'running', 'waiting'] as AgentGroupRunNodeStatus[]).includes(node.status)
     ) {
       throw new Error(AGENT_GROUP_RUN_NODE_NOT_READY);
@@ -371,7 +376,8 @@ export class AgentGroupRunModel {
         .limit(1)
         .for('update');
       if (!row) throw new Error(AGENT_GROUP_RUN_NOT_FOUND);
-      if (row.protocol !== 'pipeline' || !['pending', 'running'].includes(row.status)) return [];
+      if (!isDependencyDrivenProtocol(row.protocol) || !['pending', 'running'].includes(row.status))
+        return [];
 
       const nodes = await tx
         .select()
@@ -522,20 +528,24 @@ export class AgentGroupRunModel {
     });
 
   /**
-   * Advance the durable pipeline projection after one node transition.
+   * Advance a durable dependency graph after one node transition.
    *
    * A required dependency failure recursively blocks every not-yet-started
    * descendant. Successful retries can revive those dependency-blocked nodes,
    * but only when every required dependency has completed successfully.
    */
-  private advancePipeline = async (tx: Transaction, runId: string, transitionKey: string) => {
+  private advanceDependencyGraph = async (
+    tx: Transaction,
+    runId: string,
+    transitionKey: string,
+  ) => {
     const [run] = await tx
       .select({ protocol: agentGroupRuns.protocol })
       .from(agentGroupRuns)
       .where(eq(agentGroupRuns.id, runId))
       .limit(1)
       .for('update');
-    if (run?.protocol !== 'pipeline') return;
+    if (!run || !isDependencyDrivenProtocol(run.protocol)) return;
 
     const nodes = await tx
       .select({
@@ -703,6 +713,8 @@ export class AgentGroupRunModel {
       if (existing) {
         if (
           existing.chatGroupId !== params.chatGroupId ||
+          (params.groupToolMessageId !== undefined &&
+            existing.groupToolMessageId !== params.groupToolMessageId) ||
           existing.planHash !== params.planHash ||
           existing.supervisorOperationId !== params.supervisorOperationId
         ) {
@@ -735,6 +747,7 @@ export class AgentGroupRunModel {
             {
               budgetSnapshot: params.budgetSnapshot,
               chatGroupId: params.chatGroupId,
+              groupToolMessageId: params.groupToolMessageId,
               idempotencyKey: params.idempotencyKey,
               planHash: params.planHash,
               planSnapshot: params.planSnapshot,
@@ -756,6 +769,8 @@ export class AgentGroupRunModel {
         if (
           !winner ||
           winner.chatGroupId !== params.chatGroupId ||
+          (params.groupToolMessageId !== undefined &&
+            winner.groupToolMessageId !== params.groupToolMessageId) ||
           winner.planHash !== params.planHash ||
           winner.supervisorOperationId !== params.supervisorOperationId
         ) {
@@ -779,7 +794,8 @@ export class AgentGroupRunModel {
             runId: created.id,
             sortOrder: node.sortOrder,
             status:
-              params.planSnapshot.protocol === 'pipeline' && node.dependencies.length === 0
+              isDependencyDrivenProtocol(params.planSnapshot.protocol) &&
+              node.dependencies.length === 0
                 ? ('ready' as const)
                 : ('pending' as const),
             timeoutMs: node.timeoutMs,
@@ -1460,7 +1476,7 @@ export class AgentGroupRunModel {
         status: nodeStatus,
         type: 'node.terminal',
       });
-      await this.advancePipeline(tx, node.runId, `attempt:${updated.id}`);
+      await this.advanceDependencyGraph(tx, node.runId, `attempt:${updated.id}`);
       await this.settleRunIfTerminal(tx, node.runId, `attempt:${updated.id}`);
 
       return updated;
@@ -1493,7 +1509,7 @@ export class AgentGroupRunModel {
         status: 'failed',
         type: 'node.terminal',
       });
-      await this.advancePipeline(tx, node.runId, `node:${node.id}:start_failed`);
+      await this.advanceDependencyGraph(tx, node.runId, `node:${node.id}:start_failed`);
       await this.settleRunIfTerminal(tx, node.runId, `node:${node.id}:start_failed`);
     });
 
@@ -1531,7 +1547,7 @@ export class AgentGroupRunModel {
         status: 'failed',
         type: 'node.terminal',
       });
-      await this.advancePipeline(
+      await this.advanceDependencyGraph(
         tx,
         node.runId,
         `node:${node.id}:dispatch:${params.dispatchClaimId}:start_failed`,

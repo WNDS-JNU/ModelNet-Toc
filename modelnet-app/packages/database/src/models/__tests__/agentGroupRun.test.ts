@@ -25,6 +25,7 @@ const workspaceId = 'agent-group-run-workspace';
 const groupId = 'agent-group-run-group';
 const supervisorAgentId = 'agent-group-run-supervisor';
 const memberAgentId = 'agent-group-run-member';
+const judgeAgentId = 'agent-group-run-judge';
 
 const serverDB: LobeChatDatabase = await getTestDB();
 
@@ -60,8 +61,67 @@ const makePipelinePlan = (
   version: 1,
 });
 
+const makeDebatePlan = (): AgentGroupRunPlanSnapshot => ({
+  debate: {
+    judgeAgentId,
+    participantAgentIds: [memberAgentId, supervisorAgentId],
+    rounds: 2,
+    termination: 'fixed_rounds',
+  },
+  nodes: [
+    {
+      agentId: memberAgentId,
+      barrierKey: 'debate-round-1',
+      dependencies: [],
+      instruction: 'Round 1 pro',
+      key: 'debate-r1-p1',
+      maxAttempts: 1,
+      role: 'debater',
+      sortOrder: 0,
+      toolPolicy: { disableTools: true },
+    },
+    {
+      agentId: supervisorAgentId,
+      barrierKey: 'debate-round-1',
+      dependencies: [],
+      instruction: 'Round 1 con',
+      key: 'debate-r1-p2',
+      maxAttempts: 1,
+      role: 'debater',
+      sortOrder: 1,
+      toolPolicy: { disableTools: true },
+    },
+    ...[memberAgentId, supervisorAgentId].map((agentId, index) => ({
+      agentId,
+      barrierKey: 'debate-round-2',
+      dependencies: ['debate-r1-p1', 'debate-r1-p2'],
+      instruction: `Round 2 participant ${index + 1}`,
+      key: `debate-r2-p${index + 1}`,
+      maxAttempts: 1,
+      role: 'debater',
+      sortOrder: index + 2,
+      toolPolicy: { disableTools: true },
+    })),
+    {
+      agentId: judgeAgentId,
+      barrierKey: 'debate-verdict',
+      dependencies: ['debate-r2-p1', 'debate-r2-p2'],
+      instruction: 'Judge the final round',
+      key: 'debate-judge',
+      maxAttempts: 1,
+      role: 'judge',
+      sortOrder: 4,
+      toolPolicy: { disableTools: true },
+    },
+  ],
+  protocol: 'debate',
+  supervisorAgentId,
+  version: 1,
+});
+
 const createParams = (overrides: Partial<Parameters<AgentGroupRunModel['create']>[0]> = {}) => ({
   chatGroupId: groupId,
+  groupToolMessageId: 'group-tool-message-1',
   idempotencyKey: 'request-1',
   planHash: 'a'.repeat(64),
   planSnapshot: makePlan(),
@@ -74,6 +134,7 @@ const seedPersonalGroup = async () => {
   await serverDB.insert(agents).values([
     { id: supervisorAgentId, title: 'Supervisor', userId },
     { id: memberAgentId, title: 'Member', userId },
+    { id: judgeAgentId, title: 'Judge', userId },
   ]);
   await serverDB.insert(chatGroups).values({ id: groupId, title: 'Group', userId });
   await serverDB.insert(agentOperations).values({
@@ -95,6 +156,7 @@ const seedWorkspaceGroup = async (visibility: 'private' | 'public' = 'public') =
   await serverDB.insert(agents).values([
     { id: supervisorAgentId, title: 'Supervisor', userId, workspaceId },
     { id: memberAgentId, title: 'Member', userId, workspaceId },
+    { id: judgeAgentId, title: 'Judge', userId, workspaceId },
   ]);
   await serverDB
     .insert(chatGroups)
@@ -126,6 +188,7 @@ describe('AgentGroupRunModel', () => {
     expect(result.run.id).toMatch(/^agr_/);
     expect(result.run).toMatchObject({
       chatGroupId: groupId,
+      groupToolMessageId: 'group-tool-message-1',
       idempotencyKey: 'request-1',
       planHash: 'a'.repeat(64),
       planVersion: 1,
@@ -151,6 +214,90 @@ describe('AgentGroupRunModel', () => {
 
     const events = await model.listEvents(result.run.id);
     expect(events?.map(({ type }) => type)).toEqual(['run.created', 'node.created']);
+  });
+
+  it('advances fixed Debate rounds and the Judge across model reconnection', async () => {
+    await seedPersonalGroup();
+    const model = new AgentGroupRunModel(serverDB, userId);
+    const created = await model.create(
+      createParams({
+        idempotencyKey: 'debate-fixed-rounds',
+        planHash: 'b'.repeat(64),
+        planSnapshot: makeDebatePlan(),
+      }),
+    );
+    const nodes = new Map(created.nodes.map((node) => [node.nodeKey, node]));
+    await serverDB.insert(agentOperations).values(
+      created.nodes.map((node) => ({
+        agentId: node.agentId!,
+        chatGroupId: groupId,
+        id: `debate-${node.nodeKey}-operation`,
+        status: 'running' as const,
+        userId,
+      })),
+    );
+    const complete = (activeModel: AgentGroupRunModel, nodeKey: string, summary: string) =>
+      activeModel.completeAttempt({
+        attemptNo: 1,
+        completionReason: 'done',
+        operationId: `debate-${nodeKey}-operation`,
+        outputSnapshot: { summary },
+        runNodeId: nodes.get(nodeKey)!.id,
+        runtimeKind: 'normal',
+        status: 'completed',
+      });
+
+    expect(
+      Object.fromEntries(created.nodes.map(({ nodeKey, status }) => [nodeKey, status])),
+    ).toEqual({
+      'debate-judge': 'pending',
+      'debate-r1-p1': 'ready',
+      'debate-r1-p2': 'ready',
+      'debate-r2-p1': 'pending',
+      'debate-r2-p2': 'pending',
+    });
+
+    await complete(model, 'debate-r1-p1', 'Opening position one.');
+    let reconnectedModel = new AgentGroupRunModel(serverDB, userId);
+    let snapshot = await reconnectedModel.findById(created.run.id);
+    expect(snapshot?.nodes.find(({ nodeKey }) => nodeKey === 'debate-r2-p1')?.status).toBe(
+      'pending',
+    );
+
+    await complete(reconnectedModel, 'debate-r1-p2', 'Opening position two.');
+    reconnectedModel = new AgentGroupRunModel(serverDB, userId);
+    snapshot = await reconnectedModel.findById(created.run.id);
+    expect(
+      snapshot?.nodes
+        .filter(({ nodeKey }) => nodeKey.startsWith('debate-r2-'))
+        .map(({ status }) => status),
+    ).toEqual(['ready', 'ready']);
+    expect(snapshot?.nodes.find(({ nodeKey }) => nodeKey === 'debate-judge')?.status).toBe(
+      'pending',
+    );
+
+    await complete(reconnectedModel, 'debate-r2-p1', 'Refined position one.');
+    await complete(
+      new AgentGroupRunModel(serverDB, userId),
+      'debate-r2-p2',
+      'Refined position two.',
+    );
+    reconnectedModel = new AgentGroupRunModel(serverDB, userId);
+    snapshot = await reconnectedModel.findById(created.run.id);
+    expect(snapshot?.nodes.find(({ nodeKey }) => nodeKey === 'debate-judge')?.status).toBe('ready');
+
+    await complete(reconnectedModel, 'debate-judge', 'Final reasoned verdict.');
+    snapshot = await new AgentGroupRunModel(serverDB, userId).findById(created.run.id);
+    expect(snapshot?.run).toMatchObject({ completionReason: 'completed', status: 'completed' });
+
+    const events = await model.listEvents(created.run.id);
+    expect(events?.filter(({ type }) => type === 'node.ready')).toHaveLength(5);
+    expect(
+      events?.filter(
+        ({ runNodeId, type }) =>
+          type === 'node.ready' && runNodeId === nodes.get('debate-judge')!.id,
+      ),
+    ).toHaveLength(1);
   });
 
   it('persists pipeline readiness and unlocks a join only after every dependency completes', async () => {
@@ -358,10 +505,7 @@ describe('AgentGroupRunModel', () => {
       runNodeId: first[0].node.id,
     });
     await expect(
-      model.claimReadyNodes(
-        { leaseDurationMs: 30_000, limit: 10, runId: created.run.id },
-        now,
-      ),
+      model.claimReadyNodes({ leaseDurationMs: 30_000, limit: 10, runId: created.run.id }, now),
     ).resolves.toHaveLength(1);
   });
 
@@ -682,6 +826,16 @@ describe('AgentGroupRunModel', () => {
     expect(second.run.id).toBe(first.run.id);
     expect(second.created).toBe(false);
     expect(second.nodes).toHaveLength(1);
+  });
+
+  it('rejects idempotent reuse with a different approved tool message', async () => {
+    await seedPersonalGroup();
+    const model = new AgentGroupRunModel(serverDB, userId);
+    await model.create(createParams());
+
+    await expect(
+      model.create(createParams({ groupToolMessageId: 'group-tool-message-2' })),
+    ).rejects.toThrowError(AGENT_GROUP_RUN_IDEMPOTENCY_CONFLICT);
   });
 
   it('rejects reuse of an idempotency key for a different plan', async () => {

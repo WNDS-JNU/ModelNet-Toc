@@ -7,6 +7,7 @@
  */
 import type {
   BroadcastParams,
+  CreateDebateParams,
   CreateWorkflowParams,
   DelegateParams,
   ExecuteTaskParams,
@@ -244,16 +245,33 @@ class GroupManagementExecutor extends BaseExecutor<typeof GroupManagementApiName
 
   // ==================== Flow Control ====================
 
+  createDebate = async (
+    params: CreateDebateParams,
+    _ctx: BuiltinToolContext,
+  ): Promise<BuiltinToolResult> => ({
+    content:
+      `Debate "${params.name}" requires the durable server runtime; ` +
+      'client-side execution is intentionally disabled.',
+    error: {
+      message: 'Durable Agent Group debates must be created by the server runtime.',
+      type: 'AGENT_GROUP_DEBATE_SERVER_REQUIRED',
+    },
+    success: false,
+  });
+
   createWorkflow = async (
     params: CreateWorkflowParams,
     _ctx: BuiltinToolContext,
-  ): Promise<BuiltinToolResult> => {
-    // TODO: Implement workflow creation
-    return {
-      content: `Workflow creation not yet implemented for "${params.name}" with ${params.steps.length} steps`,
-      success: true,
-    };
-  };
+  ): Promise<BuiltinToolResult> => ({
+    content:
+      `Workflow "${params.name}" requires the durable server runtime; ` +
+      'client-side execution is intentionally disabled.',
+    error: {
+      message: 'Durable Agent Group workflows must be created by the server runtime.',
+      type: 'AGENT_GROUP_WORKFLOW_SERVER_REQUIRED',
+    },
+    success: false,
+  });
 
   vote = async (params: VoteParams, _ctx: BuiltinToolContext): Promise<BuiltinToolResult> => {
     // TODO: Implement voting mechanism

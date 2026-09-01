@@ -226,7 +226,15 @@ export interface AgentGroupRunPlanNodeSnapshot extends AgentGroupRunPlanNodeInpu
   sortOrder: number;
 }
 
+export interface AgentGroupRunDebateSnapshot {
+  judgeAgentId: string;
+  participantAgentIds: string[];
+  rounds: number;
+  termination: 'fixed_rounds';
+}
+
 export interface AgentGroupRunPlanSnapshot {
+  debate?: AgentGroupRunDebateSnapshot;
   nodes: AgentGroupRunPlanNodeSnapshot[];
   protocol: AgentGroupRunProtocol;
   supervisorAgentId: string;

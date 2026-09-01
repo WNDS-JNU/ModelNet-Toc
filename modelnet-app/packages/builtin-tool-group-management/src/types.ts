@@ -1,4 +1,3 @@
-
 /**
  * API names for Group Management tool
  *
@@ -27,6 +26,8 @@ export const GroupManagementApiName = {
   summarize: 'summarize',
 
   // ==================== Flow Control ====================
+  /** Define a fixed-round, durable multi-agent Debate */
+  createDebate: 'createDebate',
   /** Define a multi-agent collaboration workflow */
   createWorkflow: 'createWorkflow',
   /** Let multiple agents vote on a decision */
@@ -123,15 +124,61 @@ export interface SummarizeParams {
 
 // ==================== Flow Control Params ====================
 
+export interface DebateParticipant {
+  agentId: string;
+  perspective?: string;
+}
+
+export interface CreateDebateParams {
+  budget?: {
+    maxDurationMs?: number;
+    maxParallel?: number;
+    maxTotalCost?: number;
+  };
+  judgeAgentId: string;
+  judgeInstruction?: string;
+  judgeTimeoutMs?: number;
+  motion: string;
+  name: string;
+  participants: DebateParticipant[];
+  policy?: {
+    failureStrategy?: 'fail_fast' | 'wait_all';
+  };
+  roundBudget?: {
+    maxAttempts?: number;
+    timeoutMs?: number;
+  };
+  rounds: number;
+}
+
 export interface WorkflowStep {
   agentId: string;
-  instruction?: string;
-  waitForCompletion?: boolean;
+  barrierKey?: string;
+  dependencies?: string[];
+  executionPolicy?: Record<string, unknown>;
+  instruction: string;
+  key: string;
+  maxAttempts?: number;
+  role?: string;
+  timeoutMs?: number;
+  toolPolicy?: {
+    allowedToolIds?: string[];
+    deniedToolIds?: string[];
+    disableTools?: boolean;
+  };
 }
 
 export interface CreateWorkflowParams {
-  autoExecute?: boolean;
+  budget?: {
+    maxDurationMs?: number;
+    maxParallel?: number;
+    maxTotalCost?: number;
+  };
   name: string;
+  policy?: {
+    failureStrategy?: 'fail_fast' | 'wait_all';
+    requireHumanApprovalForWrites?: boolean;
+  };
   steps: WorkflowStep[];
 }
 
@@ -159,12 +206,7 @@ export interface VoteResult {
 // ==================== State Types for UI Rendering ====================
 
 export type ExecuteTaskStatus =
-  | 'processing'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
-  | 'timeout'
-  | 'interrupted';
+  'processing' | 'completed' | 'failed' | 'cancelled' | 'timeout' | 'interrupted';
 
 export interface ExecuteTaskState {
   cost?: { total: number };

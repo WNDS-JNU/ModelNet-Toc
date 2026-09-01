@@ -18,6 +18,7 @@
  */
 import type {
   BroadcastParams,
+  CreateDebateParams,
   CreateWorkflowParams,
   DelegateParams,
   ExecuteTaskParams,
@@ -29,6 +30,8 @@ import type {
 } from '@lobechat/builtin-tool-group-management';
 import { GroupManagementIdentifier } from '@lobechat/builtin-tool-group-management';
 import type { BuiltinServerRuntimeOutput } from '@lobechat/types';
+
+import type { FixedRoundDebatePlan } from '@/server/services/agentGroupCollaboration/debate';
 
 import type { ToolExecutionContext } from '../types';
 import type { ServerRuntimeRegistration } from './types';
@@ -236,10 +239,270 @@ class GroupManagementExecutionRuntime {
     success: true,
   });
 
-  createWorkflow = async (params: CreateWorkflowParams): Promise<BuiltinServerRuntimeOutput> => ({
-    content: `Workflow creation is not yet implemented ("${params.name}").`,
-    success: true,
-  });
+  createDebate = async (
+    params: CreateDebateParams,
+    ctx: ToolExecutionContext,
+  ): Promise<BuiltinServerRuntimeOutput> => {
+    if (
+      !ctx.serverDB ||
+      !ctx.userId ||
+      !ctx.groupId ||
+      !ctx.agentId ||
+      !ctx.operationId ||
+      !ctx.topicId ||
+      !ctx.toolCallId ||
+      !ctx.toolMessageId
+    ) {
+      return buildError(
+        'Durable Debate creation requires a confirmed server-side group tool context.',
+        'AGENT_GROUP_DEBATE_CONTEXT_REQUIRED',
+      );
+    }
+
+    const name = params.name?.trim();
+    const motion = params.motion?.trim();
+    const participants = Array.isArray(params.participants) ? params.participants : [];
+    const budget = params.budget;
+    const invalidBudget =
+      (budget?.maxDurationMs !== undefined &&
+        (!Number.isSafeInteger(budget.maxDurationMs) || budget.maxDurationMs <= 0)) ||
+      (budget?.maxParallel !== undefined &&
+        (!Number.isSafeInteger(budget.maxParallel) || budget.maxParallel <= 0)) ||
+      (budget?.maxTotalCost !== undefined &&
+        (!Number.isFinite(budget.maxTotalCost) || budget.maxTotalCost < 0));
+    const failureStrategy = params.policy?.failureStrategy;
+    if (
+      !name ||
+      !motion ||
+      participants.length < 2 ||
+      participants.length > 8 ||
+      !Number.isInteger(params.rounds) ||
+      params.rounds < 1 ||
+      params.rounds > 5 ||
+      invalidBudget ||
+      (failureStrategy !== undefined &&
+        failureStrategy !== 'fail_fast' &&
+        failureStrategy !== 'wait_all')
+    ) {
+      return buildError(
+        'Debate participants, rounds, budget, or policy are invalid.',
+        'INVALID_ARGUMENTS',
+      );
+    }
+
+    let debatePlan: FixedRoundDebatePlan;
+    try {
+      const { buildFixedRoundDebatePlan } =
+        await import('@/server/services/agentGroupCollaboration/debate');
+      debatePlan = buildFixedRoundDebatePlan({
+        judgeAgentId: params.judgeAgentId ?? '',
+        judgeInstruction: params.judgeInstruction,
+        judgeTimeoutMs: params.judgeTimeoutMs,
+        motion,
+        participants,
+        roundMaxAttempts: params.roundBudget?.maxAttempts,
+        roundTimeoutMs: params.roundBudget?.timeoutMs,
+        rounds: params.rounds,
+      });
+    } catch {
+      return buildError(
+        'Debate requires unique participants, a distinct Judge, and valid per-round budgets.',
+        'INVALID_ARGUMENTS',
+      );
+    }
+
+    const { AgentGroupCollaborationService } =
+      await import('@/server/services/agentGroupCollaboration');
+    const { AgentGroupPipelineDispatcher } =
+      await import('@/server/services/agentGroupCollaboration/pipelineDispatcher');
+    const service = new AgentGroupCollaborationService(ctx.serverDB, ctx.userId, ctx.workspaceId);
+    const snapshot = await service.createRun({
+      budgetSnapshot: {
+        ...params.budget,
+        maxParallel: params.budget?.maxParallel ?? participants.length,
+      },
+      chatGroupId: ctx.groupId,
+      debate: debatePlan.debate,
+      groupToolMessageId: ctx.toolMessageId,
+      idempotencyKey: `create-debate:${ctx.operationId}:${ctx.toolCallId}`,
+      nodes: debatePlan.nodes,
+      policySnapshot: params.policy,
+      protocol: 'debate',
+      supervisorAgentId: ctx.agentId,
+      supervisorOperationId: ctx.operationId,
+      threadId: ctx.threadId,
+      topicId: ctx.topicId,
+    });
+
+    let dispatch:
+      | {
+          claimed: number;
+          failed: number;
+          fenced: number;
+          released: number;
+          started: number;
+        }
+      | undefined;
+    let dispatchError: string | undefined;
+    try {
+      dispatch = await new AgentGroupPipelineDispatcher(ctx.serverDB).dispatchRun({
+        id: snapshot.run.id,
+        userId: ctx.userId,
+        workspaceId: ctx.workspaceId ?? null,
+      });
+    } catch (error) {
+      dispatchError = error instanceof Error ? error.message : String(error);
+    }
+
+    const latest = (await service.getRun(snapshot.run.id)) ?? snapshot;
+    const state = {
+      dispatch,
+      dispatchError,
+      judgeAgentId: debatePlan.debate.judgeAgentId,
+      name,
+      nodeCount: latest.nodes.length,
+      participantCount: debatePlan.debate.participantAgentIds.length,
+      protocol: 'debate',
+      rounds: debatePlan.debate.rounds,
+      runId: latest.run.id,
+      status: latest.run.status,
+      type: 'createDebate',
+    };
+    if (latest.run.status === 'failed' || latest.run.status === 'cancelled') {
+      const content = `Debate "${name}" ended with status ${latest.run.status} before a node could remain active.`;
+      return {
+        content,
+        error: { code: 'AGENT_GROUP_DEBATE_START_FAILED', message: content },
+        state,
+        success: false,
+      };
+    }
+    if (latest.run.status === 'completed') {
+      return { content: `Debate "${name}" is already completed.`, state, success: true };
+    }
+
+    return { content: '', deferred: true, state, success: true };
+  };
+
+  createWorkflow = async (
+    params: CreateWorkflowParams,
+    ctx: ToolExecutionContext,
+  ): Promise<BuiltinServerRuntimeOutput> => {
+    if (
+      !ctx.serverDB ||
+      !ctx.userId ||
+      !ctx.groupId ||
+      !ctx.agentId ||
+      !ctx.operationId ||
+      !ctx.topicId ||
+      !ctx.toolCallId ||
+      !ctx.toolMessageId
+    ) {
+      return buildError(
+        'Durable workflow creation requires a confirmed server-side group tool context.',
+        'AGENT_GROUP_WORKFLOW_CONTEXT_REQUIRED',
+      );
+    }
+
+    const name = params.name?.trim();
+    if (!name || !Array.isArray(params.steps) || params.steps.length === 0) {
+      return buildError('Workflow name and at least one step are required.', 'INVALID_ARGUMENTS');
+    }
+    const budget = params.budget;
+    const invalidBudget =
+      (budget?.maxDurationMs !== undefined &&
+        (!Number.isSafeInteger(budget.maxDurationMs) || budget.maxDurationMs <= 0)) ||
+      (budget?.maxParallel !== undefined &&
+        (!Number.isSafeInteger(budget.maxParallel) || budget.maxParallel <= 0)) ||
+      (budget?.maxTotalCost !== undefined &&
+        (!Number.isFinite(budget.maxTotalCost) || budget.maxTotalCost < 0));
+    const failureStrategy = params.policy?.failureStrategy;
+    if (
+      params.steps.length > 64 ||
+      invalidBudget ||
+      (failureStrategy !== undefined &&
+        failureStrategy !== 'fail_fast' &&
+        failureStrategy !== 'wait_all')
+    ) {
+      return buildError('Workflow budget or policy is invalid.', 'INVALID_ARGUMENTS');
+    }
+
+    const { AgentGroupCollaborationService } =
+      await import('@/server/services/agentGroupCollaboration');
+    const { AgentGroupPipelineDispatcher } =
+      await import('@/server/services/agentGroupCollaboration/pipelineDispatcher');
+    const service = new AgentGroupCollaborationService(ctx.serverDB, ctx.userId, ctx.workspaceId);
+    const snapshot = await service.createRun({
+      budgetSnapshot: params.budget,
+      chatGroupId: ctx.groupId,
+      groupToolMessageId: ctx.toolMessageId,
+      idempotencyKey: `create-workflow:${ctx.operationId}:${ctx.toolCallId}`,
+      nodes: params.steps,
+      policySnapshot: params.policy,
+      protocol: 'pipeline',
+      supervisorAgentId: ctx.agentId,
+      supervisorOperationId: ctx.operationId,
+      threadId: ctx.threadId,
+      topicId: ctx.topicId,
+    });
+
+    let dispatch:
+      | {
+          claimed: number;
+          failed: number;
+          fenced: number;
+          released: number;
+          started: number;
+        }
+      | undefined;
+    let dispatchError: string | undefined;
+    try {
+      dispatch = await new AgentGroupPipelineDispatcher(ctx.serverDB).dispatchRun({
+        id: snapshot.run.id,
+        userId: ctx.userId,
+        workspaceId: ctx.workspaceId ?? null,
+      });
+    } catch (error) {
+      // The Run and approval identity are already durable. Park the supervisor
+      // so the recovery worker can retry the exact same fenced dispatch.
+      dispatchError = error instanceof Error ? error.message : String(error);
+    }
+
+    const latest = (await service.getRun(snapshot.run.id)) ?? snapshot;
+    const state = {
+      dispatch,
+      dispatchError,
+      name,
+      nodeCount: latest.nodes.length,
+      protocol: 'pipeline',
+      runId: latest.run.id,
+      status: latest.run.status,
+      type: 'createWorkflow',
+    };
+    if (latest.run.status === 'failed' || latest.run.status === 'cancelled') {
+      const content = `Workflow "${name}" ended with status ${latest.run.status} before a node could remain active.`;
+      return {
+        content,
+        error: { code: 'AGENT_GROUP_WORKFLOW_START_FAILED', message: content },
+        state,
+        success: false,
+      };
+    }
+    if (latest.run.status === 'completed') {
+      return {
+        content: `Workflow "${name}" is already completed.`,
+        state,
+        success: true,
+      };
+    }
+
+    return {
+      content: '',
+      deferred: true,
+      state,
+      success: true,
+    };
+  };
 
   vote = async (params: VoteParams): Promise<BuiltinServerRuntimeOutput> => ({
     content: `Voting is not yet implemented (question: "${params.question}").`,

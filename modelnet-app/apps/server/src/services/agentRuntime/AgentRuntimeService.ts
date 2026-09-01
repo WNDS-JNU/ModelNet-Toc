@@ -3318,7 +3318,8 @@ export class AgentRuntimeService {
 
     let collaborationService: AgentGroupCollaborationService | undefined;
     let attemptOperationId: string | undefined;
-    let pipelineRunStatus: 'cancelled' | 'completed' | 'failed' | undefined;
+    let dependencyRunTerminal:
+      { protocol: 'debate' | 'pipeline'; status: 'cancelled' | 'completed' | 'failed' } | undefined;
     if (collaboration) {
       collaborationService = new AgentGroupCollaborationService(
         this.serverDB,
@@ -3485,10 +3486,14 @@ export class AgentRuntimeService {
       }
       const collaborationSnapshot = await collaborationService.getRun(collaboration.runId);
       if (
-        collaborationSnapshot?.run.protocol === 'pipeline' &&
+        (collaborationSnapshot?.run.protocol === 'pipeline' ||
+          collaborationSnapshot?.run.protocol === 'debate') &&
         ['cancelled', 'completed', 'failed'].includes(collaborationSnapshot.run.status)
       ) {
-        pipelineRunStatus = collaborationSnapshot.run.status as typeof pipelineRunStatus;
+        dependencyRunTerminal = {
+          protocol: collaborationSnapshot.run.protocol,
+          status: collaborationSnapshot.run.status as 'cancelled' | 'completed' | 'failed',
+        };
       }
     }
     const agentLabel = (finalState?.metadata?.agentId as string | undefined) ?? 'member';
@@ -3526,24 +3531,25 @@ export class AgentRuntimeService {
       );
     }
 
-    // Pipeline nodes share one durable group-tool barrier but may finish with
+    // Dependency-driven nodes share one durable group-tool barrier but may finish with
     // descendants blocked after a required dependency fails. In that shape K
     // can never equal the total plan size, so the terminal Run projection is
     // the authoritative barrier instead of counting only launched anchors.
-    if (collaboration && pipelineRunStatus) {
-      const pipelineSucceeded = pipelineRunStatus === 'completed';
+    if (collaboration && dependencyRunTerminal) {
+      const { protocol, status } = dependencyRunTerminal;
+      const succeeded = status === 'completed';
       const groupBackfill = await this.messageModel.updateToolMessage(groupToolMessageId, {
-        content: pipelineSucceeded
-          ? 'Agent pipeline completed.'
-          : `Agent pipeline ended with status ${pipelineRunStatus}.`,
+        content: succeeded
+          ? `Agent ${protocol} completed.`
+          : `Agent ${protocol} ended with status ${status}.`,
         pluginState: {
           expectedMembers,
-          protocol: 'pipeline',
-          status: pipelineSucceeded ? 'completed' : 'error',
+          protocol,
+          status: succeeded ? 'completed' : 'error',
         },
       });
       if (!groupBackfill.success) {
-        throw new Error(`Pipeline bridge: failed to backfill group tool ${groupToolMessageId}`);
+        throw new Error(`${protocol} bridge: failed to backfill group tool ${groupToolMessageId}`);
       }
       return this.tryResumeParentFromAsyncTool(
         { parentOperationId },

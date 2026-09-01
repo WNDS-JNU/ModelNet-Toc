@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import type {
+  AgentGroupRunDebateSnapshot,
   AgentGroupRunPlanNodeInput,
   AgentGroupRunPlanNodeSnapshot,
   AgentGroupRunPlanSnapshot,
@@ -31,6 +32,7 @@ export class AgentGroupPlanValidationError extends Error {
 
 export interface CompileAgentGroupRunPlanInput {
   allowedAgentIds: Iterable<string>;
+  debate?: AgentGroupRunDebateSnapshot;
   nodes: AgentGroupRunPlanNodeInput[];
   protocol: AgentGroupRunProtocol;
   supervisorAgentId: string;
@@ -63,6 +65,7 @@ const assertAcyclic = (nodes: AgentGroupRunPlanNodeSnapshot[]) => {
 const assertProtocolShape = (
   protocol: AgentGroupRunProtocol,
   nodes: AgentGroupRunPlanNodeSnapshot[],
+  debate?: AgentGroupRunDebateSnapshot,
 ) => {
   if (protocol === 'single' && nodes.length !== 1) {
     fail('AGENT_GROUP_PLAN_INVALID_PROTOCOL_SHAPE', 'single requires exactly one node.');
@@ -79,18 +82,60 @@ const assertProtocolShape = (
   }
 
   if (protocol === 'debate') {
-    const judgeCount = nodes.filter((node) => node.role === 'judge').length;
-    if (nodes.length < 3 || judgeCount !== 1) {
+    const participants = debate?.participantAgentIds ?? [];
+    const rounds = debate?.rounds ?? 0;
+    const judge = nodes.find((node) => node.role === 'judge');
+    const expectedFinalRound = participants.map((_, index) => `debate-r${rounds}-p${index + 1}`);
+    const shapeMatches =
+      debate?.termination === 'fixed_rounds' &&
+      Number.isInteger(rounds) &&
+      rounds >= 1 &&
+      rounds <= 5 &&
+      participants.length >= 2 &&
+      participants.length <= 8 &&
+      new Set(participants).size === participants.length &&
+      Boolean(debate.judgeAgentId) &&
+      !participants.includes(debate.judgeAgentId) &&
+      nodes.length === participants.length * rounds + 1 &&
+      judge?.key === 'debate-judge' &&
+      judge.agentId === debate.judgeAgentId &&
+      JSON.stringify(judge.dependencies) === JSON.stringify(expectedFinalRound) &&
+      nodes.filter((node) => node.role === 'judge').length === 1;
+    if (!shapeMatches) {
       fail(
         'AGENT_GROUP_PLAN_INVALID_DEBATE',
-        'debate requires at least two participants and exactly one judge node.',
+        'debate requires 2-8 fixed participants, 1-5 rounds, and one distinct final judge.',
       );
     }
+
+    for (let round = 1; round <= rounds; round += 1) {
+      const previousRound =
+        round === 1 ? [] : participants.map((_, index) => `debate-r${round - 1}-p${index + 1}`);
+      participants.forEach((agentId, index) => {
+        const node = nodes.find((candidate) => candidate.key === `debate-r${round}-p${index + 1}`);
+        if (
+          !node ||
+          node.agentId !== agentId ||
+          node.role !== 'debater' ||
+          node.barrierKey !== `debate-round-${round}` ||
+          node.toolPolicy?.disableTools !== true ||
+          JSON.stringify(node.dependencies) !== JSON.stringify(previousRound)
+        ) {
+          fail('AGENT_GROUP_PLAN_INVALID_DEBATE', `Invalid Debate round ${round} topology.`);
+        }
+      });
+    }
+    if (judge?.toolPolicy?.disableTools !== true) {
+      fail('AGENT_GROUP_PLAN_INVALID_DEBATE', 'The Debate judge must run with tools disabled.');
+    }
+  } else if (debate) {
+    fail('AGENT_GROUP_PLAN_INVALID_DEBATE', 'Debate metadata is only valid for debate runs.');
   }
 };
 
 export const compileAgentGroupRunPlan = ({
   allowedAgentIds,
+  debate,
   nodes,
   protocol,
   supervisorAgentId,
@@ -177,9 +222,10 @@ export const compileAgentGroupRunPlan = ({
   }
 
   assertAcyclic(normalizedNodes);
-  assertProtocolShape(protocol, normalizedNodes);
+  assertProtocolShape(protocol, normalizedNodes, debate);
 
   const planSnapshot: AgentGroupRunPlanSnapshot = {
+    ...(debate ? { debate } : {}),
     nodes: normalizedNodes,
     protocol,
     supervisorAgentId,

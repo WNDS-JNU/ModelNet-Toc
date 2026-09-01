@@ -1,5 +1,6 @@
 import type {
   AgentGroupRunBudgetSnapshot,
+  AgentGroupRunDebateSnapshot,
   AgentGroupRunPlanNodeInput,
   AgentGroupRunPolicySnapshot,
   AgentGroupRunProtocol,
@@ -25,6 +26,8 @@ import { compileAgentGroupRunPlan } from './plan';
 export interface CreateAgentGroupCollaborationRunInput {
   budgetSnapshot?: AgentGroupRunBudgetSnapshot;
   chatGroupId: string;
+  debate?: AgentGroupRunDebateSnapshot;
+  groupToolMessageId?: string;
   idempotencyKey: string;
   nodes: AgentGroupRunPlanNodeInput[];
   policySnapshot?: AgentGroupRunPolicySnapshot;
@@ -66,6 +69,7 @@ export class AgentGroupCollaborationService {
 
     const { planHash, planSnapshot } = compileAgentGroupRunPlan({
       allowedAgentIds: roster.map((member) => member.agentId),
+      debate: input.debate,
       nodes: input.nodes,
       protocol: input.protocol,
       supervisorAgentId: input.supervisorAgentId,
@@ -74,6 +78,7 @@ export class AgentGroupCollaborationService {
     return this.repository.createRun({
       budgetSnapshot: input.budgetSnapshot,
       chatGroupId: input.chatGroupId,
+      groupToolMessageId: input.groupToolMessageId,
       idempotencyKey: input.idempotencyKey,
       planHash,
       planSnapshot,

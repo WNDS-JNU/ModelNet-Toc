@@ -1,4 +1,42 @@
 export default {
+  'agentGroupManagement.createDebate.intervention.addParticipant': 'Add participant',
+  'agentGroupManagement.createDebate.intervention.agentIdPlaceholder': 'Agent ID',
+  'agentGroupManagement.createDebate.intervention.judgeAgentPlaceholder': 'Judge Agent ID',
+  'agentGroupManagement.createDebate.intervention.judgeInstructionPlaceholder':
+    'Optional judging criteria and verdict requirements...',
+  'agentGroupManagement.createDebate.intervention.judgeTimeoutPlaceholder': 'Judge timeout',
+  'agentGroupManagement.createDebate.intervention.maxAttemptsPlaceholder': 'Attempts per turn',
+  'agentGroupManagement.createDebate.intervention.maxParallelPlaceholder': 'Max parallel',
+  'agentGroupManagement.createDebate.intervention.motionPlaceholder':
+    'Exact proposition or question to debate...',
+  'agentGroupManagement.createDebate.intervention.namePlaceholder': 'Debate name',
+  'agentGroupManagement.createDebate.intervention.perspectivePlaceholder':
+    'Assigned position or perspective (optional)...',
+  'agentGroupManagement.createDebate.intervention.removeParticipant': 'Remove participant',
+  'agentGroupManagement.createDebate.intervention.reviewHint':
+    'Review the fixed participants, rounds, budgets, and final Judge. No Run is created until you approve it.',
+  'agentGroupManagement.createDebate.intervention.roundTimeoutPlaceholder': 'Turn timeout',
+  'agentGroupManagement.createDebate.intervention.roundsPlaceholder': 'Rounds',
+  'agentGroupManagement.createDebate.intervention.timeoutUnit': 'minutes',
+  'agentGroupManagement.createDebate.intervention.unknownAgent': 'Unknown Agent',
+  'agentGroupManagement.createDebate.intervention.validationError':
+    'A Debate needs a name, motion, 2-8 unique participants, 1-5 rounds, and one distinct Judge.',
+  'agentGroupManagement.createWorkflow.intervention.dependenciesPlaceholder':
+    'Dependencies (comma-separated node keys; leave empty for a root node)',
+  'agentGroupManagement.createWorkflow.intervention.instructionPlaceholder':
+    'Describe this node task and its expected deliverable...',
+  'agentGroupManagement.createWorkflow.intervention.keyPlaceholder': 'Stable node key',
+  'agentGroupManagement.createWorkflow.intervention.maxAttempts': 'Maximum attempts',
+  'agentGroupManagement.createWorkflow.intervention.maxParallelPlaceholder': 'Max parallel',
+  'agentGroupManagement.createWorkflow.intervention.namePlaceholder': 'Workflow name',
+  'agentGroupManagement.createWorkflow.intervention.reviewHint':
+    'Review this immutable Pipeline draft. No Run is created until you approve it.',
+  'agentGroupManagement.createWorkflow.intervention.rolePlaceholder': 'Role (optional)',
+  'agentGroupManagement.createWorkflow.intervention.timeout': 'Node timeout',
+  'agentGroupManagement.createWorkflow.intervention.timeoutUnit': 'minutes',
+  'agentGroupManagement.createWorkflow.intervention.unknownAgent': 'Unknown Agent',
+  'agentGroupManagement.createWorkflow.intervention.validationError':
+    'A workflow needs a name and at least one step with an agent, key, and instruction.',
   'agentGroupManagement.executeTask.agent': 'Execute Agent',
   'agentGroupManagement.executeTask.cancelled': 'Cancelled',
   'agentGroupManagement.executeTask.completed': 'Task Completed',
