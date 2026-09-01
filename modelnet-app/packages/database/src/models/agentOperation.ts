@@ -62,6 +62,22 @@ export interface AgentInterventionPreparationMarker {
   stepIndex: number;
 }
 
+export interface AgentQueuePreparationMarker {
+  attemptNo: number;
+  deduplicationId: string;
+  runId: string;
+  runNodeId: string;
+  source: 'agent_group';
+  state: 'ready';
+  stepIndex: number;
+}
+
+export interface AgentQueueDispatchMarker extends Omit<AgentQueuePreparationMarker, 'state'> {
+  messageId: string;
+  scheduledAt: string;
+  state: 'scheduled';
+}
+
 /** Terminal usage summed across every child operation of one parent. All-zero when it has none. */
 export interface ChildUsageRollup {
   llmCalls: number;
@@ -269,6 +285,56 @@ export class AgentOperationModel {
           eq(agentOperations.id, operationId),
           this.ownership(),
           sql`${agentOperations.metadata}->'agentInterventionContinuation'->>'resolutionRequestId' = ${marker.resolutionRequestId}`,
+        ),
+      )
+      .returning({ id: agentOperations.id });
+    return Boolean(row);
+  }
+
+  /** Persist a generic first-step recovery boundary for a durable group Attempt. */
+  async recordAgentQueuePreparation(
+    operationId: string,
+    marker: AgentQueuePreparationMarker,
+  ): Promise<boolean> {
+    const [row] = await this.db
+      .update(agentOperations)
+      .set({
+        metadata: sql`coalesce(${agentOperations.metadata}, '{}'::jsonb) || ${JSON.stringify({ agentQueuePreparation: marker })}::jsonb`,
+      })
+      .where(
+        and(
+          eq(agentOperations.id, operationId),
+          this.ownership(),
+          or(
+            sql`${agentOperations.metadata}->'agentQueuePreparation' IS NULL`,
+            sql`${agentOperations.metadata}->'agentQueuePreparation' = ${JSON.stringify(marker)}::jsonb`,
+          ),
+        ),
+      )
+      .returning({ id: agentOperations.id });
+    return Boolean(row);
+  }
+
+  /** Persist the provider ACK only when it matches the durable preparation. */
+  async recordAgentQueueDispatch(
+    operationId: string,
+    marker: AgentQueueDispatchMarker,
+  ): Promise<boolean> {
+    const [row] = await this.db
+      .update(agentOperations)
+      .set({
+        metadata: sql`coalesce(${agentOperations.metadata}, '{}'::jsonb) || ${JSON.stringify({ agentQueueDispatch: marker })}::jsonb`,
+      })
+      .where(
+        and(
+          eq(agentOperations.id, operationId),
+          this.ownership(),
+          sql`${agentOperations.metadata}->'agentQueuePreparation'->>'source' = ${marker.source}`,
+          sql`${agentOperations.metadata}->'agentQueuePreparation'->>'deduplicationId' = ${marker.deduplicationId}`,
+          sql`${agentOperations.metadata}->'agentQueuePreparation'->>'runId' = ${marker.runId}`,
+          sql`${agentOperations.metadata}->'agentQueuePreparation'->>'runNodeId' = ${marker.runNodeId}`,
+          sql`${agentOperations.metadata}->'agentQueuePreparation'->>'attemptNo' = ${String(marker.attemptNo)}`,
+          sql`${agentOperations.metadata}->'agentQueuePreparation'->>'stepIndex' = ${String(marker.stepIndex)}`,
         ),
       )
       .returning({ id: agentOperations.id });

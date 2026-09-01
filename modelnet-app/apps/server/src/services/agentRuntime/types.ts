@@ -17,6 +17,7 @@ import type {
 } from '@lobechat/types';
 import type { SearchDecision } from 'model-bank';
 
+import type { AgentGroupQueuePreparation } from '@/business/server/agent-run/agentGroupQueueIdentity';
 import type { ExecutionPlan } from '@/helpers/executionTarget';
 import type {
   EvalContext,
@@ -519,6 +520,12 @@ export interface OperationCreationParams {
    * sub-tree back to its root.
    */
   parentOperationId?: string;
+  /**
+   * Server-authored first-delivery identity for a durable normal-runtime group
+   * Attempt. Persisted before queue publication so recovery can safely repeat
+   * the same provider-deduplicated schedule after a lost ACK.
+   */
+  queuePreparation?: AgentGroupQueuePreparation;
   queueRetries?: number;
   queueRetryDelay?: string;
   /** Search route resolved once before the operation starts. */

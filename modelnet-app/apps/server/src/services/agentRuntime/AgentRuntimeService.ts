@@ -47,11 +47,21 @@ import debug from 'debug';
 import urlJoin from 'url-join';
 
 import {
+  type AgentGroupQueuePreparation,
+  deriveAgentGroupQueueDeduplicationId,
+  matchesAgentGroupQueuePreparation,
+} from '@/business/server/agent-run/agentGroupQueueIdentity';
+import {
   deriveAgentInterventionQueueDeduplicationId,
   matchesAgentInterventionContinuationProvenance,
 } from '@/business/server/agent-run/agentInterventionIdentity';
-import { AgentOperationModel } from '@/database/models/agentOperation';
+import {
+  AgentOperationModel,
+  type AgentQueueDispatchMarker,
+  type AgentQueuePreparationMarker,
+} from '@/database/models/agentOperation';
 import { MessageModel } from '@/database/models/message';
+import { WorkModel } from '@/database/models/work';
 import { type LobeChatDatabase } from '@/database/type';
 import { appEnv } from '@/envs/app';
 import { type AgentRuntimeCoordinatorOptions } from '@/server/modules/AgentRuntime';
@@ -745,6 +755,120 @@ export class AgentRuntimeService {
     return 'scheduled';
   }
 
+  /**
+   * Recover a normal-runtime group Attempt whose durable state exists but whose
+   * first queue provider ACK was never persisted.
+   */
+  async ensurePreparedQueueStarted(
+    operationId: string,
+  ): Promise<'already_started' | 'missing' | 'not_prepared' | 'scheduled'> {
+    const state = await this.coordinator.loadAgentState(operationId);
+    if (!state) return 'missing';
+
+    const preparation = state.metadata?.agentQueuePreparation as
+      (Partial<AgentGroupQueuePreparation> & { state?: unknown }) | undefined;
+    if (!preparation) return 'not_prepared';
+    if (
+      preparation.source !== 'agent_group' ||
+      preparation.state !== 'ready' ||
+      typeof preparation.runId !== 'string' ||
+      preparation.runId.length === 0 ||
+      typeof preparation.runNodeId !== 'string' ||
+      preparation.runNodeId.length === 0 ||
+      typeof preparation.attemptNo !== 'number' ||
+      !Number.isSafeInteger(preparation.attemptNo) ||
+      preparation.attemptNo < 1 ||
+      typeof preparation.stepIndex !== 'number' ||
+      !Number.isSafeInteger(preparation.stepIndex) ||
+      preparation.stepIndex < 0 ||
+      typeof preparation.deduplicationId !== 'string'
+    ) {
+      throw new Error(`Agent queue preparation is invalid: ${operationId}`);
+    }
+    const expected: AgentGroupQueuePreparation = {
+      attemptNo: preparation.attemptNo,
+      deduplicationId: preparation.deduplicationId,
+      runId: preparation.runId,
+      runNodeId: preparation.runNodeId,
+      source: preparation.source,
+      stepIndex: preparation.stepIndex,
+    };
+    if (expected.deduplicationId !== deriveAgentGroupQueueDeduplicationId(expected)) {
+      throw new Error(`Agent queue preparation dedupe conflict: ${operationId}`);
+    }
+
+    const operation = await this.agentOperationModel.findById(operationId);
+    if (!operation) {
+      throw new Error(`Agent queue durable operation missing: ${operationId}`);
+    }
+    const durablePreparation = operation.metadata?.agentQueuePreparation;
+    if (durablePreparation && !matchesAgentGroupQueuePreparation(durablePreparation, expected)) {
+      throw new Error(`Agent queue durable preparation conflict: ${operationId}`);
+    }
+    if (!durablePreparation) {
+      const persisted = await this.agentOperationModel.recordAgentQueuePreparation(operationId, {
+        ...expected,
+        state: 'ready',
+      });
+      if (!persisted) {
+        throw new Error(`Failed to backfill agent queue preparation: ${operationId}`);
+      }
+    }
+
+    const dispatch = operation.metadata?.agentQueueDispatch as
+      Partial<AgentQueueDispatchMarker> | undefined;
+    if (dispatch) {
+      if (
+        dispatch.state !== 'scheduled' ||
+        dispatch.source !== expected.source ||
+        dispatch.runId !== expected.runId ||
+        dispatch.runNodeId !== expected.runNodeId ||
+        dispatch.attemptNo !== expected.attemptNo ||
+        dispatch.stepIndex !== expected.stepIndex ||
+        dispatch.deduplicationId !== expected.deduplicationId ||
+        typeof dispatch.messageId !== 'string' ||
+        dispatch.messageId.length === 0
+      ) {
+        throw new Error(`Agent queue dispatch marker conflict: ${operationId}`);
+      }
+      return 'already_started';
+    }
+    if (!this.queueService) throw new Error(`Cannot schedule prepared operation ${operationId}`);
+
+    const messageId = await this.queueService.scheduleMessage({
+      context: (state as AgentState & { initialContext: AgentRuntimeContext }).initialContext,
+      deduplicationId: expected.deduplicationId,
+      delay: 0,
+      endpoint: `${this.baseURL}/run`,
+      operationId,
+      priority: 'high',
+      retryDelay:
+        typeof state.metadata?.queueRetryDelay === 'string'
+          ? state.metadata.queueRetryDelay
+          : undefined,
+      retries:
+        typeof state.metadata?.queueRetries === 'number' ? state.metadata.queueRetries : undefined,
+      stepIndex: expected.stepIndex,
+    });
+    await this.persistAgentQueueDispatchAck(operationId, expected, messageId);
+    return 'scheduled';
+  }
+
+  private async persistAgentQueueDispatchAck(
+    operationId: string,
+    preparation: AgentGroupQueuePreparation,
+    messageId: string,
+  ): Promise<void> {
+    const marker: AgentQueueDispatchMarker = {
+      ...preparation,
+      messageId,
+      scheduledAt: new Date().toISOString(),
+      state: 'scheduled',
+    };
+    const persisted = await this.agentOperationModel.recordAgentQueueDispatch(operationId, marker);
+    if (!persisted) throw new Error(`Failed to persist agent queue ACK: ${operationId}`);
+  }
+
   private async persistInterventionDispatchAck(params: {
     deduplicationId: string;
     messageId: string;
@@ -788,6 +912,7 @@ export class AgentRuntimeService {
       interventionResolution,
       onInterventionPrepared,
       onOperationPrepared,
+      queuePreparation,
       appContext,
       toolSet,
       hooks,
@@ -864,10 +989,27 @@ export class AgentRuntimeService {
       topicId: appContext?.topicId ?? null,
       trigger: appContext?.trigger,
     });
-    if (interventionResolution && !operationStartPersisted) {
+    if ((interventionResolution || queuePreparation) && !operationStartPersisted) {
       throw new Error(
-        `Failed to durably persist intervention continuation ${operationId} before dispatch`,
+        `Failed to durably persist operation ${operationId} before recoverable dispatch`,
       );
+    }
+
+    if (queuePreparation) {
+      if (interventionResolution) {
+        throw new Error(`Operation ${operationId} cannot use two queue recovery identities`);
+      }
+      if (
+        !autoStart ||
+        queuePreparation.source !== 'agent_group' ||
+        queuePreparation.stepIndex !== initialStepCount ||
+        queuePreparation.deduplicationId !==
+          deriveAgentGroupQueueDeduplicationId(queuePreparation) ||
+        !Number.isSafeInteger(queuePreparation.attemptNo) ||
+        queuePreparation.attemptNo < 1
+      ) {
+        throw new Error(`Invalid agent queue preparation for operation ${operationId}`);
+      }
     }
 
     if (interventionResolution) {
@@ -1048,6 +1190,28 @@ export class AgentRuntimeService {
         onInterventionPrepared?.();
       }
 
+      if (queuePreparation) {
+        const preparedState = await this.coordinator.loadAgentState(operationId);
+        if (!preparedState) {
+          throw new Error(`Agent queue state disappeared before preparation: ${operationId}`);
+        }
+        const marker: AgentQueuePreparationMarker = {
+          ...queuePreparation,
+          state: 'ready',
+        };
+        await this.coordinator.saveAgentState(operationId, {
+          ...preparedState,
+          metadata: { ...preparedState.metadata, agentQueuePreparation: marker },
+        });
+        const preparationPersisted = await this.agentOperationModel.recordAgentQueuePreparation(
+          operationId,
+          marker,
+        );
+        if (!preparationPersisted) {
+          throw new Error(`Failed to persist agent queue preparation: ${operationId}`);
+        }
+      }
+
       // RetryGroupNode uses this exact boundary to create/re-open its durable
       // Attempt. The operation row, Redis state and serialized completion hook
       // already exist, while no worker can execute the first step yet.
@@ -1064,7 +1228,7 @@ export class AgentRuntimeService {
       if (autoStart && this.queueService) {
         const deduplicationId = interventionResolution
           ? deriveAgentInterventionQueueDeduplicationId(operationId, initialStepCount)
-          : undefined;
+          : queuePreparation?.deduplicationId;
         // Both local and queue modes use scheduleMessage
         // LocalQueueServiceImpl uses setTimeout + callback mechanism
         // QStashQueueServiceImpl schedules HTTP requests
@@ -1086,6 +1250,8 @@ export class AgentRuntimeService {
             operationId,
             resolutionRequestId: interventionResolution.resolutionRequestId,
           });
+        } else if (queuePreparation && deduplicationId) {
+          await this.persistAgentQueueDispatchAck(operationId, queuePreparation, messageId);
         }
         autoStarted = true;
         log('[%s] Scheduled first step (messageId: %s)', operationId, messageId);
@@ -3150,13 +3316,15 @@ export class AgentRuntimeService {
     const finalState =
       params.finalState ?? (await this.coordinator.loadAgentState(operationId)) ?? undefined;
 
+    let collaborationService: AgentGroupCollaborationService | undefined;
+    let attemptOperationId: string | undefined;
     if (collaboration) {
-      const collaborationService = new AgentGroupCollaborationService(
+      collaborationService = new AgentGroupCollaborationService(
         this.serverDB,
         this.userId,
         this.workspaceId,
       );
-      const attemptOperationId = await this.resolveGroupAttemptOperationId(
+      attemptOperationId = await this.resolveGroupAttemptOperationId(
         collaborationService,
         collaboration,
         operationId,
@@ -3179,44 +3347,6 @@ export class AgentRuntimeService {
           operationId,
           parentOperationId,
           attemptOperationId,
-        );
-        return false;
-      }
-
-      const attemptStatus =
-        reason === 'timeout'
-          ? 'timed_out'
-          : reason === 'interrupted'
-            ? 'cancelled'
-            : reason === 'error'
-              ? 'failed'
-              : 'completed';
-      const persistedAttempt = await collaborationService.completeAttempt({
-        ...collaboration,
-        completionReason: reason,
-        error: finalState?.error
-          ? {
-              message:
-                typeof finalState.error === 'object' && 'message' in finalState.error
-                  ? String(finalState.error.message)
-                  : String(finalState.error),
-            }
-          : undefined,
-        operationId: attemptOperationId,
-        status: attemptStatus,
-      });
-      const isLatestAttempt = await collaborationService.isLatestAttempt({
-        attemptNo: collaboration.attemptNo,
-        operationId: attemptOperationId,
-        runNodeId: collaboration.runNodeId,
-      });
-      if (!isLatestAttempt || (persistedAttempt && persistedAttempt.status !== attemptStatus)) {
-        log(
-          '[%s] group-member bridge ignored stale callback (attempt %d, persisted: %s, incoming: %s)',
-          operationId,
-          collaboration.attemptNo,
-          persistedAttempt?.status ?? 'missing',
-          attemptStatus,
         );
         return false;
       }
@@ -3247,7 +3377,7 @@ export class AgentRuntimeService {
     // Keeping the original row preserves the exact content/metadata pairing
     // that conversation-flow display grouping intentionally aggregates.
     let lastAssistant: unknown;
-    if (!failed && mode !== 'in_group' && finalState && !Array.isArray(finalState.messages)) {
+    if (!failed && finalState && !Array.isArray(finalState.messages)) {
       try {
         lastAssistant = await this.resolveLastAssistantMessageFromDB(finalState);
       } catch (error) {
@@ -3279,6 +3409,78 @@ export class AgentRuntimeService {
           threadId,
           error,
         );
+      }
+    }
+
+    if (collaboration && collaborationService && attemptOperationId) {
+      const rootOperationIds = Array.from(new Set([attemptOperationId, operationId])).sort();
+      const workEvents = await new WorkModel(
+        this.serverDB,
+        this.userId,
+        this.workspaceId,
+      ).listByRootOperations({
+        includeFileWorks: true,
+        limit: 100,
+        rootOperationIds,
+      });
+      const workVersionRefMap = new Map<
+        string,
+        { rootOperationId: string; workId: string; workVersionId: string }
+      >();
+      for (const rootOperationId of rootOperationIds) {
+        for (const item of workEvents[rootOperationId] ?? []) {
+          workVersionRefMap.set(item.version.id, {
+            rootOperationId: item.version.rootOperationId ?? rootOperationId,
+            workId: item.id,
+            workVersionId: item.version.id,
+          });
+        }
+      }
+      const workVersionRefs = [...workVersionRefMap.values()].sort(
+        (a, b) =>
+          a.rootOperationId.localeCompare(b.rootOperationId) ||
+          a.workId.localeCompare(b.workId) ||
+          a.workVersionId.localeCompare(b.workVersionId),
+      );
+      const normalizedSummary = lastAssistantContent?.trim();
+      const summary = failed ? undefined : normalizedSummary?.slice(0, 4000) || undefined;
+      const attemptStatus =
+        reason === 'timeout'
+          ? 'timed_out'
+          : reason === 'interrupted'
+            ? 'cancelled'
+            : reason === 'error'
+              ? 'failed'
+              : 'completed';
+      const persistedAttempt = await collaborationService.completeAttempt({
+        ...collaboration,
+        completionReason: reason,
+        error: finalState?.error
+          ? {
+              message:
+                typeof finalState.error === 'object' && 'message' in finalState.error
+                  ? String(finalState.error.message)
+                  : String(finalState.error),
+            }
+          : undefined,
+        operationId: attemptOperationId,
+        outputSnapshot: { summary, workVersionRefs },
+        status: attemptStatus,
+      });
+      const isLatestAttempt = await collaborationService.isLatestAttempt({
+        attemptNo: collaboration.attemptNo,
+        operationId: attemptOperationId,
+        runNodeId: collaboration.runNodeId,
+      });
+      if (!isLatestAttempt || (persistedAttempt && persistedAttempt.status !== attemptStatus)) {
+        log(
+          '[%s] group-member bridge ignored stale callback (attempt %d, persisted: %s, incoming: %s)',
+          operationId,
+          collaboration.attemptNo,
+          persistedAttempt?.status ?? 'missing',
+          attemptStatus,
+        );
+        return false;
       }
     }
     const agentLabel = (finalState?.metadata?.agentId as string | undefined) ?? 'member';

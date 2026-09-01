@@ -3,6 +3,7 @@ import { GeneralChatAgent, GraphAgent } from '@lobechat/agent-runtime';
 import type { AgentGraph } from '@lobechat/types';
 import { describe, expect, it, vi } from 'vitest';
 
+import { createAgentGroupQueuePreparation } from '@/business/server/agent-run/agentGroupQueueIdentity';
 import {
   type AgentInterventionContinuationProvenance,
   deriveAgentInterventionQueueDeduplicationId,
@@ -171,6 +172,87 @@ describe('AgentRuntimeService intervention continuation dispatch recovery', () =
     await expect(service.ensureInterventionContinuationStarted(operationId)).rejects.toThrow(
       /durable preparation conflict/,
     );
+    expect(scheduleMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('AgentRuntimeService group Attempt queue dispatch recovery', () => {
+  const operationId = 'op-group-queue-recovery';
+  const preparation = createAgentGroupQueuePreparation({
+    attemptNo: 1,
+    runId: 'run-1',
+    runNodeId: 'node-1',
+    stepIndex: 0,
+  });
+  const readyMarker = { ...preparation, state: 'ready' as const };
+
+  const createService = (scheduleMessage: ReturnType<typeof vi.fn>) =>
+    new AgentRuntimeService({} as any, 'user-1', {
+      queueService: { getImpl: () => ({}), scheduleMessage } as any,
+    });
+
+  it.each(['idle', 'running', 'done'] as const)(
+    're-publishes the same dedupe key and persists its ACK from %s state',
+    async (status) => {
+      const scheduleMessage = vi.fn().mockResolvedValue('queue-message');
+      const service = createService(scheduleMessage);
+      const coordinator = (service as any).coordinator;
+      coordinator.loadAgentState = vi.fn().mockResolvedValue({
+        initialContext: { phase: 'user_input' },
+        metadata: { agentQueuePreparation: readyMarker },
+        operationId,
+        status,
+      });
+      const operationModel = (service as any).agentOperationModel;
+      operationModel.findById = vi.fn().mockResolvedValue({
+        metadata: { agentQueuePreparation: readyMarker },
+      });
+      operationModel.recordAgentQueueDispatch = vi.fn().mockResolvedValue(true);
+
+      await expect(service.ensurePreparedQueueStarted(operationId)).resolves.toBe('scheduled');
+
+      expect(scheduleMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          deduplicationId: preparation.deduplicationId,
+          operationId,
+          stepIndex: 0,
+        }),
+      );
+      expect(operationModel.recordAgentQueueDispatch).toHaveBeenCalledWith(
+        operationId,
+        expect.objectContaining({
+          deduplicationId: preparation.deduplicationId,
+          messageId: 'queue-message',
+          state: 'scheduled',
+        }),
+      );
+    },
+  );
+
+  it('does not enqueue again after the exact ACK is durable', async () => {
+    const scheduleMessage = vi.fn();
+    const service = createService(scheduleMessage);
+    const coordinator = (service as any).coordinator;
+    coordinator.loadAgentState = vi.fn().mockResolvedValue({
+      initialContext: { phase: 'user_input' },
+      metadata: { agentQueuePreparation: readyMarker },
+      operationId,
+      status: 'running',
+    });
+    const operationModel = (service as any).agentOperationModel;
+    operationModel.findById = vi.fn().mockResolvedValue({
+      metadata: {
+        agentQueueDispatch: {
+          ...preparation,
+          messageId: 'queue-message',
+          scheduledAt: '2026-09-01T00:00:00.000Z',
+          state: 'scheduled',
+        },
+        agentQueuePreparation: readyMarker,
+      },
+    });
+
+    await expect(service.ensurePreparedQueueStarted(operationId)).resolves.toBe('already_started');
     expect(scheduleMessage).not.toHaveBeenCalled();
   });
 });

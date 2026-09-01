@@ -5,6 +5,7 @@ import {
   agentGroupRunStatuses,
 } from '@lobechat/const/agentGroupRun';
 import type {
+  AgentGroupRunAttemptOutputSnapshot,
   AgentGroupRunBudgetSnapshot,
   AgentGroupRunError,
   AgentGroupRunExecutionPolicySnapshot,
@@ -176,6 +177,7 @@ export const agentGroupRunAttempts = pgTable(
     status: text('status', { enum: agentGroupRunAttemptStatuses }).default('pending').notNull(),
     completionReason: text('completion_reason'),
     error: jsonb('error').$type<AgentGroupRunError>(),
+    outputSnapshot: jsonb('output_snapshot').$type<AgentGroupRunAttemptOutputSnapshot>(),
     startedAt: timestamptz('started_at'),
     completedAt: timestamptz('completed_at'),
     createdAt: createdAt(),

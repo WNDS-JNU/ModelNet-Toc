@@ -67,6 +67,7 @@ describe('AgentGroupRunRecoveryCoordinator', () => {
   let completeAttempt: ReturnType<typeof vi.fn>;
   let completeMember: ReturnType<typeof vi.fn>;
   let finalizeCancellation: ReturnType<typeof vi.fn>;
+  let ensurePreparedQueueStarted: ReturnType<typeof vi.fn>;
   let finalizeInterruptedOperation: ReturnType<typeof vi.fn>;
   let getRun: ReturnType<typeof vi.fn>;
   let beginCancellation: ReturnType<typeof vi.fn>;
@@ -78,11 +79,17 @@ describe('AgentGroupRunRecoveryCoordinator', () => {
     beginCancellation = vi.fn();
     completeAttempt = vi.fn();
     completeMember = vi.fn().mockResolvedValue(true);
+    ensurePreparedQueueStarted = vi.fn().mockResolvedValue('already_started');
     finalizeCancellation = vi.fn();
     finalizeInterruptedOperation = vi.fn().mockResolvedValue(true);
     getRun = vi.fn();
     interruptOperation = vi.fn().mockResolvedValue(true);
-    runtime = { completeMember, finalizeInterruptedOperation, interruptOperation };
+    runtime = {
+      completeMember,
+      ensurePreparedQueueStarted,
+      finalizeInterruptedOperation,
+      interruptOperation,
+    };
     service = {
       beginCancellation,
       completeAttempt,
@@ -103,7 +110,7 @@ describe('AgentGroupRunRecoveryCoordinator', () => {
 
     const result = await createCoordinator().reconcileRun(owner);
 
-    expect(result).toEqual({ cancelled: false, reconciled: 1, timedOut: 0 });
+    expect(result).toEqual({ cancelled: false, reconciled: 1, redispatched: 0, timedOut: 0 });
     expect(completeMember).toHaveBeenCalledWith(
       expect.objectContaining({
         collaboration: expect.objectContaining({ runId: 'run-1', runNodeId: 'node-1' }),
@@ -125,7 +132,7 @@ describe('AgentGroupRunRecoveryCoordinator', () => {
 
     const result = await createCoordinator().reconcileRun(owner);
 
-    expect(result).toEqual({ cancelled: false, reconciled: 1, timedOut: 1 });
+    expect(result).toEqual({ cancelled: false, reconciled: 1, redispatched: 0, timedOut: 1 });
     expect(interruptOperation).toHaveBeenCalledWith('member-operation-1');
     expect(completeMember).toHaveBeenCalledWith(
       expect.objectContaining({ operationId: 'member-operation-1', reason: 'timeout' }),
@@ -146,7 +153,7 @@ describe('AgentGroupRunRecoveryCoordinator', () => {
 
     const result = await createCoordinator().reconcileRun(owner);
 
-    expect(result).toEqual({ cancelled: true, reconciled: 0, timedOut: 0 });
+    expect(result).toEqual({ cancelled: true, reconciled: 0, redispatched: 0, timedOut: 0 });
     expect(interruptOperation).toHaveBeenCalledTimes(2);
     expect(interruptOperation).toHaveBeenCalledWith('supervisor-operation-1');
     expect(interruptOperation).toHaveBeenCalledWith('member-operation-1');
@@ -157,5 +164,16 @@ describe('AgentGroupRunRecoveryCoordinator', () => {
       expect.objectContaining({ operationId: 'member-operation-1', reason: 'interrupted' }),
     );
     expect(finalizeCancellation).toHaveBeenCalledWith('run-1');
+  });
+
+  it('re-publishes one missing queue ACK with the stable operation identity', async () => {
+    getRun.mockResolvedValue(makeSnapshot());
+    ensurePreparedQueueStarted.mockResolvedValueOnce('scheduled');
+
+    const result = await createCoordinator().reconcileRun(owner);
+
+    expect(result).toEqual({ cancelled: false, reconciled: 0, redispatched: 1, timedOut: 0 });
+    expect(ensurePreparedQueueStarted).toHaveBeenCalledWith('member-operation-1');
+    expect(completeMember).not.toHaveBeenCalled();
   });
 });

@@ -1,0 +1,1 @@
+ALTER TABLE "agent_group_run_attempts" ADD COLUMN "output_snapshot" jsonb;

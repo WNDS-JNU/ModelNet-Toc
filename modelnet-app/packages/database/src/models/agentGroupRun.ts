@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type {
+  AgentGroupRunAttemptOutputSnapshot,
   AgentGroupRunAttemptStatus,
   AgentGroupRunBudgetSnapshot,
   AgentGroupRunError,
@@ -74,6 +75,7 @@ export interface AgentGroupRunUpstreamRef {
   externalExecutionRef: AgentGroupRunExternalExecutionRef | null;
   nodeKey: string;
   operationId: string;
+  outputSnapshot: AgentGroupRunAttemptOutputSnapshot | null;
   runNodeId: string;
   runtimeKind: AgentGroupRunRuntimeKind;
 }
@@ -96,6 +98,7 @@ export interface ReleaseAgentGroupRunDispatchClaimParams {
 export interface CompleteAgentGroupRunAttemptParams extends CreateAgentGroupRunAttemptParams {
   completionReason: string;
   error?: AgentGroupRunError;
+  outputSnapshot?: AgentGroupRunAttemptOutputSnapshot;
   status: Extract<AgentGroupRunAttemptStatus, 'cancelled' | 'completed' | 'failed' | 'timed_out'>;
 }
 
@@ -432,6 +435,7 @@ export class AgentGroupRunModel {
               externalExecutionRef: attempt.externalExecutionRef,
               nodeKey: dependency.nodeKey,
               operationId: attempt.operationId,
+              outputSnapshot: attempt.outputSnapshot,
               runNodeId: dependency.id,
               runtimeKind: attempt.runtimeKind,
             },
@@ -1352,6 +1356,7 @@ export class AgentGroupRunModel {
           completedAt,
           completionReason: params.completionReason,
           error: params.error,
+          outputSnapshot: params.outputSnapshot,
           startedAt: attempt.startedAt ?? completedAt,
           status: params.status,
         })
@@ -1409,7 +1414,10 @@ export class AgentGroupRunModel {
       }
       await this.recordEvent(tx, {
         attemptId: updated.id,
-        data: params.error ? { error: params.error } : undefined,
+        data:
+          params.error || params.outputSnapshot
+            ? { error: params.error, outputSnapshot: params.outputSnapshot }
+            : undefined,
         idempotencyKey: `attempt:${updated.id}:terminal:${params.status}`,
         operationId: params.operationId,
         runId: node.runId,

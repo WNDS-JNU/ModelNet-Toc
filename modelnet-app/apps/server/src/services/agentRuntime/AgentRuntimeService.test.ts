@@ -38,6 +38,9 @@ const { completeCollaborationAttempt, isLatestCollaborationAttempt, parkCollabor
     isLatestCollaborationAttempt: vi.fn(),
     parkCollaborationAttempt: vi.fn(),
   }));
+const { listWorkVersionsByRootOperations } = vi.hoisted(() => ({
+  listWorkVersionsByRootOperations: vi.fn(),
+}));
 vi.mock('@/server/services/agentGroupCollaboration', () => ({
   AgentGroupCollaborationService: class {
     completeAttempt = completeCollaborationAttempt;
@@ -58,6 +61,12 @@ vi.mock('@/database/models/message', () => ({
   MessageModel: vi.fn().mockImplementation(() => ({
     query: vi.fn().mockResolvedValue([]),
   })),
+}));
+
+vi.mock('@/database/models/work', () => ({
+  WorkModel: class {
+    listByRootOperations = listWorkVersionsByRootOperations;
+  },
 }));
 
 vi.mock('@/database/models/agent', () => ({
@@ -2439,6 +2448,7 @@ describe('AgentRuntimeService', () => {
       completeCollaborationAttempt.mockReset().mockResolvedValue(undefined);
       isLatestCollaborationAttempt.mockReset().mockResolvedValue(true);
       parkCollaborationAttempt.mockReset().mockResolvedValue({ status: 'waiting' });
+      listWorkVersionsByRootOperations.mockReset().mockResolvedValue({});
       (service as any).agentOperationModel.findById = vi.fn().mockResolvedValue(undefined);
       updateToolMessage = vi.fn().mockResolvedValue({ success: true });
       (service as any).messageModel.updateToolMessage = updateToolMessage;
@@ -2496,6 +2506,7 @@ describe('AgentRuntimeService', () => {
         completionReason: 'done',
         error: undefined,
         operationId: 'child-1',
+        outputSnapshot: { summary: 'final answer', workVersionRefs: [] },
         runId: 'run-1',
         runNodeId: 'node-1',
         runtimeKind: 'normal',
@@ -2503,6 +2514,53 @@ describe('AgentRuntimeService', () => {
       });
       expect(completeCollaborationAttempt.mock.invocationCallOrder[0]).toBeLessThan(
         updateToolMessage.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('persists bounded member text and WorkVersion ids on the durable Attempt', async () => {
+      listWorkVersionsByRootOperations.mockResolvedValue({
+        'child-1': [
+          {
+            id: 'work-1',
+            version: {
+              id: 'work-version-1',
+              rootOperationId: 'child-1',
+            },
+          },
+        ],
+      });
+
+      await service.completeGroupActionMember({
+        anchorMessageId: 'grp-tool-output',
+        collaboration: {
+          attemptNo: 1,
+          runId: 'run-1',
+          runNodeId: 'node-output',
+          runtimeKind: 'normal',
+        },
+        expectedMembers: 1,
+        finalState: memberState as any,
+        groupToolMessageId: 'grp-tool-output',
+        mode: 'in_group',
+        onComplete: 'resume',
+        operationId: 'child-1',
+        parentOperationId: 'parent-1',
+        reason: 'done',
+      });
+
+      expect(completeCollaborationAttempt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outputSnapshot: {
+            summary: 'final answer',
+            workVersionRefs: [
+              {
+                rootOperationId: 'child-1',
+                workId: 'work-1',
+                workVersionId: 'work-version-1',
+              },
+            ],
+          },
+        }),
       );
     });
 

@@ -187,6 +187,85 @@ describe('AgentOperationModel', () => {
     });
   });
 
+  describe('agent group queue dispatch recovery markers', () => {
+    it('persists the exact preparation and its provider ACK', async () => {
+      const model = new AgentOperationModel(serverDB, userId);
+      const operationId = 'op-group-queue-marker';
+      const preparation = {
+        attemptNo: 2,
+        deduplicationId: 'agent-group:run-1:node-1:attempt:2:step:0',
+        runId: 'run-1',
+        runNodeId: 'node-1',
+        source: 'agent_group' as const,
+        state: 'ready' as const,
+        stepIndex: 0,
+      };
+      await model.recordStart({ operationId });
+
+      await expect(model.recordAgentQueuePreparation(operationId, preparation)).resolves.toBe(true);
+      await expect(
+        model.recordAgentQueueDispatch(operationId, {
+          ...preparation,
+          messageId: 'queue-message',
+          scheduledAt: '2026-09-01T00:00:00.000Z',
+          state: 'scheduled',
+        }),
+      ).resolves.toBe(true);
+
+      expect((await model.findById(operationId))?.metadata).toMatchObject({
+        agentQueueDispatch: {
+          attemptNo: 2,
+          deduplicationId: preparation.deduplicationId,
+          messageId: 'queue-message',
+          state: 'scheduled',
+        },
+        agentQueuePreparation: preparation,
+      });
+    });
+
+    it('rejects a foreign owner or ACK that does not exactly match preparation', async () => {
+      const model = new AgentOperationModel(serverDB, userId);
+      const attacker = new AgentOperationModel(serverDB, otherUserId);
+      const operationId = 'op-group-queue-fence';
+      const preparation = {
+        attemptNo: 1,
+        deduplicationId: 'agent-group:run-1:node-1:attempt:1:step:0',
+        runId: 'run-1',
+        runNodeId: 'node-1',
+        source: 'agent_group' as const,
+        state: 'ready' as const,
+        stepIndex: 0,
+      };
+      await model.recordStart({ operationId });
+      await model.recordAgentQueuePreparation(operationId, preparation);
+
+      await expect(
+        model.recordAgentQueuePreparation(operationId, {
+          ...preparation,
+          runNodeId: 'node-other',
+        }),
+      ).resolves.toBe(false);
+
+      await expect(
+        model.recordAgentQueueDispatch(operationId, {
+          ...preparation,
+          attemptNo: 2,
+          messageId: 'queue-message',
+          scheduledAt: '2026-09-01T00:00:00.000Z',
+          state: 'scheduled',
+        }),
+      ).resolves.toBe(false);
+      await expect(
+        attacker.recordAgentQueueDispatch(operationId, {
+          ...preparation,
+          messageId: 'queue-message',
+          scheduledAt: '2026-09-01T00:00:00.000Z',
+          state: 'scheduled',
+        }),
+      ).resolves.toBe(false);
+    });
+  });
+
   describe('recordCompletion', () => {
     it('updates the row to a terminal status with aggregates and trace key', async () => {
       const model = new AgentOperationModel(serverDB, userId);

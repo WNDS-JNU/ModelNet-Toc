@@ -169,9 +169,57 @@ describe('AiAgentService.execSubAgent', () => {
         expect.objectContaining({
           disableTools: true,
           parentOperationId: 'parent-op-1',
+          queuePreparation: {
+            attemptNo: 1,
+            deduplicationId: 'agent-group:run-1:node-1:attempt:1:step:0',
+            runId: 'run-1',
+            runNodeId: 'node-1',
+            source: 'agent_group',
+            stepIndex: 0,
+          },
           topicStartOwnerOperationId: 'parent-op-1',
           userInterventionConfig: { approvalMode: 'headless' },
         }),
+      );
+    });
+
+    it('does not attach the Redis queue marker to a heterogeneous member', async () => {
+      vi.spyOn(service as any, 'resolveGroupMemberRuntimeKind').mockResolvedValue('heterogeneous');
+      const execAgentSpy = vi.spyOn(service, 'execAgent').mockResolvedValue({
+        agentId: 'agent-1',
+        assistantMessageId: 'assistant-msg-1',
+        autoStarted: true,
+        createdAt: new Date().toISOString(),
+        message: 'Agent operation created successfully',
+        messageId: 'device-operation-1',
+        operationId: 'op-123',
+        status: 'created',
+        success: true,
+        timestamp: new Date().toISOString(),
+        topicId: 'topic-1',
+        userMessageId: 'user-msg-1',
+      });
+
+      await service.execGroupMember({
+        agentId: 'agent-1',
+        anchorMessageId: 'anchor-msg-1',
+        collaboration: {
+          attemptNo: 1,
+          runId: 'run-1',
+          runNodeId: 'node-1',
+          runtimeKind: 'heterogeneous',
+        },
+        expectedMembers: 1,
+        groupId: 'group-1',
+        groupToolMessageId: 'tool-msg-1',
+        mode: 'in_group',
+        onComplete: 'finish',
+        parentOperationId: 'parent-op-1',
+        topicId: 'topic-1',
+      });
+
+      expect(execAgentSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ queuePreparation: undefined }),
       );
     });
 

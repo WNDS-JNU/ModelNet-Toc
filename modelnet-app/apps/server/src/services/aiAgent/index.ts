@@ -101,6 +101,10 @@ import debug from 'debug';
 import type { ModelAbilities } from 'model-bank';
 
 import {
+  type AgentGroupQueuePreparation,
+  createAgentGroupQueuePreparation,
+} from '@/business/server/agent-run/agentGroupQueueIdentity';
+import {
   deriveAgentInterventionContinuationMessageId,
   deriveAgentInterventionContinuationOperationId,
   deriveAgentInterventionQueueDeduplicationId,
@@ -504,6 +508,8 @@ interface InternalExecAgentParams extends ExecAgentParams {
   ) => Promise<void>;
   /** Parent message ID to continue from. Only takes effect when resume is true */
   parentMessageId?: string;
+  /** Durable first-delivery identity for a normal-runtime group Attempt. */
+  queuePreparation?: AgentGroupQueuePreparation;
   queueRetries?: number;
   queueRetryDelay?: string;
   /** Whether to continue execution from an existing persisted message */
@@ -1610,6 +1616,7 @@ export class AiAgentService {
       parentMessageId,
       parentOperationId: requestedParentOperationId,
       onOperationPrepared,
+      queuePreparation,
       resume,
       resumeApproval,
       resumeApprovals,
@@ -5458,6 +5465,7 @@ export class AiAgentService {
         serializedHooks,
         operationId,
         parentOperationId,
+        queuePreparation,
         signal,
         queueRetries,
         queueRetryDelay,
@@ -5745,6 +5753,15 @@ export class AiAgentService {
       params.collaboration && runtimeKind
         ? { ...params.collaboration, runtimeKind }
         : params.collaboration;
+    const queuePreparation =
+      collaboration?.runtimeKind === 'normal'
+        ? createAgentGroupQueuePreparation({
+            attemptNo: collaboration.attemptNo,
+            runId: collaboration.runId,
+            runNodeId: collaboration.runNodeId,
+            stepIndex: 0,
+          })
+        : undefined;
     let preparedOperation: GroupMemberPreparedOperation | undefined;
     const onOperationPrepared = params.onOperationPrepared
       ? async (prepared: GroupMemberPreparedOperation) => {
@@ -5786,6 +5803,7 @@ export class AiAgentService {
           // resume through the group bridge (its own timeout), not the sub-agent one.
           orchestrationRole: 'member',
           onOperationPrepared,
+          queuePreparation,
           resumeParentOnComplete: true,
           runtimeKind,
           userInterventionConfig: {
@@ -5823,11 +5841,14 @@ export class AiAgentService {
       };
     }
 
-    const result = await this.execAgentMember({
-      ...params,
-      collaboration,
-      onOperationPrepared,
-    });
+    const result = await this.execAgentMember(
+      {
+        ...params,
+        collaboration,
+        onOperationPrepared,
+      },
+      queuePreparation,
+    );
     return {
       ...result,
       executionPlan: preparedOperation?.executionPlan,
@@ -5842,7 +5863,10 @@ export class AiAgentService {
    * group-action member bridge that backfills the member anchor and
    * resumes/finishes the parked supervisor once the K=N member barrier passes.
    */
-  private async execAgentMember(params: ExecGroupMemberParams): Promise<ExecGroupMemberResult> {
+  private async execAgentMember(
+    params: ExecGroupMemberParams,
+    queuePreparation?: AgentGroupQueuePreparation,
+  ): Promise<ExecGroupMemberResult> {
     const {
       agentId,
       anchorMessageId,
@@ -5949,6 +5973,7 @@ export class AiAgentService {
       parentMessageId: supervisorMessageId ?? groupToolMessageId,
       parentOperationId,
       prompt: speakerInstruction,
+      queuePreparation,
       suppressUserMessage: true,
       topicStartOwnerOperationId: parentOperationId,
       trigger: inheritedTrigger,
@@ -6008,6 +6033,7 @@ export class AiAgentService {
        */
       orchestrationRole?: 'member';
       onOperationPrepared?: ExecGroupMemberParams['onOperationPrepared'];
+      queuePreparation?: AgentGroupQueuePreparation;
       resumeParentOnComplete?: boolean;
       runtimeKind?: 'normal' | 'heterogeneous';
       /** Group members use manual approval so required tools reach AgentIntervention. */
@@ -6143,6 +6169,7 @@ export class AiAgentService {
       parentOperationId,
       prompt: instruction,
       provider: options.provider,
+      queuePreparation: options.queuePreparation,
       trigger: inheritedTrigger,
       userInterventionConfig: options.userInterventionConfig ?? { approvalMode: 'headless' },
     });
@@ -7179,6 +7206,13 @@ export class AiAgentService {
     operationId: string,
   ): Promise<'already_started' | 'missing' | 'scheduled'> {
     return this.agentRuntimeService.ensureInterventionContinuationStarted(operationId);
+  }
+
+  /** Recover a normal group Attempt whose first queue ACK was lost. */
+  async ensurePreparedQueueStarted(
+    operationId: string,
+  ): Promise<'already_started' | 'missing' | 'not_prepared' | 'scheduled'> {
+    return this.agentRuntimeService.ensurePreparedQueueStarted(operationId);
   }
 
   /**

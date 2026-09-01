@@ -1099,6 +1099,13 @@
       "when": 1788187270607,
       "tag": "0156_agent_group_run_dispatch_claims",
       "breakpoints": true
+    },
+    {
+      "idx": 157,
+      "version": "7",
+      "when": 1788220215027,
+      "tag": "0157_agent_group_run_outputs",
+      "breakpoints": true
     }
   ],
   "version": "6"

@@ -163,6 +163,18 @@ export type AgentGroupRunAttemptStatus =
 
 export type AgentGroupRunRuntimeKind = 'normal' | 'heterogeneous' | 'external';
 
+export interface AgentGroupRunWorkVersionRef {
+  rootOperationId: string;
+  workId: string;
+  workVersionId: string;
+}
+
+/** Bounded handoff material persisted on a terminal node Attempt. */
+export interface AgentGroupRunAttemptOutputSnapshot {
+  summary?: string;
+  workVersionRefs: AgentGroupRunWorkVersionRef[];
+}
+
 /** Stable lineage carried from member launch through local/QStash callbacks. */
 export interface AgentGroupRunAttemptRef {
   attemptNo: number;

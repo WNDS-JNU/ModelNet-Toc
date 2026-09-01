@@ -35,6 +35,9 @@ interface RecoveryBridgeSnapshot {
 
 export interface AgentGroupRunRecoveryRuntime {
   completeMember: (params: GroupActionMemberBridgeParams) => Promise<boolean>;
+  ensurePreparedQueueStarted: (
+    operationId: string,
+  ) => Promise<'already_started' | 'missing' | 'not_prepared' | 'scheduled'>;
   finalizeInterruptedOperation: (operationId: string) => Promise<boolean>;
   interruptOperation: (operationId: string) => Promise<boolean>;
 }
@@ -55,6 +58,7 @@ export interface AgentGroupRunRecoverySweepResult {
   cancelled: number;
   failedRunIds: string[];
   reconciled: number;
+  redispatched: number;
   scanned: number;
   timedOut: number;
 }
@@ -184,23 +188,33 @@ export class AgentGroupRunRecoveryCoordinator {
 
   reconcileRun = async (
     owner: RecoverableAgentGroupRunRef,
-  ): Promise<{ cancelled: boolean; reconciled: number; timedOut: number }> => {
+  ): Promise<{
+    cancelled: boolean;
+    reconciled: number;
+    redispatched: number;
+    timedOut: number;
+  }> => {
     const service = this.createService(owner);
     const snapshot = await service.getRun(owner.id);
-    if (!snapshot) return { cancelled: false, reconciled: 0, timedOut: 0 };
+    if (!snapshot) return { cancelled: false, reconciled: 0, redispatched: 0, timedOut: 0 };
     if (snapshot.run.status === 'cancelling') {
       await this.cancelRun(owner);
-      return { cancelled: true, reconciled: 0, timedOut: 0 };
+      return { cancelled: true, reconciled: 0, redispatched: 0, timedOut: 0 };
     }
 
     const runtime = await this.createRuntime(owner);
     const operationMap = new Map(snapshot.operations.map((operation) => [operation.id, operation]));
     const nodeMap = new Map(snapshot.nodes.map((node) => [node.id, node]));
     let reconciled = 0;
+    let redispatched = 0;
     let timedOut = 0;
 
     for (const attempt of snapshot.attempts) {
       if (!ACTIVE_ATTEMPT_STATUSES.has(attempt.status)) continue;
+      if (attempt.runtimeKind === 'normal') {
+        const dispatch = await runtime.ensurePreparedQueueStarted(attempt.operationId);
+        if (dispatch === 'scheduled') redispatched += 1;
+      }
       const node = nodeMap.get(attempt.runNodeId);
       const operation = operationMap.get(attempt.operationId);
       const deadline =
@@ -223,7 +237,7 @@ export class AgentGroupRunRecoveryCoordinator {
       reconciled += 1;
     }
 
-    return { cancelled: false, reconciled, timedOut };
+    return { cancelled: false, reconciled, redispatched, timedOut };
   };
 
   sweepOnce = async (): Promise<AgentGroupRunRecoverySweepResult> => {
@@ -232,6 +246,7 @@ export class AgentGroupRunRecoveryCoordinator {
       cancelled: 0,
       failedRunIds: [],
       reconciled: 0,
+      redispatched: 0,
       scanned: owners.length,
       timedOut: 0,
     };
@@ -241,6 +256,7 @@ export class AgentGroupRunRecoveryCoordinator {
         const outcome = await this.reconcileRun(owner);
         result.cancelled += outcome.cancelled ? 1 : 0;
         result.reconciled += outcome.reconciled;
+        result.redispatched += outcome.redispatched;
         result.timedOut += outcome.timedOut;
       } catch (error) {
         result.failedRunIds.push(owner.id);
@@ -302,6 +318,7 @@ export class AgentGroupRunRecoveryCoordinator {
     });
     return {
       completeMember: (params) => service.completeGroupActionMember(params),
+      ensurePreparedQueueStarted: (operationId) => service.ensurePreparedQueueStarted(operationId),
       finalizeInterruptedOperation: (operationId) =>
         service.ensureInterruptedTaskFinalized(operationId),
       interruptOperation: async (operationId) =>

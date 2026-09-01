@@ -351,6 +351,16 @@ describe('AgentGroupRunModel', () => {
       completionReason: 'done',
       externalExecutionRef: { contextId: 'upstream-context', taskId: 'upstream-task' },
       operationId: 'pipeline-upstream-operation',
+      outputSnapshot: {
+        summary: 'Upstream completed the research.',
+        workVersionRefs: [
+          {
+            rootOperationId: 'pipeline-upstream-operation',
+            workId: 'work-1',
+            workVersionId: 'work-version-1',
+          },
+        ],
+      },
       runNodeId: nodes.get('source')!.id,
       runtimeKind: 'heterogeneous',
       status: 'completed',
@@ -369,6 +379,16 @@ describe('AgentGroupRunModel', () => {
         externalExecutionRef: { contextId: 'upstream-context', taskId: 'upstream-task' },
         nodeKey: 'source',
         operationId: 'pipeline-upstream-operation',
+        outputSnapshot: {
+          summary: 'Upstream completed the research.',
+          workVersionRefs: [
+            {
+              rootOperationId: 'pipeline-upstream-operation',
+              workId: 'work-1',
+              workVersionId: 'work-version-1',
+            },
+          ],
+        },
         runNodeId: nodes.get('source')!.id,
         runtimeKind: 'heterogeneous',
       },
