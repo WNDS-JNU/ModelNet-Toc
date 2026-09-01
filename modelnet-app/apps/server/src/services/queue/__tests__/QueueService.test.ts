@@ -143,6 +143,7 @@ describe('QueueService', () => {
       const stats = await service.getQueueStats();
       expect(stats).toEqual({
         completedCount: 0,
+        deadLetterCount: 0,
         failedCount: 0,
         pendingCount: 0,
         processingCount: 0,

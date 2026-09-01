@@ -100,7 +100,7 @@ describe('RedisStreamQueueServiceImpl', () => {
 
   it('reports stream, delayed, pending and terminal counters', async () => {
     const redis = createRedis();
-    redis.xlen.mockResolvedValue(7);
+    redis.xlen.mockResolvedValueOnce(7).mockResolvedValueOnce(2);
     redis.zcard.mockResolvedValue(2);
     redis.get.mockResolvedValueOnce('11').mockResolvedValueOnce('3');
     redis.xpending.mockResolvedValue([4, '1-0', '4-0', []]);
@@ -108,6 +108,7 @@ describe('RedisStreamQueueServiceImpl', () => {
 
     await expect(queue.getQueueStats()).resolves.toEqual({
       completedCount: 11,
+      deadLetterCount: 2,
       failedCount: 3,
       pendingCount: 5,
       processingCount: 4,

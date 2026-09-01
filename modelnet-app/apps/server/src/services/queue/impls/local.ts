@@ -106,6 +106,7 @@ export class LocalQueueServiceImpl implements QueueServiceImpl {
   async getQueueStats(): Promise<QueueStats> {
     return {
       completedCount: 0,
+      deadLetterCount: 0,
       failedCount: 0,
       pendingCount: this.pendingExecutions.size,
       processingCount: 0,

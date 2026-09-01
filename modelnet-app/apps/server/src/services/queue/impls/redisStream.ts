@@ -108,12 +108,14 @@ export class RedisStreamQueueServiceImpl implements QueueServiceImpl {
   }
 
   async getQueueStats(): Promise<QueueStats> {
-    const [streamLength, delayedCount, completedRaw, failedRaw] = await Promise.all([
-      this.redis.xlen(this.keys.stream),
-      this.redis.zcard(this.keys.delayed),
-      this.redis.get(this.keys.completedCount),
-      this.redis.get(this.keys.failedCount),
-    ]);
+    const [streamLength, delayedCount, deadLetterCount, completedRaw, failedRaw] =
+      await Promise.all([
+        this.redis.xlen(this.keys.stream),
+        this.redis.zcard(this.keys.delayed),
+        this.redis.xlen(this.keys.deadLetter),
+        this.redis.get(this.keys.completedCount),
+        this.redis.get(this.keys.failedCount),
+      ]);
 
     let processingCount = 0;
     try {
@@ -125,6 +127,7 @@ export class RedisStreamQueueServiceImpl implements QueueServiceImpl {
 
     return {
       completedCount: Number(completedRaw) || 0,
+      deadLetterCount: Number(deadLetterCount) || 0,
       failedCount: Number(failedRaw) || 0,
       pendingCount: Math.max(0, streamLength - processingCount) + delayedCount,
       processingCount,

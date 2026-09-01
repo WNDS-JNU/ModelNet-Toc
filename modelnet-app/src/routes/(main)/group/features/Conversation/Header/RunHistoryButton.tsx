@@ -4,14 +4,18 @@ import { Empty, Flexbox } from '@lobehub/ui';
 import { ActionIcon, Button, Drawer, Tag, Text, toast } from '@lobehub/ui/base-ui';
 import { Popconfirm, Skeleton } from 'antd';
 import { cssVar } from 'antd-style';
-import { History } from 'lucide-react';
+import { ExternalLink, History } from 'lucide-react';
 import { memo, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useActiveWorkspaceSlug } from '@/business/client/hooks/useActiveWorkspaceSlug';
 import { DESKTOP_HEADER_ICON_SIZE } from '@/const/layoutTokens';
+import { buildWorkspaceAwarePath } from '@/features/Workspace/workspaceAwarePath';
 import { useClientPollingSWR } from '@/libs/swr';
 import { groupKeys } from '@/libs/swr/keys';
 import { chatGroupService } from '@/services/chatGroup';
+
+import { buildAgentGroupRunObservability } from './runObservability';
 
 const ACTIVE_RUN_STATUSES = new Set(['pending', 'running', 'waiting', 'cancelling']);
 const TERMINAL_NODE_STATUSES = new Set(['cancelled', 'completed', 'failed', 'skipped']);
@@ -22,7 +26,9 @@ const statusColor = (status: string) => {
     case 'completed': {
       return 'success';
     }
-    case 'failed': {
+    case 'blocked':
+    case 'failed':
+    case 'timed_out': {
       return 'error';
     }
     case 'cancelled': {
@@ -43,12 +49,34 @@ const formatTime = (value: Date | string | null | undefined) => {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 };
 
+const formatCount = (value: number) => new Intl.NumberFormat().format(value);
+
+const formatDuration = (milliseconds: number) => {
+  if (milliseconds < 1000) return `${milliseconds} ms`;
+  if (milliseconds < 60_000) return `${(milliseconds / 1000).toFixed(1)} s`;
+  return `${(milliseconds / 60_000).toFixed(1)} min`;
+};
+
+const MetricCard = ({ label, value }: { label: string; value: string }) => (
+  <Flexbox
+    gap={2}
+    padding={10}
+    style={{ background: cssVar.colorFillQuaternary, borderRadius: 8, minWidth: 112 }}
+  >
+    <Text fontSize={12} type={'secondary'}>
+      {label}
+    </Text>
+    <Text strong>{value}</Text>
+  </Flexbox>
+);
+
 interface RunHistoryButtonProps {
   groupId: string;
 }
 
 const RunHistoryButton = memo<RunHistoryButtonProps>(({ groupId }) => {
   const { t } = useTranslation('agentGroup');
+  const activeWorkspaceSlug = useActiveWorkspaceSlug();
   const [open, setOpen] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string>();
   const [cancelling, setCancelling] = useState(false);
@@ -67,6 +95,12 @@ const RunHistoryButton = memo<RunHistoryButtonProps>(({ groupId }) => {
       refreshInterval: (data) =>
         data?.some((snapshot) => ACTIVE_RUN_STATUSES.has(snapshot.run.status)) ? 5000 : 0,
     },
+  );
+
+  const { data: runtimeHealth } = useClientPollingSWR(
+    open ? groupKeys.runRuntimeHealth(groupId) : null,
+    () => chatGroupService.getGroupRunRuntimeHealth(groupId),
+    { refreshInterval: open ? 10_000 : 0 },
   );
 
   useEffect(() => {
@@ -94,6 +128,15 @@ const RunHistoryButton = memo<RunHistoryButtonProps>(({ groupId }) => {
     },
   );
 
+  const observability = useMemo(
+    () => (selectedRun ? buildAgentGroupRunObservability(selectedRun, events) : undefined),
+    [events, selectedRun],
+  );
+  const operationById = useMemo(
+    () => new Map(selectedRun?.operations.map((operation) => [operation.id, operation]) ?? []),
+    [selectedRun],
+  );
+
   const statusLabel = (status: string) => {
     switch (status) {
       case 'cancelled': {
@@ -108,11 +151,23 @@ const RunHistoryButton = memo<RunHistoryButtonProps>(({ groupId }) => {
       case 'failed': {
         return t('run.status.failed');
       }
+      case 'blocked': {
+        return t('run.status.blocked');
+      }
       case 'pending': {
         return t('run.status.pending');
       }
       case 'running': {
         return t('run.status.running');
+      }
+      case 'ready': {
+        return t('run.status.ready');
+      }
+      case 'skipped': {
+        return t('run.status.skipped');
+      }
+      case 'timed_out': {
+        return t('run.status.timedOut');
       }
       case 'waiting': {
         return t('run.status.waiting');
@@ -283,6 +338,113 @@ const RunHistoryButton = memo<RunHistoryButtonProps>(({ groupId }) => {
                 )}
 
                 <Flexbox gap={8}>
+                  <Flexbox horizontal align={'center'} gap={8} justify={'space-between'}>
+                    <Text strong>{t('run.runtime.title')}</Text>
+                    {runtimeHealth && (
+                      <Tag color={runtimeHealth.health.healthy ? 'success' : 'error'}>
+                        {runtimeHealth.health.healthy
+                          ? t('run.runtime.healthy')
+                          : t('run.runtime.unhealthy')}
+                      </Tag>
+                    )}
+                  </Flexbox>
+                  {runtimeHealth ? (
+                    <>
+                      <Text type={'secondary'}>
+                        {t('run.runtime.mode')}: {runtimeHealth.mode} ·{' '}
+                        {formatTime(runtimeHealth.checkedAt)}
+                        {runtimeHealth.health.message ? ` · ${runtimeHealth.health.message}` : ''}
+                      </Text>
+                      {runtimeHealth.stats && (
+                        <div
+                          style={{
+                            display: 'grid',
+                            gap: 8,
+                            gridTemplateColumns: 'repeat(auto-fit, minmax(112px, 1fr))',
+                          }}
+                        >
+                          <MetricCard
+                            label={t('run.runtime.pending')}
+                            value={formatCount(runtimeHealth.stats.pendingCount)}
+                          />
+                          <MetricCard
+                            label={t('run.runtime.processing')}
+                            value={formatCount(runtimeHealth.stats.processingCount)}
+                          />
+                          <MetricCard
+                            label={t('run.runtime.deadLetter')}
+                            value={formatCount(runtimeHealth.stats.deadLetterCount)}
+                          />
+                          <MetricCard
+                            label={t('run.runtime.failed')}
+                            value={formatCount(runtimeHealth.stats.failedCount)}
+                          />
+                          <MetricCard
+                            label={t('run.runtime.completed')}
+                            value={formatCount(runtimeHealth.stats.completedCount)}
+                          />
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <Text type={'secondary'}>{t('run.runtime.loading')}</Text>
+                  )}
+                </Flexbox>
+
+                {observability && (
+                  <Flexbox gap={8}>
+                    <Text strong>{t('run.metrics.title')}</Text>
+                    <div
+                      style={{
+                        display: 'grid',
+                        gap: 8,
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(112px, 1fr))',
+                      }}
+                    >
+                      <MetricCard
+                        label={t('run.metrics.cost')}
+                        value={`${observability.currencies.join('/') || 'USD'} ${observability.totalCost.toFixed(4)}`}
+                      />
+                      <MetricCard
+                        label={t('run.metrics.tokens')}
+                        value={formatCount(observability.totalTokens)}
+                      />
+                      <MetricCard
+                        label={t('run.metrics.calls')}
+                        value={`${formatCount(observability.llmCallCount)} / ${formatCount(observability.toolCallCount)}`}
+                      />
+                      <MetricCard
+                        label={t('run.metrics.processing')}
+                        value={formatDuration(observability.processingTimeMs)}
+                      />
+                      <MetricCard
+                        label={t('run.metrics.approvals')}
+                        value={formatCount(observability.humanInterventionCount)}
+                      />
+                      <MetricCard
+                        label={t('run.metrics.barriers')}
+                        value={formatCount(observability.waitingBarrierCount)}
+                      />
+                      <MetricCard
+                        label={t('run.metrics.leases')}
+                        value={`${observability.activeLeaseCount} / ${observability.expiredLeaseCount}`}
+                      />
+                      <MetricCard
+                        label={t('run.metrics.failures')}
+                        value={`${observability.attemptCount ? ((observability.failedAttemptCount / observability.attemptCount) * 100).toFixed(1) : '0.0'}% / ${observability.deviceOfflineCount}`}
+                      />
+                      <MetricCard
+                        label={t('run.metrics.evidence')}
+                        value={`${observability.workVersionIds.length} / ${observability.verifyRunIds.length} / ${observability.traceCount}`}
+                      />
+                    </div>
+                    <Text fontSize={12} type={'secondary'}>
+                      {t('run.metrics.legend')}
+                    </Text>
+                  </Flexbox>
+                )}
+
+                <Flexbox gap={8}>
                   <Text strong>{t('run.nodes')}</Text>
                   {selectedRun.nodes.map((node) => {
                     const attempts = selectedRun.attempts.filter(
@@ -308,10 +470,143 @@ const RunHistoryButton = memo<RunHistoryButtonProps>(({ groupId }) => {
                           <Tag color={statusColor(node.status)}>{statusLabel(node.status)}</Tag>
                         </Flexbox>
                         <Text>{node.instruction}</Text>
-                        <Text type={'secondary'}>
-                          {attempts.length} {t('run.attempts')}
-                          {attempts.at(-1)?.operationId ? ` · ${attempts.at(-1)?.operationId}` : ''}
+                        <Text code fontSize={12} type={'secondary'}>
+                          nodeId: {node.id}
                         </Text>
+                        {node.dependencies.length > 0 && (
+                          <Text fontSize={12} type={'secondary'}>
+                            {t('run.dependencies')}: {node.dependencies.join(', ')}
+                          </Text>
+                        )}
+                        {node.dispatchClaimId && (
+                          <Text code fontSize={12} type={'secondary'}>
+                            claimId: {node.dispatchClaimId} ·{' '}
+                            {formatTime(node.dispatchClaimExpiresAt)}
+                          </Text>
+                        )}
+                        <Flexbox gap={6} paddingBlock={4}>
+                          <Text strong fontSize={12}>
+                            {attempts.length} {t('run.attempts')}
+                          </Text>
+                          {attempts.map((attempt) => {
+                            const operation = operationById.get(attempt.operationId);
+                            const output = attempt.outputSnapshot;
+                            const externalRef = attempt.externalExecutionRef;
+                            const errorMessage =
+                              attempt.error?.message ?? operation?.error?.message;
+                            return (
+                              <Flexbox
+                                gap={4}
+                                key={attempt.id}
+                                padding={10}
+                                style={{
+                                  background: cssVar.colorBgContainer,
+                                  border: `1px solid ${cssVar.colorBorderSecondary}`,
+                                  borderRadius: 8,
+                                }}
+                              >
+                                <Flexbox
+                                  horizontal
+                                  align={'center'}
+                                  gap={8}
+                                  justify={'space-between'}
+                                >
+                                  <Text strong>
+                                    {t('run.attempt')} #{attempt.attemptNo} · {attempt.runtimeKind}
+                                  </Text>
+                                  <Tag color={statusColor(attempt.status)}>
+                                    {statusLabel(attempt.status)}
+                                  </Tag>
+                                </Flexbox>
+                                <Text code fontSize={12} type={'secondary'}>
+                                  attemptId: {attempt.id}
+                                </Text>
+                                <Text code fontSize={12} type={'secondary'}>
+                                  operationId: {attempt.operationId}
+                                </Text>
+                                {(externalRef?.taskId || externalRef?.contextId) && (
+                                  <Text code fontSize={12} type={'secondary'}>
+                                    external: {externalRef.taskId ?? '-'} /{' '}
+                                    {externalRef.contextId ?? '-'}
+                                  </Text>
+                                )}
+                                <Text fontSize={12} type={'secondary'}>
+                                  {formatTime(attempt.startedAt ?? attempt.createdAt)} →{' '}
+                                  {formatTime(attempt.completedAt)}
+                                </Text>
+                                {operation && (
+                                  <Text fontSize={12} type={'secondary'}>
+                                    {t('run.attempt.usage')}:{' '}
+                                    {formatCount(operation.totalTokens ?? 0)} tokens ·{' '}
+                                    {operation.llmCalls ?? 0} LLM · {operation.toolCalls ?? 0} tools
+                                    · {operation.currency}{' '}
+                                    {Number(operation.totalCost ?? 0).toFixed(4)}
+                                    {operation.traceS3Key ? ` · ${t('run.attempt.trace')}` : ''}
+                                  </Text>
+                                )}
+                                {output?.summary && <Text fontSize={12}>{output.summary}</Text>}
+                                {output?.workspace && (
+                                  <Flexbox gap={2}>
+                                    <Text strong fontSize={12}>
+                                      {t('run.attempt.workspace')}: {output.workspace.mode}
+                                    </Text>
+                                    <Text code fontSize={12} type={'secondary'}>
+                                      isolationId: {output.workspace.isolationId}
+                                    </Text>
+                                    <Text fontSize={12} type={'secondary'}>
+                                      {output.workspace.branch ?? output.workspace.baseRef ?? '-'} ·{' '}
+                                      {output.workspace.changedFiles} files · +
+                                      {output.workspace.additions} / -{output.workspace.deletions} ·{' '}
+                                      {output.workspace.cleanupState}
+                                    </Text>
+                                    {output.workspace.worktreePath && (
+                                      <Text code fontSize={12} type={'secondary'}>
+                                        {output.workspace.worktreePath}
+                                      </Text>
+                                    )}
+                                  </Flexbox>
+                                )}
+                                {(output?.workVersionRefs.length ?? 0) > 0 && (
+                                  <Flexbox gap={2}>
+                                    <Text strong fontSize={12}>
+                                      {t('run.attempt.workVersions')}
+                                    </Text>
+                                    {(output?.workVersionRefs ?? []).map((reference) => (
+                                      <Text
+                                        code
+                                        fontSize={12}
+                                        key={reference.workVersionId}
+                                        type={'secondary'}
+                                      >
+                                        {reference.workVersionId} · workId: {reference.workId}
+                                      </Text>
+                                    ))}
+                                  </Flexbox>
+                                )}
+                                {output?.verifyRunId && (
+                                  <Button
+                                    icon={ExternalLink}
+                                    size={'small'}
+                                    style={{ alignSelf: 'flex-start' }}
+                                    target={'_blank'}
+                                    type={'link'}
+                                    href={buildWorkspaceAwarePath(
+                                      `/verify/${output.verifyRunId}`,
+                                      activeWorkspaceSlug,
+                                    )}
+                                  >
+                                    {t('run.attempt.openVerify')} · {output.verifyRunId}
+                                  </Button>
+                                )}
+                                {errorMessage && (
+                                  <Text fontSize={12} type={'danger'}>
+                                    {errorMessage}
+                                  </Text>
+                                )}
+                              </Flexbox>
+                            );
+                          })}
+                        </Flexbox>
                         {canRetry && (
                           <Popconfirm
                             description={t('run.retryConfirm')}

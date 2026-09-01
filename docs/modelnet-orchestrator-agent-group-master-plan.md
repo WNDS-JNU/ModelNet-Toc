@@ -1,6 +1,6 @@
 # ModelNet Agent 级协作互联总体实施计划
 
-> 状态：实施中（M1、M2、M3 已通过 Dev 评审；M4 阶段 6 Work / Verify 与隔离代码协作已完成并部署到隔离 Dev，下一步进入阶段 7 UI、运维与可观测性）
+> 状态：实施中（M1、M2、M3、M4 已通过 Dev 评审；阶段 7 UI、运维与可观测性已完成并部署到隔离 Dev，下一步进入阶段 8 外部 A2A 出站适配）
 > 版本：V2.0
 > 重构日期：2026-08-30
 > 代码基线：4A100，/home/duxianghe/ModelNet-toc，33190eda5f
@@ -72,8 +72,8 @@
 5. 群组工具只有 disableTools 布尔量，尚未形成成员权限、群组权限和节点权限的交集策略。
 6. 普通 Agent 的服务端群组执行已成立，但异构 Agent 是否在所有群组入口都严格复用 ExecutionPlan 需要补齐契约测试。
 7. pipeline 与固定轮数 debate 已具备不可变计划校验、持久依赖推进、ready-node 原子认领、自动 Dispatcher、稳定派发 / 恢复补投、结构化输出交接和用户确认后创建运行的入口闭环；vote 仍无可恢复状态机。
-8. Work / WorkVersion、代码补丁与 Verify 已建立 Attempt 关联契约；Tasks、Goals 与群组节点的统一关联仍待阶段 7 收口。
-9. 群组节点级只读代码协作、隔离写工作区、变更交接、Integrator 和 Verify 门禁已完成；工作区清理、历史展示以及 commit / push / PR / merge / deploy 的显式发布流程仍待阶段 7 收口。
+8. Work / WorkVersion、代码补丁与 Verify 已建立 Attempt 关联契约并可从运行历史定位；Tasks、Goals 继续保持各自事实源，统一关联留待独立后续设计，不阻塞 M4 退出条件。
+9. 群组节点级只读代码协作、隔离写工作区、变更交接、Integrator、Verify 门禁、历史展示和人工清理手册已完成；自动破坏性清理保持关闭，commit / push / PR / merge / deploy 继续作为运行时之外的显式人工发布动作。
 10. 外部 A2A 只有市场元数据痕迹，没有真实执行适配器、信任配置和协议测试。
 
 ## 四、目标架构
@@ -475,11 +475,13 @@ A2A 是 Member Dispatcher 的外部执行 Adapter，不是 Router 协议，也�
 
 ### 阶段 7：UI、运维与可观测性
 
-- 完成 Collaboration 配置、Run 树、历史、成本、审批、产物和 Verify UI。
-- 增加队列积压、租约超时、屏障等待、设备离线、失败率和成本指标。
-- 建立数据清理、trace 生命周期、死信处置和运行恢复手册。
+- 完成 Collaboration 配置、Run 树、历史、成本、审批、产物和 Verify UI。（已完成，Dev）
+- 增加队列积压、租约超时、屏障等待、设备离线、失败率和成本指标。（已完成，Dev）
+- 建立数据清理、trace 生命周期、死信处置和运行恢复手册。（已完成，Dev）
 
 退出条件：用户无需查看容器日志即可理解运行状态，运维可定位到 runId / nodeId / attemptId / operationId。
+
+状态（2026-09-01，M4 阶段 7 UI、运维与可观测性）：Run History 已扩展为运行详情入口，可直接查看 Run / Node / Attempt / Operation 谱系、节点依赖与 claim、执行位置、外部任务上下文、Work / WorkVersion、Verify、trace、隔离工作区和 patch 摘要；审批、屏障、租约、失败原因与运行时间均在界面内呈现。新增群组运行时健康接口和队列统计，Redis Stream 模式会报告 backlog、inflight、dead letter、completed 和 failed；界面同时汇总活跃/过期租约、屏障等待、设备离线、Attempt 失败率、LLM/tool 调用、tokens 与成本。新增 `docs/modelnet-agent-group-operations-runbook.md`，按 runId / nodeId / attemptId / operationId 给出只读定位、恢复决策、死信处置、trace 生命周期和数据/工作区清理的 dry-run 与审批边界；自动破坏性清理和死信自动重放仍保持关闭。验证通过：Queue 与运行指标定向 Vitest 44 项、变更文件 ESLint、项目 TypeScript 和 `git diff --check`；完整 Docker 构建生成 Dev 镜像 `ee91c1b27966...`（`modelnet-toc-dev-app:agent-group-stage7-20260901`）。隔离 Dev app / agent-worker 已重建并 healthy，`3181/signin`、`3192/healthz`、`3193/healthz` 均为 200，队列与死信当前均为 0；生产 app / Router 镜像与启动时间未变化。阶段 7 退出条件满足，M4 完成；下一阶段进入阶段 8 外部 A2A 出站适配，生产推广仍需独立审批。
 
 ### 阶段 8：外部 A2A 出站适配
 
@@ -639,7 +641,7 @@ A2A 是 Member Dispatcher 的外部执行 Adapter，不是 Router 协议，也�
 
 状态（2026-08-31）：Dev 代码、部署和 M1 主协议真实恢复验收完成。Redis Stream 模式的内部成员回调改由 worker bearer 鉴权直投，不再依赖 QStash；取消会在请求内幂等终态化 supervisor 与全部 active member operation。真实 Dev 证据：`agr_HUYxYOPMquEK` 在 317 ms 内把 Run、2 Node、2 Attempt 和 3 个 operation 全部收敛为取消/中断终态；`agr_xRRyZU6mUWNh` 在 Redis pending 消息和 supervisor `waiting_for_async_tool` 两个时点重建 app / worker 后恢复完成，Attempt 始终只有 2 个且均为 attemptNo=1；`agr_HO8Ch2cttQrZ` 的 1000 ms watchdog 将 2 Node 收敛为 `failed + timeout`、2 Attempt 收敛为 `timed_out + timeout`；`agr_8y48G98pFfCj` 以 1 Node / 1 Attempt 完成 `single`；`agr_CgGkeaIlitzF` 以 2 Node / 2 Attempt 完成 `broadcast`；`agr_l0IsBNLsiYDM` 在 Dev Redis 暂停 8 秒并恢复后自动完成，2 个成员仍各只有 attemptNo=1，同一成员完成回调再重复投递两次均返回 `resumed=false`，没有新增 Attempt 或 operation；`agr_bezBBtFdWwtb` 首轮以 2 Node / 2 Attempt 完成 `broadcast`，随后对节点 `71e9e8ed-4c7c-45f7-a04c-f9d78b2fcab8` 显式重试，Run 从 completed 重开并以 attemptNo=2 再次完成，`node.retry_started`、`run.reopened` 和第二组 node/run terminal 事件完整，再次重试被 `PRECONDITION_FAILED` 拒绝，Attempt 总数保持 3、operation 总数保持 4。v11 又在该 Run 已完成 attemptNo=2 后重放旧 attemptNo=1 的矛盾 `error` 回调，回调返回 `resumed=false`，Run 仍为 completed，Attempt / operation / event 分别保持 3 / 4 / 19，旧 anchor 仍为 completed 且无 plugin error。v12 的 `agr_vs6KJTbhYPJ8` 在 supervisor 到达 `waiting_for_async_tool` 屏障后原子暂停为 Run `waiting + manual_pause` 和 operation `waiting_for_group_resume`；两名成员及各自 attemptNo=1 均完成后，Run 仍保持人工暂停，恢复前事件为 `run.paused=1 / run.resumed=0 / run.terminal=0`；显式恢复返回 `resumed=true` 并一次收敛为 completed，最终 `run.paused / run.resumed / run.terminal` 各 1，重复恢复被 `PRECONDITION_FAILED` 拒绝，Attempt / operation 总数保持 2 / 3。Attempt 的明确原因由迁移 `0155_charming_miracleman.sql` 持久化。PGlite 46 项、服务端定向 Vitest 188 项、项目 TypeScript、Worker bundle、Next standalone build、Dev 迁移和 v12 容器 health 均通过；既有更宽的服务端定向 Vitest 216 项恢复验证仍有效。`AGENT_GROUP_DURABLE_RUNS=1` 仍只存在于忽略版本控制的 `.env.dev`，生产 compose 和生产开关未改。M1 Dev 评审通过；下一步进入 M2 异构 Agent / ExecutionPlan 契约收口，不自动推广生产。
 
-上述五个 PR 已完成 M1 Dev 评审；M2 已完成异构 Agent / ExecutionPlan 的 prepared-boundary 契约、工具权限收窄、设备离线/重连幂等、事件重放与 Intervention 运行级门禁，并通过真实只读普通 Agent + 本机登录态 Codex 混合群组、真实 Dev Gateway 和真实 Dev PostgreSQL Intervention 恢复验收。M3 已完成固定计划、固定预算、持久认领、稳定派发、恢复补投、结构化输出交接、自动 Pipeline Dispatcher、createWorkflow 用户确认闭环，以及固定轮数、可恢复 Debate 与 createDebate 确认入口。M4 阶段 6 已完成 Work / WorkVersion、Verify、只读与隔离写协作、Integrator 安全门禁并部署隔离 Dev；下一片进入阶段 7 UI、运维与可观测性。A2A 仍保持后置，生产推广仍需独立审批。
+上述五个 PR 已完成 M1 Dev 评审；M2 已完成异构 Agent / ExecutionPlan 的 prepared-boundary 契约、工具权限收窄、设备离线/重连幂等、事件重放与 Intervention 运行级门禁，并通过真实只读普通 Agent + 本机登录态 Codex 混合群组、真实 Dev Gateway 和真实 Dev PostgreSQL Intervention 恢复验收。M3 已完成固定计划、固定预算、持久认领、稳定派发、恢复补投、结构化输出交接、自动 Pipeline Dispatcher、createWorkflow 用户确认闭环，以及固定轮数、可恢复 Debate 与 createDebate 确认入口。M4 已完成 Work / WorkVersion、Verify、只读与隔离写协作、Integrator 安全门禁、Run 详情 UI、运行时指标和运维手册并部署隔离 Dev。下一阶段进入 M5 / 阶段 8 外部 A2A 出站适配；生产推广仍需独立审批。
 
 ## 十九、最终验收清单
 

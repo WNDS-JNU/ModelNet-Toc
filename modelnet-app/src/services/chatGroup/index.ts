@@ -110,6 +110,10 @@ class ChatGroupService {
     return lambdaClient.group.listGroupRunEvents.query({ limit, runId });
   };
 
+  getGroupRunRuntimeHealth = (groupId: string) => {
+    return lambdaClient.group.getGroupRunRuntimeHealth.query({ groupId });
+  };
+
   cancelGroupRun = (runId: string) => {
     return lambdaClient.group.cancelGroupRun.mutate({ runId });
   };

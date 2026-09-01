@@ -16,6 +16,7 @@ export interface QueueMessage {
 
 export interface QueueStats {
   completedCount: number;
+  deadLetterCount: number;
   failedCount: number;
   pendingCount: number;
   processingCount: number;

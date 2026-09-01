@@ -45,6 +45,7 @@ import { AgentGroupCollaborationService } from '@/server/services/agentGroupColl
 import { AgentGroupRunRecoveryCoordinator } from '@/server/services/agentGroupCollaboration/recovery';
 import { AiAgentService } from '@/server/services/aiAgent';
 import { EditLockService } from '@/server/services/editLock';
+import { QueueService } from '@/server/services/queue';
 import { publishResourceEvent } from '@/server/services/resourceEvents';
 import {
   assertCanEditResource,
@@ -743,6 +744,48 @@ export const agentGroupRouter = router({
         ctx.userId,
         ctx.workspaceId ?? undefined,
       ).listRuns(input.groupId, input.limit);
+    }),
+
+  getGroupRunRuntimeHealth: agentGroupProcedure
+    .input(z.object({ groupId: z.string().min(1) }))
+    .query(async ({ input, ctx }) => {
+      const group = await ctx.chatGroupModel.findById(input.groupId);
+      if (!group) throw new TRPCError({ code: 'NOT_FOUND', message: 'Agent Group not found.' });
+      const access = await getGroupConfigAccess(ctx, group);
+      if (access === 'none') {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Agent Group not found.' });
+      }
+      if (ctx.workspaceId) {
+        await assertCanPerformResourceAction({
+          action: 'view',
+          db: ctx.serverDB,
+          resourceId: input.groupId,
+          resourceType: 'agentGroup',
+          userId: ctx.userId,
+          workspaceId: ctx.workspaceId,
+        });
+      }
+
+      try {
+        const queue = new QueueService();
+        const [health, stats] = await Promise.all([queue.healthCheck(), queue.getQueueStats()]);
+        return {
+          checkedAt: new Date().toISOString(),
+          health,
+          mode: queue.isLocalExecution() ? ('local' as const) : ('distributed' as const),
+          stats,
+        };
+      } catch (error) {
+        return {
+          checkedAt: new Date().toISOString(),
+          health: {
+            healthy: false,
+            message: error instanceof Error ? error.message : String(error),
+          },
+          mode: 'unavailable' as const,
+          stats: null,
+        };
+      }
     }),
 
   cancelGroupRun: agentGroupProcedureWrite
