@@ -1,6 +1,6 @@
 'use client';
 
-import { type VoiceMessageRecording } from '@lobechat/types';
+import { type MessageMetadata, type VoiceMessageRecording } from '@lobechat/types';
 import { type SlashOptions } from '@lobehub/editor';
 import { type ChatInputActionsProps } from '@lobehub/editor/react';
 import { Flexbox, type MenuProps } from '@lobehub/ui';
@@ -123,6 +123,10 @@ export interface ChatInputProps {
    */
   mentionItems?: SlashOptions['items'];
   /**
+   * Run-scoped metadata to persist on the user message and forward to the runtime.
+   */
+  messageMetadata?: MessageMetadata;
+  /**
    * Callback when editor instance is ready
    */
   onEditorReady?: (editor: any) => void;
@@ -174,6 +178,7 @@ const ChatInput = memo<ChatInputProps>(
     extraActionItems,
     isConfigLoading = false,
     mentionItems,
+    messageMetadata,
     controlBarSlot,
     sendMenu,
     sendAreaPrefix,
@@ -388,13 +393,22 @@ const ChatInput = memo<ChatInputProps>(
           editorData,
           files: currentFileList,
           message,
+          metadata: messageMetadata,
           onPreflightFailure: () => {
             useFileStore.getState().restoreChatContextSelections(contextKey, currentContextList);
           },
           pageSelections,
         });
       },
-      [contextKey, sendMessage, storeApi, disableQueue, disableSend, isInputQueueBlocked],
+      [
+        contextKey,
+        sendMessage,
+        storeApi,
+        disableQueue,
+        disableSend,
+        isInputQueueBlocked,
+        messageMetadata,
+      ],
     );
 
     const sendButtonProps: SendButtonProps = {

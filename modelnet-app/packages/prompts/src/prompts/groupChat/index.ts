@@ -1,5 +1,37 @@
-import type { UIChatMessage } from '@lobechat/types';
+import type { AgentGroupCollaborationMode, UIChatMessage } from '@lobechat/types';
 import { agentDisplayName } from '@lobechat/types';
+
+const collaborationModeInstructions: Record<
+  Exclude<AgentGroupCollaborationMode, 'auto'>,
+  string
+> = {
+  broadcast: `The user explicitly selected BROADCAST collaboration for this turn.
+You MUST call the lobe-group-management broadcast tool and ask the relevant group members to answer in parallel. Do not replace it with direct speech, task delegation, a workflow, or a debate. After the member responses arrive, synthesize them for the user.`,
+  debate: `The user explicitly selected DEBATE collaboration for this turn.
+You MUST call the lobe-group-management createDebate tool to propose a structured multi-agent debate. Do not simulate the debate in plain text and do not replace it with broadcast or parallel tasks. Let the normal approval flow confirm the debate before execution.`,
+  parallel_tasks: `The user explicitly selected PARALLEL TASKS collaboration for this turn.
+You MUST decompose the request into independent assignments and call the lobe-group-management executeAgentTasks tool. Do not replace it with broadcast, sequential speak calls, a workflow, or a debate. Integrate the completed task results into one answer.`,
+  pipeline: `The user explicitly selected PIPELINE collaboration for this turn.
+You MUST call the lobe-group-management createWorkflow tool to propose an ordered multi-agent workflow. Do not emulate a pipeline with ad-hoc delegation or plain text. Let the normal approval flow confirm the workflow before execution.`,
+  single: `The user explicitly selected SINGLE AGENT collaboration for this turn.
+Answer the request yourself as the group Supervisor. Do not call any lobe-group-management orchestration tool and do not delegate to group members.`,
+};
+
+/** Return the run-scoped Supervisor constraint for an explicit collaboration choice. */
+export const buildAgentGroupCollaborationModeInstruction = (
+  mode?: AgentGroupCollaborationMode,
+): string | undefined =>
+  mode && mode !== 'auto' ? collaborationModeInstructions[mode] : undefined;
+
+/** Merge an explicit turn mode after the group's persistent prompt so it wins for this run. */
+export const mergeAgentGroupCollaborationSystemPrompt = (
+  systemPrompt: string | null | undefined,
+  mode?: AgentGroupCollaborationMode,
+): string | undefined => {
+  const instruction = buildAgentGroupCollaborationModeInstruction(mode);
+  const sections = [systemPrompt?.trim(), instruction].filter(Boolean);
+  return sections.length > 0 ? sections.join('\n\n') : undefined;
+};
 
 export interface GroupMemberInfo {
   id: string;
@@ -164,6 +196,8 @@ ${
 };
 
 export const groupChatPrompts = {
+  buildAgentGroupCollaborationModeInstruction,
   buildGroupChatSystemPrompt,
   buildSupervisorPrompt,
+  mergeAgentGroupCollaborationSystemPrompt,
 };

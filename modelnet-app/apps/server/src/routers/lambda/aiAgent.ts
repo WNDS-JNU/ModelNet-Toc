@@ -932,6 +932,10 @@ const ExecAgentSchema = z
         userMessageId: z.string().regex(entityIdPattern('messages')).optional(),
       })
       .optional(),
+    /** Explicit collaboration strategy selected for this Agent Group turn. */
+    collaborationMode: z
+      .enum(['auto', 'single', 'broadcast', 'parallel_tasks', 'pipeline', 'debate'])
+      .optional(),
     /** Explicit device ID to bind to the topic and activate for this run */
     deviceId: z.string().optional(),
     /** Current desktop device hint, honored only for an effective local target */
@@ -2044,6 +2048,7 @@ export const aiAgentRouter = router({
       prompt,
       appContext,
       autoStart = true,
+      collaborationMode,
       deviceId,
       localDeviceId,
       existingMessageIds = [],
@@ -2225,6 +2230,7 @@ export const aiAgentRouter = router({
         agentId,
         appContext,
         autoStart,
+        collaborationMode,
         clientIds: input.clientIds,
         // This procedure serves the composer (`aiAgentService.execAgentTask`).
         // The client already queues follow-ups behind a live run and shows the

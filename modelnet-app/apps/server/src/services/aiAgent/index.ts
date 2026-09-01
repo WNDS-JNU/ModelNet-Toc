@@ -53,7 +53,11 @@ import {
   isLocalHeterogeneousType,
   isRemoteHeterogeneousType,
 } from '@lobechat/heterogeneous-agents';
-import { buildTaskManagerDefaultsPrompt, resourcesTreePrompt } from '@lobechat/prompts';
+import {
+  buildTaskManagerDefaultsPrompt,
+  mergeAgentGroupCollaborationSystemPrompt,
+  resourcesTreePrompt,
+} from '@lobechat/prompts';
 import type {
   AgentModelOverride,
   ChatAudioItem,
@@ -350,6 +354,7 @@ const buildGroupAgentContext = (
   currentAgentId: string,
   group: { content?: string | null; title?: string | null } | undefined,
   roster: Array<{ agentId: string; role: string | null; title: string | null }>,
+  collaborationMode?: ExecAgentParams['collaborationMode'],
 ): AgentGroupConfig | undefined => {
   if (roster.length === 0) return undefined;
 
@@ -377,7 +382,7 @@ const buildGroupAgentContext = (
     currentAgentRole,
     groupTitle: group?.title || undefined,
     members,
-    systemPrompt: group?.content || undefined,
+    systemPrompt: mergeAgentGroupCollaborationSystemPrompt(group?.content, collaborationMode),
   };
 };
 
@@ -1581,6 +1586,7 @@ export class AiAgentService {
       agentId,
       slug,
       prompt,
+      collaborationMode,
       appContext: requestedAppContext,
       autoStart = true,
       botContext,
@@ -2694,6 +2700,7 @@ export class AiAgentService {
     // hetero path can't drift from the standard path again (the bot-image bug
     // came from the hetero branch re-implementing — and skipping — this step).
     const requestTriggerMetadata = {
+      ...(collaborationMode ? { agentGroupCollaborationMode: collaborationMode } : undefined),
       ...(trigger && Object.values(RequestTrigger).includes(trigger as RequestTrigger)
         ? { trigger: trigger as RequestTrigger }
         : undefined),
@@ -4285,7 +4292,12 @@ export class AiAgentService {
             );
         }
 
-        operationAgentGroup = buildGroupAgentContext(resolvedAgentId, group, roster);
+        operationAgentGroup = buildGroupAgentContext(
+          resolvedAgentId,
+          group,
+          roster,
+          isGroupSupervisor ? collaborationMode : undefined,
+        );
       } else if (botContext) {
         operationAgentGroup = buildBotConversationGroupContext(resolvedAgentId, agentConfig);
       }
@@ -4330,7 +4342,7 @@ export class AiAgentService {
         globalMemoryEnabled,
         hasEnabledKnowledgeBases,
         isBotConversation,
-        isGroupSupervisor,
+        isGroupSupervisor: isGroupSupervisor && collaborationMode !== 'single',
         modelAbilities,
         // Context-aware builtin manifests: inside a sub-agent (or group) run,
         // lobe-agent drops `callSubAgent` so the model can't recurse into nested

@@ -37,8 +37,9 @@ import type {
   UserMemoryData,
 } from '@lobechat/context-engine';
 import { MessagesEngine, resolveTopicReferences } from '@lobechat/context-engine';
-import { historySummaryPrompt } from '@lobechat/prompts';
+import { historySummaryPrompt, mergeAgentGroupCollaborationSystemPrompt } from '@lobechat/prompts';
 import {
+  type AgentGroupCollaborationMode,
   getActivePluginIds,
   type OpenAIChatMessage,
   type RuntimeAdditionalContextFragment,
@@ -138,6 +139,26 @@ interface ContextEngineeringContext {
   topicId?: string;
 }
 
+const collaborationModes = new Set<AgentGroupCollaborationMode>([
+  'auto',
+  'single',
+  'broadcast',
+  'parallel_tasks',
+  'pipeline',
+  'debate',
+]);
+
+const resolveLatestCollaborationMode = (
+  messages: UIChatMessage[],
+): AgentGroupCollaborationMode | undefined => {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== 'user') continue;
+    const mode = message.metadata?.agentGroupCollaborationMode;
+    return mode && collaborationModes.has(mode) ? mode : undefined;
+  }
+};
+
 // REVIEW: Maybe we can constrain identity, preference, exp to reorder or trim the context instead of passing everything in
 export const contextEngineering = async ({
   additionalContexts,
@@ -182,6 +203,7 @@ export const contextEngineering = async ({
   if (groupId) {
     const groupStoreState = getChatGroupStoreState();
     const groupDetail = agentGroupSelectors.getGroupById(groupId)(groupStoreState);
+    const collaborationMode = resolveLatestCollaborationMode(messages);
 
     if (groupDetail?.agents && groupDetail.agents.length > 0) {
       const agentMap: AgentGroupConfig['agentMap'] = {};
@@ -213,7 +235,10 @@ export const contextEngineering = async ({
         groupTitle: groupDetail.title || undefined,
         members,
         // Use group.content as the group description (shared prompt/content)
-        systemPrompt: groupDetail.content || undefined,
+        systemPrompt: mergeAgentGroupCollaborationSystemPrompt(
+          groupDetail.content,
+          currentAgentRole === 'supervisor' ? collaborationMode : undefined,
+        ),
       };
       log('agentGroup built: %o', agentGroup);
     }

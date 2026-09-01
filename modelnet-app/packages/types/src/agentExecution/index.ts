@@ -8,6 +8,15 @@ export type AgentSignalOperationKind =
   'memory' | 'nightly-review' | 'self-feedback-intent' | 'self-reflection' | 'skill';
 
 /**
+ * User-facing collaboration choice for one Agent Group turn.
+ *
+ * `auto` leaves the strategy to the Supervisor. Every other value pins the
+ * Supervisor to the corresponding persisted Agent Group Run protocol.
+ */
+export type AgentGroupCollaborationMode =
+  'auto' | 'single' | 'broadcast' | 'parallel_tasks' | 'pipeline' | 'debate';
+
+/**
  * Run-scoped Agent Signal marker stamped onto a background agent operation at
  * dispatch. It travels on `appContext.agentSignal`, lands in
  * `state.metadata.agentSignal`, and is read back on the completion path to
@@ -216,6 +225,8 @@ export interface ExecAgentParams {
    * input — derived from the request context.
    */
   clientIp?: string;
+  /** Explicit collaboration strategy selected for this Agent Group turn. */
+  collaborationMode?: AgentGroupCollaborationMode;
   /** Explicit device ID to bind to the topic and activate for this run */
   deviceId?: string;
   /** Optional existing message IDs to include in context */

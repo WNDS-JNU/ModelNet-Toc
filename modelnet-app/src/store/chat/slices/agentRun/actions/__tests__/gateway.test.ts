@@ -891,6 +891,44 @@ describe('GatewayActionImpl', () => {
       );
     });
 
+    it('should forward the selected Agent Group collaboration mode to execAgentTask', async () => {
+      const { action } = createExecuteTestAction();
+
+      vi.mocked(aiAgentService.execAgentTask).mockResolvedValue({
+        agentId: 'supervisor-1',
+        assistantMessageId: 'ast-1',
+        autoStarted: true,
+        createdAt: new Date().toISOString(),
+        message: 'ok',
+        operationId: 'server-op-1',
+        status: 'created',
+        success: true,
+        timestamp: new Date().toISOString(),
+        token: 'test-token',
+        topicId: 'topic-1',
+        userMessageId: 'usr-1',
+      });
+
+      await action.executeGatewayAgent({
+        context: {
+          agentId: 'supervisor-1',
+          groupId: 'group-1',
+          scope: 'group',
+          topicId: 'topic-1',
+        },
+        message: 'Compare the proposals',
+        metadata: { agentGroupCollaborationMode: 'debate' },
+      });
+
+      expect(aiAgentService.execAgentTask).toHaveBeenCalledWith(
+        expect.objectContaining({
+          collaborationMode: 'debate',
+          prompt: 'Compare the proposals',
+        }),
+        expect.anything(),
+      );
+    });
+
     it('should forward current user intervention config to execAgentTask', async () => {
       const { action } = createExecuteTestAction();
       mockToolInterventionConfig.approvalMode = 'allow-list';

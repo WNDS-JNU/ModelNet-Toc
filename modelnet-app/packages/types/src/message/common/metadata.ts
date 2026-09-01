@@ -226,6 +226,9 @@ export interface AgentDispatchMetadata {
 }
 
 export const MessageMetadataSchema = ModelUsageSchema.merge(ModelPerformanceSchema).extend({
+  agentGroupCollaborationMode: z
+    .enum(['auto', 'single', 'broadcast', 'parallel_tasks', 'pipeline', 'debate'])
+    .optional(),
   agentDispatch: AgentDispatchMetadataSchema.optional(),
   collapsed: z.boolean().optional(),
   contextSelections: z.array(ContextSelectionSchema).optional(),
@@ -320,6 +323,9 @@ export interface MessageMetadata {
    * Renderers consume this marker instead of inferring intent from the message tree.
    */
   agentDispatch?: AgentDispatchMetadata;
+  /** Collaboration strategy explicitly selected for this Agent Group turn. */
+  agentGroupCollaborationMode?:
+    'auto' | 'single' | 'broadcast' | 'parallel_tasks' | 'pipeline' | 'debate';
   /**
    * Message collapse state
    * true: collapsed, false/undefined: expanded

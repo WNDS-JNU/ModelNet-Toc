@@ -1,4 +1,5 @@
 import type {
+  AgentGroupCollaborationMode,
   ExecAgentAppContext,
   ExecAgentResult,
   RuntimeMentionedAgent,
@@ -107,6 +108,8 @@ export interface ExecAgentTaskParams {
    * sends only; resume / regeneration must not replay them.
    */
   clientIds?: { assistantMessageId?: string; topicId?: string; userMessageId?: string };
+  /** Explicit collaboration strategy selected for this Agent Group turn. */
+  collaborationMode?: AgentGroupCollaborationMode;
   deviceId?: string;
   existingMessageIds?: string[];
   /** File IDs of already-uploaded attachments to attach to the new user message */

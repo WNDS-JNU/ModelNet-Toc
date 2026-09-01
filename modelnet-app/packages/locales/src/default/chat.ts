@@ -24,6 +24,21 @@ export default {
   'agentBuilder.title': 'Agent Builder',
   'agentBuilder.welcome':
     'Tell me your use case.\n\nWriting, coding, or data analysis—anything works. You own the goal and standards; I’ll break it down into collaborative, runnable Agents.',
+  'agentGroupCollaborationMode.auto.description': 'Let the Supervisor choose for each request',
+  'agentGroupCollaborationMode.auto.title': 'Auto',
+  'agentGroupCollaborationMode.broadcast.description':
+    'Collect perspectives from several members in parallel',
+  'agentGroupCollaborationMode.broadcast.title': 'Broadcast',
+  'agentGroupCollaborationMode.debate.description': 'Run a structured multi-round debate',
+  'agentGroupCollaborationMode.debate.title': 'Debate',
+  'agentGroupCollaborationMode.label': 'Collaboration mode: {{mode}}',
+  'agentGroupCollaborationMode.parallel_tasks.description':
+    'Split independent work across group members',
+  'agentGroupCollaborationMode.parallel_tasks.title': 'Parallel tasks',
+  'agentGroupCollaborationMode.pipeline.description': 'Run an ordered, approval-based workflow',
+  'agentGroupCollaborationMode.pipeline.title': 'Pipeline',
+  'agentGroupCollaborationMode.single.description': 'The Supervisor answers without delegation',
+  'agentGroupCollaborationMode.single.title': 'Single Agent',
   'agentConfigError.retry': 'Retry',
   'agentConfigError.title': 'Failed to load agent settings',
   'agentDefaultMessage':

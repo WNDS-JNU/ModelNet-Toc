@@ -458,7 +458,7 @@ export class GatewayActionImpl {
      */
     messageContext?: ConversationContext;
     /** Request metadata carried from the originating user message. */
-    metadata?: Pick<MessageMetadata, 'trigger'>;
+    metadata?: Pick<MessageMetadata, 'agentGroupCollaborationMode' | 'trigger'>;
     /** Called as soon as phase-1 returns with a persisted user message. */
     onMessageAccepted?: () => void;
     /** Called when the gateway session completes (agent finished running) */
@@ -626,6 +626,7 @@ export class GatewayActionImpl {
           // Fresh sends only — resume flows never pass this, and the server drops
           // it defensively on resume-like params anyway.
           clientIds,
+          collaborationMode: metadata?.agentGroupCollaborationMode,
           appContext: {
             agentDocumentId: executionContext.agentDocumentId,
             ...(messageContext.agentId !== executionContext.agentId && {
